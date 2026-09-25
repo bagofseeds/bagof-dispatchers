@@ -241,8 +241,14 @@ def test_type2hint_leaves_an_unhashable_value_alone() -> None:
 
 
 def test_issubscriptable() -> None:
-    # A class with `__class_getitem__` is subscriptable.
-    assert issubscriptable(list) is True
+    # A class with `__class_getitem__` is subscriptable. Use an explicit
+    # class rather than `list`, whose `__class_getitem__` only exists on
+    # Python 3.9+ (PEP 585).
+    class Sub:
+        def __class_getitem__(cls, item: tx.Any) -> type:
+            return cls
+
+    assert issubscriptable(Sub) is True
     # An instance with `__getitem__` is too.
     assert issubscriptable([1, 2]) is True
     # A plain value is not.
