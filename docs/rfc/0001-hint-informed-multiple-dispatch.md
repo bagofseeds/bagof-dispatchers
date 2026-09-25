@@ -423,10 +423,46 @@ def area(shape: Rect) -> float:
 3.14159
 ```
 
-Redefining `area` in the same module/class *adds a method*: `dispatch` groups by
-`(module, __qualname__)` (plum's design; reads like Julia's "define another
-method"). Explicit signatures: `@dispatch(int, str)` and
-`f.register(float, str)(callable)`.
+Redefining `area` in the same module *adds a method* rather than rebinding the
+name.
+
+**Registries & `Function` identity.** A registry is a `Dispatcher` instance, and
+what identifies a `Function` (a named group of methods) *within* it depends on
+which registry it is:
+
+- **`bagof.dispatchers.dispatch`** (the module-level default) identifies a
+  `Function` by **`(defining module, __qualname__)`** — so the same name in two
+  modules is two **independent** functions; `moduleA`'s `area` and `moduleB`'s
+  `area` never share methods or override each other.
+- **A `Dispatcher()` you construct** identifies a `Function` by **`__qualname__`
+  only**, module-independent — so every module that registers `area` into that
+  *same shared instance* extends **one** `Function`. This is how you build a
+  shared, cross-module generic function.
+
+Get a `Function` to hand around with `d.function("area")` or `d["area"]`
+(collision-safe) or the sugar `d.area` (for names that don't clash with a
+`Dispatcher` member); `@dispatch` also *returns* the `Function`. Add methods with
+`@dispatch` on `def area(...)` (name from the def) or `@area.register` /
+`@area.dispatch` on any function (name ignored — the `def _` form). Explicit
+signatures: `@dispatch(int, scale=float, priority=0)` and
+`area.register(int, scale=float)(callable)`.
+
+```python
+# a shared, cross-module generic function
+# registry.py
+from bagof.dispatchers import Dispatcher
+dispatch = Dispatcher()
+area = dispatch.area                 # the (initially empty) Function
+
+# shapes.py
+from registry import dispatch
+@dispatch
+def area(s: Circle) -> float: ...    # extends registry's `area`
+
+# app.py
+from registry import area
+area(Circle(1))                      # sees shapes.py's method
+```
 
 Surface (`__all__`), two documented groups:
 
@@ -441,9 +477,11 @@ Surface (`__all__`), two documented groups:
 `eq_safenan`, `Unset`, `UNSET`, `NoneType`, `UnionType`, `UNION_TYPES`.
 
 Key objects:
-- `Dispatcher()` — namespace of `Function`s; `dispatch = Dispatcher()` is the
-  module default. Own instances isolate a library's names. Look up a function by
-  name with `dispatch.function("area")` or the `dispatch.functions` mapping view.
+- `Dispatcher()` — a registry: a namespace of `Function`s. The module-level
+  `dispatch` keys by `(module, __qualname__)` (per-module isolation); an instance
+  you construct keys by `__qualname__` (shared across modules). Access a function
+  via `d.function("area")`, `d["area"]`, or the `d.area` sugar; `d.functions` is
+  the mapping view.
 - `Function` — `__call__(*args, **kwargs)`, `dispatch(*args, **kwargs) -> Method`
   (bind-then-select without calling), `resolve(*hints, **named_hints,
   default=UNSET, ambiguity="raise") -> Method`, `register(...)`,
