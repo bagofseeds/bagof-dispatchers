@@ -21,6 +21,7 @@ rebuilding it each time.
 """
 
 # stdlib
+import functools
 import inspect
 import itertools
 
@@ -29,7 +30,14 @@ import typing_extensions as tx
 
 # local
 from ._lattice import equivalent, typevar_consistent
-from .core import ishintstance, issubhint, normalise_hint
+from .core import (
+    ishintstance,
+    issubhint,
+    normalise_hint,
+    safe_get_origin,
+)
+from .core._compat import spellings
+from .core._exact import exact_target, is_exact
 
 __all__ = ["Parameter", "Signature", "Binding"]
 
@@ -65,6 +73,19 @@ class _CatchAll:
 
 _VARARGS = _CatchAll(_VAR_POSITIONAL)
 _VARKW = _CatchAll(_VAR_KEYWORD)
+
+# The `*args` / `**kwargs` variadic forms that v1 reads as an unannotated
+# catch-all (RFC 0001 §2.2, §3, §11.1): an unpacked `TypeVarTuple` (`*Ts`), a
+# `ParamSpec`'s `.args` / `.kwargs`, and an `Unpack[TypedDict]`. Each spelling
+# only exists on newer Pythons or through `typing_extensions`, so every lookup
+# is guarded.
+_UNPACK_FORMS = spellings("Unpack")
+_PARAMSPEC_ARGKW = tuple(
+    form
+    for name in ("ParamSpecArgs", "ParamSpecKwargs")
+    for form in (getattr(tx, name, None),)
+    if isinstance(form, type)
+)
 
 
 class Parameter:
@@ -142,7 +163,7 @@ class Parameter:
             self.name == other.name
             and self.kind == other.kind
             and self.required == other.required
-            and equivalent(self.hint, other.hint)
+            and _hint_eq(self.hint, other.hint)
         )
 
     def __hash__(self) -> int:
@@ -303,14 +324,37 @@ class Signature:
         the name is still undefined then, a [`NameError`][] is raised.
         """
         isig = inspect.signature(fn)
+        source = _hint_source(fn)
         try:
-            hints = _resolve_hints(fn)
+            hints = _resolve_hints(source)
             deferred = False
             raw = None
-        except (NameError, TypeError):
+        except NameError:
+            # A genuine forward reference -- a name defined further down the
+            # module or only under `TYPE_CHECKING`. Keep the raw annotations
+            # and resolve them the first time the signature is used.
             hints = None
             deferred = True
-            raw = _raw_annotations(fn)
+            raw = _raw_annotations(source)
+        except TypeError:
+            # `get_type_hints` also raises `TypeError` for reasons that are
+            # not a forward reference: a `functools.partial`, a callable
+            # instance, or a stringised modern spelling (`"list[int]"`) that
+            # the running Python cannot evaluate. Only the last is a real
+            # deferral (RFC 0001 §11.3); the others have annotations that are
+            # already objects, so resolve those directly instead of pretending
+            # every parameter is `Any`.
+            raw = _raw_annotations(source)
+            if _has_forward(raw):
+                hints = None
+                deferred = True
+            else:
+                hints = {
+                    name: normalise_hint(value)
+                    for name, value in raw.items()
+                }
+                deferred = False
+                raw = None
         return cls._from_inspect(isig, hints, fn, deferred, raw)
 
     @classmethod
@@ -362,10 +406,10 @@ class Signature:
             hint = _hint_for(name, hints, raw, deferred)
             if param.kind is _VAR_POSITIONAL:
                 varargs_name = name
-                varargs = hint
+                varargs = _catch_all_or_any(hint)
             elif param.kind is _VAR_KEYWORD:
                 varkw_name = name
-                varkw = hint
+                varkw = _catch_all_or_any(hint)
             else:
                 params[name] = Parameter(
                     name, hint, param.kind, param.default
@@ -410,7 +454,7 @@ class Signature:
         if not self._deferred:
             return
         try:
-            hints = _resolve_hints(self._fn)
+            hints = _resolve_hints(_hint_source(self._fn))
         except (NameError, TypeError) as error:
             name = getattr(self._fn, "__qualname__", repr(self._fn))
             raise NameError(
@@ -424,15 +468,19 @@ class Signature:
             )
         self._parameters = new_params
         if self._varargs_name is not None:
-            self._varargs = normalise_hint(
-                hints.get(self._varargs_name, tx.Any)
+            self._varargs = _catch_all_or_any(
+                normalise_hint(hints.get(self._varargs_name, tx.Any))
             )
         if self._varkw_name is not None:
-            self._varkw = normalise_hint(
-                hints.get(self._varkw_name, tx.Any)
+            self._varkw = _catch_all_or_any(
+                normalise_hint(hints.get(self._varkw_name, tx.Any))
             )
-        self._deferred = False
+        # Build the plan before clearing the deferred flag: a reader on a
+        # free-threaded build (3.13t) must never see `_deferred` false while
+        # the plan still reflects the unresolved hints, so the flag is
+        # published last.
         self._build_plan()
+        self._deferred = False
 
     # -- public data ----------------------------------------------------
 
@@ -695,6 +743,9 @@ class Signature:
         *other*'s (`A ⊑ B`). A signature that cannot bind the shape is not
         comparable, so the answer is [`False`][].
 
+        The repeated-`TypeVar` group-count tie-break (RFC 0001 §3) is Phase 7
+        and is not applied here.
+
         !!! example
             ```pycon
             >>> a = Signature.from_hints(int, int)
@@ -766,6 +817,14 @@ class Signature:
     def __eq__(self, other: tx.Any) -> bool:
         if not isinstance(other, Signature):
             return NotImplemented
+        # Resolve any deferred forward references first, so two signatures for
+        # the same callable compare equal once one of them has been used. A
+        # name that is still undefined is left deferred rather than raising:
+        # equality answers a question about the signatures as written, and a
+        # still-unresolved hint is then compared by its forward-reference name
+        # (never fed to the sub-hint relation, which has no namespace for it).
+        self._settle_quietly()
+        other._settle_quietly()
         if list(self._parameters) != list(other._parameters):
             return False
         for mine, theirs in zip(
@@ -777,6 +836,19 @@ class Signature:
             self._varargs, other._varargs
         ) and self._catch_all_eq(self._varkw, other._varkw)
 
+    def _settle_quietly(self) -> None:
+        """Settle deferred hints for equality, swallowing an unresolved name.
+
+        Unlike [`_settle`][bagof.dispatchers._signature.Signature._settle],
+        which a dispatch use calls and which raises on a name that never
+        became defined, this leaves an unresolvable signature deferred so
+        that equality stays total.
+        """
+        try:
+            self._settle()
+        except NameError:
+            pass
+
     @staticmethod
     def _catch_all_eq(a: tx.Any, b: tx.Any) -> bool:
         """Whether two `*args`/`**kwargs` hints match, `None` included."""
@@ -784,7 +856,7 @@ class Signature:
             return False
         if a is None:
             return True
-        return equivalent(a, b)
+        return _hint_eq(a, b)
 
     def __hash__(self) -> int:
         return hash(
@@ -824,6 +896,82 @@ class _ReadonlyMap(tx.Mapping):
 
 
 # --- hint reading ------------------------------------------------------
+
+
+def _forward_name(hint: tx.Any) -> tx.Optional[str]:
+    """The forward-reference name of a still-unresolved hint, or `None`.
+
+    A hint kept as a raw string (a stringised annotation) or a
+    [`ForwardRef`][typing.ForwardRef] carries only a name. Two such hints are
+    compared by that name; a resolved hint has none.
+    """
+    if isinstance(hint, str):
+        return hint
+    return getattr(hint, "__forward_arg__", None)
+
+
+def _hint_eq(a: tx.Any, b: tx.Any) -> bool:
+    """Whether two parameter hints are equivalent, forward references included.
+
+    When either side is still a forward reference the two are compared by
+    name -- an unresolved name is never handed to the sub-hint relation, which
+    has no namespace to resolve it and would raise. Two resolved hints are
+    compared with [`equivalent`][bagof.dispatchers._lattice.equivalent].
+    """
+    a_name = _forward_name(a)
+    b_name = _forward_name(b)
+    if a_name is not None or b_name is not None:
+        return a_name == b_name
+    return equivalent(a, b)
+
+
+def _catch_all_or_any(hint: tx.Any) -> tx.Any:
+    """A `*args`/`**kwargs` hint, with a v1-unsupported variadic form as `Any`.
+
+    `*args: *Ts` (an unpacked `TypeVarTuple`), `*args: P.args`,
+    `**kwargs: P.kwargs` and `**kwargs: Unpack[TypedDict]` all read as an
+    unannotated catch-all in v1 (RFC 0001 §2.2, §3, §11.1): the tail takes
+    anything, so the hint is [`Any`][typing.Any]. Every other hint is left
+    unchanged.
+    """
+    if _PARAMSPEC_ARGKW and isinstance(hint, _PARAMSPEC_ARGKW):
+        return tx.Any
+    origin = safe_get_origin(hint)
+    if any(origin is form for form in _UNPACK_FORMS):
+        return tx.Any
+    return hint
+
+
+def _hint_source(fn: tx.Callable[..., tx.Any]) -> tx.Any:
+    """The object whose annotations describe `fn`'s parameters.
+
+    [`get_type_hints`][typing_extensions.get_type_hints] reads annotations off
+    a function, method, class or module, but not off a
+    [`functools.partial`][] or a callable instance. Those are unwrapped to the
+    underlying function or the class's `#!python __call__`, whose parameter
+    names still match the names
+    [`inspect.signature`][] reports for the original callable.
+    """
+    if isinstance(fn, functools.partial):
+        return _hint_source(fn.func)
+    if (
+        inspect.isfunction(fn)
+        or inspect.ismethod(fn)
+        or isinstance(fn, type)
+    ):
+        return fn
+    # A callable instance: its parameter annotations live on the class's
+    # `__call__`, which is what `get_type_hints` can read.
+    call = getattr(type(fn), "__call__", None)  # noqa: B004
+    return call if call is not None else fn
+
+
+def _has_forward(raw: tx.Optional[tx.Dict[str, tx.Any]]) -> bool:
+    """Whether any raw annotation is still a forward reference."""
+    return any(
+        _forward_name(value) is not None
+        for value in (raw or {}).values()
+    )
 
 
 def _resolve_hints(fn: tx.Callable[..., tx.Any]) -> tx.Dict[str, tx.Any]:
@@ -881,8 +1029,6 @@ def _render_hint(hint: tx.Any) -> str:
     if hint is tx.Any:
         return "Any"
     # An `Exact[C]` reads back as `Exact[C]`, not its `Annotated` spelling.
-    from .core._exact import exact_target, is_exact
-
     if is_exact(hint):
         return f"Exact[{_render_hint(exact_target(hint))}]"
     if isinstance(hint, type):

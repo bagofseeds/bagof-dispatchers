@@ -137,6 +137,29 @@ def test_method_equality() -> None:
     def g(x: int) -> None: ...
 
     assert Method(f) != Method(g)
+    assert Method(f).__eq__(object()) is NotImplemented
+
+
+def test_method_is_hashable() -> None:
+    """A method hashes on its function identity and priority."""
+
+    def f(x: int) -> None: ...
+
+    method = Method(f)
+    assert hash(method) == hash(Method(f))
+    assert method in {method}
+
+
+def test_method_location_without_lineno() -> None:
+    """A callable with no source line reports just its file basename."""
+
+    class Callable:
+        def __call__(self, x: int) -> int:
+            return x
+
+    method = Method(Callable())
+    assert method.lineno is None
+    assert method.location == "<module>"
 
 
 def test_method_repr_no_source(monkeypatch: pytest.MonkeyPatch) -> None:

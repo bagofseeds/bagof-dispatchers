@@ -1,14 +1,17 @@
 """Tests for the name-aware signature layer (`_signature.py`)."""
 
 # stdlib
+import functools
 import inspect
 import typing
+import warnings
 
 # dependencies
 import pytest
 import typing_extensions as tx
 
 # locals
+import bagof.dispatchers._signature as sigmod
 from bagof.dispatchers import Exact
 from bagof.dispatchers._signature import Binding, Parameter, Signature
 
@@ -550,6 +553,344 @@ def test_binding_repr_and_equality() -> None:
     two = Binding({0: "x"}, (), {}, frozenset())
     assert one == two
     assert "Binding(" in repr(one)
+
+
+# --- deferred / forward-reference equality (defect 1) ------------------
+
+
+def test_parameter_deferred_equality_does_not_raise() -> None:
+    """A still-deferred hint compares by name, never through the relation."""
+    kind = Parameter.POSITIONAL_OR_KEYWORD
+    same_a = Parameter("x", "Later", kind)
+    same_b = Parameter("x", "Later", kind)
+    other = Parameter("x", "Other", kind)
+    resolved = Parameter("x", int, kind)
+    # None of these raise a `TypeError` (the old bug), and each gives a bool.
+    assert same_a == same_b  # same forward name
+    assert same_a != other  # different forward names
+    assert same_a != resolved  # deferred vs resolved
+    assert resolved != same_a  # and the other way round
+
+
+def test_parameter_forward_ref_equality() -> None:
+    """A `ForwardRef` compares by its forward name, like a raw string."""
+    ref = tx.ForwardRef("Later")
+    kind = Parameter.POSITIONAL_OR_KEYWORD
+    assert Parameter("x", ref, kind) == Parameter("x", "Later", kind)
+    assert Parameter("x", ref, kind) != Parameter("x", "Other", kind)
+
+
+def test_signature_deferred_equality_no_typeerror() -> None:
+    """Comparing a deferred signature never raises, and settles resolvables."""
+    fn, namespace = _make_deferred_function()
+    deferred = Signature.from_callable(fn)
+    # A deferred, unresolvable signature compares cleanly (no TypeError,
+    # no NameError) against a resolved one, and gives a clean `False`.
+    assert deferred != Signature.from_callable(_difftest_int())
+    assert deferred._deferred  # left deferred, not forced to resolve
+
+    # Once the name is defined, the same function's deferred and resolved
+    # signatures compare equal without raising.
+    class Later:
+        pass
+
+    namespace["Later"] = Later
+    resolved = Signature.from_callable(fn)
+    resolved._settle()
+    assert deferred == resolved
+    assert not deferred._deferred  # equality settled it
+
+
+def _difftest_int() -> tx.Callable[..., tx.Any]:
+    def other(x: int) -> None: ...
+
+    return other
+
+
+def test_signature_deferred_same_forward_name_equal() -> None:
+    """Two deferred signatures with the same unresolved name are equal."""
+    a, _ = _make_deferred_function()
+    b, _ = _make_deferred_function()
+    assert Signature.from_callable(a) == Signature.from_callable(b)
+
+
+# --- partial / callable instances (defect 2) ---------------------------
+
+
+def test_from_callable_partial_resolves_hints() -> None:
+    """A `functools.partial` resolves its remaining parameters' hints."""
+
+    def base(a: int, b: str) -> None: ...
+
+    sig = Signature.from_callable(functools.partial(base, 1))
+    assert list(sig.parameters) == ["b"]
+    assert sig.parameters["b"].hint is str
+    assert not sig._deferred
+    assert sig.applies_to_values(("hi",), {})
+    assert not sig.applies_to_values((1,), {})
+
+
+def test_from_callable_callable_instance_resolves_hints() -> None:
+    """A callable instance reads hints off its `__call__`."""
+
+    class Adder:
+        def __call__(self, x: int) -> int:
+            return x
+
+    sig = Signature.from_callable(Adder())
+    assert list(sig.parameters) == ["x"]
+    assert sig.parameters["x"].hint is int
+    assert not sig._deferred
+    assert sig.applies_to_values((3,), {})
+    assert not sig.applies_to_values(("no",), {})
+
+
+def test_from_callable_typeerror_stringized_defers() -> None:
+    """A stringised spelling the running Python cannot evaluate defers."""
+
+    def f(x: int) -> None: ...
+
+    # A string annotation whose evaluation raises `TypeError` (as
+    # `"list[int]"` does on Python 3.8) stands in for the version-specific
+    # case: it must defer, not resolve to `Any`.
+    f.__annotations__ = {"x": "int[str]"}
+    sig = Signature.from_callable(f)
+    assert sig._deferred
+    with pytest.raises(NameError):
+        sig.applies_to_values((1,), {})
+
+
+def test_from_callable_typeerror_non_forward_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `TypeError` with already-resolved annotations resolves, not defers."""
+
+    def f(x: int) -> None: ...
+
+    def boom(_fn: object) -> dict:
+        raise TypeError("simulated get_type_hints failure")
+
+    monkeypatch.setattr(sigmod, "_resolve_hints", boom)
+    sig = Signature.from_callable(f)
+    assert not sig._deferred
+    assert sig.parameters["x"].hint is int
+
+
+def test_settle_resolves_variadic_hints() -> None:
+    """Settling a deferred signature resolves its `*args`/`**kwargs` hints."""
+    namespace = {}  # type: dict
+    exec(
+        "def f(x: 'Later', *args: 'Later', **kw: 'Later'): pass",
+        namespace,
+    )
+    sig = Signature.from_callable(namespace["f"])
+    assert sig._deferred
+
+    class Later:
+        pass
+
+    namespace["Later"] = Later
+    assert sig.applies_to_values((Later(), Later()), {"z": Later()})
+    assert sig.varargs is Later
+    assert sig.varkw is Later
+
+
+def test_bind_positional_only_defaulted_passed_as_keyword() -> None:
+    """A defaulted positional-only parameter cannot be given by keyword."""
+
+    def f(a: int = 1, b: int = 2, /) -> None: ...
+
+    sig = Signature.from_callable(f)
+    assert sig.bind((), {}) is not None  # both defaulted
+    assert sig.bind((), {"b": 3}) is None  # b is positional-only
+
+
+def test_signature_le_operator() -> None:
+    """The `<=` operator compares two signatures at their full shape."""
+
+    def f(x: int) -> None: ...
+
+    def g(x: object) -> None: ...
+
+    assert Signature.from_callable(f) <= Signature.from_callable(g)
+
+
+def test_raw_annotations_unreadable_falls_back() -> None:
+    """An object whose `__annotations__` cannot be read yields no annotations.
+
+    This is the shape of Python 3.14's lazy annotations, where reading them
+    the ordinary way may raise.
+    """
+
+    class Weird:
+        @property
+        def __annotations__(self) -> dict:
+            raise RuntimeError("cannot read annotations")
+
+    # On a Python without `annotationlib` this returns `{}`; the point is that
+    # it never propagates the error.
+    assert isinstance(sigmod._raw_annotations(Weird()), dict)
+
+
+def test_render_forward_ref_param() -> None:
+    """A `ForwardRef` parameter hint renders by its name."""
+    kind = Parameter.POSITIONAL_OR_KEYWORD
+    sig = Signature({"x": Parameter("x", tx.ForwardRef("Later"), kind)})
+    assert repr(sig) == "Signature(x: Later)"
+
+
+def test_from_callable_forward_ref_still_defers() -> None:
+    """A genuine forward reference still defers and resolves on first use."""
+    fn, namespace = _make_deferred_function()
+    sig = Signature.from_callable(fn)
+    assert sig._deferred
+
+    class Later:
+        pass
+
+    namespace["Later"] = Later
+    assert sig.applies_to_values((Later(),), {})
+    assert sig.parameters["x"].hint is Later
+
+
+# --- variadic tails degrade to Any (defect 3) --------------------------
+
+
+def test_variadic_typevartuple_is_any() -> None:
+    """`*args: *Ts` reads as an unannotated catch-all, with no warning."""
+    Ts = tx.TypeVarTuple("Ts")
+
+    def f(*args: tx.Unpack[Ts]) -> None: ...
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning fails the test
+        sig = Signature.from_callable(f)
+        assert sig.varargs is tx.Any
+        assert sig.applies_to_values((1, "x", object()), {})
+    assert repr(sig) == "Signature(*args)"
+
+
+def test_variadic_paramspec_is_any() -> None:
+    """`*args: P.args` / `**kwargs: P.kwargs` read as catch-alls."""
+    P = tx.ParamSpec("P")
+
+    def f(*args: P.args, **kwargs: P.kwargs) -> None: ...
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        sig = Signature.from_callable(f)
+        assert sig.varargs is tx.Any
+        assert sig.varkw is tx.Any
+        assert sig.applies_to_values((1, 2), {"a": "x"})
+    assert repr(sig) == "Signature(*args, **kwargs)"
+
+
+def test_variadic_unpack_typeddict_is_any() -> None:
+    """`**kwargs: Unpack[TypedDict]` reads as an unannotated catch-all."""
+
+    class Opts(tx.TypedDict):
+        a: int
+
+    def f(**kwargs: tx.Unpack[Opts]) -> None: ...
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        sig = Signature.from_callable(f)
+        assert sig.varkw is tx.Any
+        assert sig.applies_to_values((), {"a": 1, "b": "anything"})
+    assert repr(sig) == "Signature(**kwargs)"
+
+
+# --- coverage: reprs, NotImplemented, and le with catch-alls -----------
+
+
+def test_parameter_repr_and_notimplemented() -> None:
+    """A parameter reprs readably and is unequal to a non-parameter."""
+    kind = Parameter.POSITIONAL_OR_KEYWORD
+    required = Parameter("x", int, kind)
+    optional = Parameter("y", str, kind, default="a")
+    assert repr(required) == "Parameter(x: int)"
+    assert repr(optional) == "Parameter(y: str = 'a')"
+    assert required.__eq__(object()) is NotImplemented
+
+
+def test_binding_notimplemented() -> None:
+    """A binding is unequal to a non-binding."""
+    assert Binding({}, (), {}, frozenset()).__eq__(object()) is NotImplemented
+
+
+def test_signature_repr_and_notimplemented() -> None:
+    """A signature reprs readably and is unequal to a non-signature."""
+
+    def f(x: int, y: str = "a") -> None: ...
+
+    sig = Signature.from_callable(f)
+    assert repr(sig) == "Signature(x: int, y: str = 'a')"
+    assert sig.__eq__(object()) is NotImplemented
+    assert sig.__le__(object()) is NotImplemented
+    assert sig.__lt__(object()) is NotImplemented
+    assert "'x'" in repr(sig.parameters)  # the read-only view reprs as a dict
+
+
+def test_signature_eq_different_length() -> None:
+    """Signatures with different parameter names are unequal."""
+
+    def f(x: int) -> None: ...
+
+    def g(x: int, y: int) -> None: ...
+
+    assert Signature.from_callable(f) != Signature.from_callable(g)
+
+
+def test_signature_le_and_eq_with_catch_alls() -> None:
+    """`le` and `==` read the `*args` / `**kwargs` hints."""
+
+    def f(x: int, *args: int, **kw: int) -> None: ...
+
+    def g(x: int, *args: object, **kw: object) -> None: ...
+
+    a = Signature.from_callable(f)
+    b = Signature.from_callable(g)
+    shape = Signature.shape((1, 2, 3), {"z": 4})
+    assert a.le(b, shape)
+    assert not b.le(a, shape)
+    # A varargs/varkw hint mismatch makes two signatures unequal.
+    assert a != b
+    assert a == Signature.from_callable(f)
+
+
+def test_signature_eq_catch_all_presence_differs() -> None:
+    """A signature with `*args` is unequal to one without it."""
+
+    def f(x: int, *args: int) -> None: ...
+
+    def g(x: int) -> None: ...
+
+    assert Signature.from_callable(f) != Signature.from_callable(g)
+
+
+def test_applies_to_values_unbindable_is_false() -> None:
+    """A call that cannot bind is not applicable."""
+
+    def f(x: int) -> None: ...
+
+    sig = Signature.from_callable(f)
+    assert not sig.applies_to_values((1, 2), {})
+
+
+def test_applies_to_hints_unbindable_and_typevar() -> None:
+    """Hint-level applicability: no bind is False; repeated `TypeVar` holds."""
+    T = tx.TypeVar("T")
+
+    def f(x: int) -> None: ...
+
+    assert not Signature.from_callable(f).applies_to_hints((int, str), {})
+
+    def same(x: T, y: T) -> None: ...
+
+    sig = Signature.from_callable(same)
+    assert sig.applies_to_hints((int, bool), {})
+    assert not sig.applies_to_hints((int, str), {})
 
 
 def test_parameters_mapping_is_readonly() -> None:
