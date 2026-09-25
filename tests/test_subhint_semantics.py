@@ -104,6 +104,61 @@ def test_a_constrained_typevar_is_the_union_it_stands_for() -> None:
     assert issubhint(constrained, tx.Union[int, bytes]) is False
 
 
+def test_a_parametrised_union_is_below_a_class_superhint() -> None:
+    # The dual of the Literal sub-hint rule: a parametrised union is a subhint
+    # of a non-union super-hint iff every one of its members is.
+    assert issubhint(tx.Union[int, str], object) is True
+    assert issubhint(tx.Union[bool, int], int) is True
+    assert issubhint(tx.Optional[int], object) is True
+    assert issubhint(tx.Union[tx.List[int], tx.List[str]], list) is True
+    # A member that is not below the super-hint breaks it.
+    assert issubhint(tx.Union[int, bytes], int) is False
+    # A bare, unparametrised `Union` has no members to distribute: it stays
+    # structural (a sub-hint only of itself and `Any`), not below a class.
+    assert issubhint(tx.Union, int) is False
+    assert issubhint(tx.Union, object) is False
+
+
+# --- the relation stays a preorder, unions included --------------------
+
+_PREORDER_CORPUS = [
+    object,
+    int,
+    bool,
+    str,
+    tx.List[int],
+    tx.List[bool],
+    tx.Union[int, str],
+    tx.Union[bool, int],
+    tx.Optional[int],
+    tx.Union[tx.List[int], tx.List[str]],
+]
+
+
+def test_union_relation_is_reflexive() -> None:
+    for hint in _PREORDER_CORPUS:
+        assert issubhint(hint, hint) is True, hint
+
+
+def test_union_relation_is_transitive() -> None:
+    for a in _PREORDER_CORPUS:
+        for b in _PREORDER_CORPUS:
+            if not issubhint(a, b):
+                continue
+            for c in _PREORDER_CORPUS:
+                if issubhint(b, c):
+                    assert issubhint(a, c) is True, (a, b, c)
+
+
+def test_union_membership_round_trips_through_a_constrained_typevar() -> None:
+    # `Union[C1, C2] <= TypeVar(_, C1, C2)` and each member is <= a class the
+    # typevar's union is <= : transitivity must not be violated.
+    tv = tx.TypeVar("tv", int, str)
+    assert issubhint(tx.Union[int, str], tv) is True
+    assert issubhint(tv, object) is True
+    assert issubhint(tx.Union[int, str], object) is True
+
+
 # --- Literal instance checks (PEP 586) ---------------------------------
 
 

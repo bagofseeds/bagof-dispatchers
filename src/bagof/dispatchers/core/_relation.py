@@ -396,6 +396,16 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     if origin_uw in UNION_TYPES:
         return _issubunion(hint, superhint)
 
+    # The dual of the Literal sub-hint rule above: the super-hint is now known
+    # not to be a union, so a *parametrised* union sub-hint is a subhint iff
+    # every one of its members is (`Union[bool, int] <= int`,
+    # `Union[int, str] <= object`). A bare, unparametrised `Union` has no
+    # members and falls through to the branches below.
+    if get_origin_uw(hint) in UNION_TYPES and get_args_uw(hint):
+        return all(
+            issubhint(member, superhint) for member in get_args_uw(hint)
+        )
+
     if _is_literal(origin_uw):
         return _issubliteral(hint, superhint)
 
