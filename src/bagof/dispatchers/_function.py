@@ -11,7 +11,9 @@ Selection is name-aware (RFC 0001 §2.2): a call is bound the way Python binds
 it, and specificity compares the hints of the slots the *same* argument landed
 in. The most specific method is the one whose landed hints are a sub-hint of
 every competitor's, position by position; ties are broken by explicit
-`priority`, then the argument's own MRO, then how tightly the signature fits.
+`priority`, then the argument's own MRO, then how tightly the signature fits,
+and finally by repeated `TypeVar`s -- a method that constrains more arguments
+to one consistent type wins over one that leaves them independent.
 
 Registration is thread-safe and lock-free to read: each `register` builds a new
 method tuple and publishes it in one assignment, so a concurrent call never
@@ -24,6 +26,7 @@ argument-type key, and the cache is dropped when the methods change or when an
 # stdlib
 import abc
 import functools
+import itertools
 import threading
 import warnings
 
@@ -616,10 +619,14 @@ class Function:
     ) -> tx.Optional[int]:
         """Reduce a set of equally specific methods to one, or `None`.
 
-        Applied in order (RFC 0001 §2.2): explicit `priority` (higher wins),
-        then -- for a value call -- the argument's own MRO (a hint naming a
-        more derived base wins), then tightness (a signature absorbing fewer
-        arguments into catch-alls, with fewer defaults, wins).
+        Applied in order (RFC 0001 §2.2, §3): explicit `priority` (higher
+        wins), then -- for a value call -- the argument's own MRO (a hint
+        naming a more derived base wins), then tightness (a signature absorbing
+        fewer arguments into catch-alls, with fewer defaults, wins), and last
+        the repeated-`TypeVar` refinement (a method whose repeated `TypeVar`s
+        constrain more arguments to one consistent type wins). A tie that
+        survives every step leaves more than one candidate and is ambiguous
+        (`None`).
         """
         if len(candidates) == 1:
             return candidates[0]
@@ -659,7 +666,46 @@ class Function:
         ]
         if len(candidates) == 1:
             return candidates[0]
+        # Last, the repeated-TypeVar refinement (RFC 0001 §3): among methods
+        # still tied, one whose repeated TypeVars constrain strictly more
+        # arguments to a single consistent type is more specific. Drop any
+        # candidate another refines this way. Refinement is a strict partial
+        # order, so a single most-refined survivor wins and two incomparable
+        # ones leave the tie -- and hence the ambiguity -- standing.
+        candidates = [
+            index
+            for index in candidates
+            if not any(
+                other != index
+                and self._group_dominates(plan, other, index)
+                for other in candidates
+            )
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
         return None
+
+    def _group_dominates(
+        self, plan: _Plan, winner: int, loser: int
+    ) -> bool:
+        """Whether `winner` refines `loser` by repeated `TypeVar`s (§3).
+
+        The last selection tie-break, reached only when two methods are
+        otherwise equally specific. It compares the two methods' landed hints
+        and their repeated-`TypeVar` groupings for the call's shape through
+        [`_group_more_specific`][bagof.dispatchers._function._group_more_specific].
+        """
+        won_method, won_binding, won_landed = plan.bindable[winner]
+        lost_method, lost_binding, lost_landed = plan.bindable[loser]
+        won_partition = _typevar_partition(
+            won_method.signature, won_binding
+        )
+        lost_partition = _typevar_partition(
+            lost_method.signature, lost_binding
+        )
+        return _group_more_specific(
+            won_landed, won_partition, lost_landed, lost_partition
+        )
 
     def _mro_dominates(
         self,
@@ -999,6 +1045,19 @@ def _pair_ambiguous_resolved(
         here, there = first_landed[key], second_landed[key]
         if not (issubhint(here, there) or issubhint(there, here)):
             return False
+    # The repeated-TypeVar tie-break (RFC 0001 §3) settles some otherwise-tied
+    # pairs: when one method's repeated TypeVars constrain strictly more
+    # arguments to a consistent type than the other's, that one is the more
+    # specific and the pair is not ambiguous -- so it is neither warned at
+    # registration nor listed by `ambiguities`.
+    first_partition = _typevar_partition(first.signature, first_binding)
+    second_partition = _typevar_partition(second.signature, second_binding)
+    if _group_more_specific(
+        first_landed, first_partition, second_landed, second_partition
+    ) or _group_more_specific(
+        second_landed, second_partition, first_landed, first_partition
+    ):
+        return False
     return True
 
 
@@ -1039,6 +1098,79 @@ def _landed_hints(
         else:
             result[key] = signature.parameters[slot].hint
     return result
+
+
+def _typevar_partition(
+    signature: Signature, binding: tx.Any
+) -> tx.Dict[tx.Any, tx.Any]:
+    """Group each bound argument by the repeated `TypeVar` it landed in.
+
+    Returns a label per argument key, built from the same grouping
+    applicability solves over (`_iter_arguments`, so a
+    `#!python **kwargs`-absorbed argument does not group in v1). Two keys share
+    a label only when they landed in the *same* groupable
+    [`TypeVar`][typing.TypeVar]; a non-`TypeVar` argument gets a label unique
+    to its key, so it forms a block of its own. The labels are only ever
+    compared for equality, which is all the group tie-break needs.
+    """
+    labels = {}  # type: tx.Dict[tx.Any, tx.Any]
+    for key, hint, groupable in signature._iter_arguments(binding):
+        if groupable and isinstance(hint, tx.TypeVar):
+            # Identity, not the variable itself: two distinct `TypeVar`s that
+            # happen to be equal must land in different blocks.
+            labels[key] = id(hint)
+        else:
+            labels[key] = ("solo", key)
+    return labels
+
+
+def _group_more_specific(
+    a_landed: tx.Dict[tx.Any, tx.Any],
+    a_partition: tx.Dict[tx.Any, tx.Any],
+    b_landed: tx.Dict[tx.Any, tx.Any],
+    b_partition: tx.Dict[tx.Any, tx.Any],
+) -> bool:
+    """Whether `a`'s repeated `TypeVar`s make it strictly more specific (§3).
+
+    The repeated-`TypeVar` tie-break of RFC 0001 §3, reached only when two
+    methods are already equally specific by every earlier measure. `a` wins
+    when two conditions both hold:
+
+    * **nothing else tells them apart** -- at every argument the two land
+      *equivalent* hints, so neither is more specific there (an unbound
+      `#!python T` and an unannotated `#!python Any` are equivalent, as are a
+      bound `#!python TypeVar` and its bound); and
+    * **`a` groups strictly more** -- every pair of arguments `b` ties to one
+      repeated `TypeVar`, `a` ties too, and `a` ties at least one pair `b`
+      leaves independent.
+
+    Grouping more arguments to a single consistent type is the more
+    constrained, so the more specific, reading. When neither method groups
+    strictly more than the other -- equal groupings, or each grouping a pair
+    the other does not -- the answer is [`False`][] both ways and the pair
+    stays incomparable, hence ambiguous.
+    """
+    if set(a_landed) != set(b_landed):  # pragma: no cover
+        # Both methods bind the same shape, so they land the same argument
+        # keys; this guards an invariant rather than a reachable case.
+        return False
+    keys = list(a_landed)
+    for key in keys:
+        # "All else equal": a difference in the landed hint itself is settled
+        # by the sub-hint order, not by this tie-break.
+        if not equivalent(a_landed[key], b_landed[key]):
+            return False
+    strict = False
+    for first, second in itertools.combinations(keys, 2):
+        a_together = a_partition[first] == a_partition[second]
+        b_together = b_partition[first] == b_partition[second]
+        if b_together and not a_together:
+            # `b` ties a pair `a` leaves independent, so `a` does not group a
+            # superset of `b` -- `a` cannot be the strict refinement.
+            return False
+        if a_together and not b_together:
+            strict = True
+    return strict
 
 
 def _store_call(
