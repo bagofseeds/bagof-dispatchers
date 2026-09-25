@@ -95,3 +95,42 @@ def test_a_callable_class_is_a_callable() -> None:
     # A callable class has no parameter list, so it cannot stand in for a
     # parametrised `Callable[...]`.
     assert issubhint(type, C[[int], str]) is False
+
+
+def test_callable_params_classifies_paramspec_shapes() -> None:
+    # Direct unit test of the shape classifier, which also exercises the
+    # <3.10 spellings (a flattened `Concatenate` list and a `ParamSpec`
+    # erased to `[]`) that cannot arise from a real alias on 3.10+.
+    from bagof.dispatchers.core._relation import _callable_params
+
+    P = tx.ParamSpec("P")
+    assert _callable_params(None, ...) == ("any", None)
+    assert _callable_params(None, P) == ("any", None)
+    assert _callable_params(None, [int, str]) == ("list", [int, str])
+    # An unknown shape degrades to a wildcard rather than raising.
+    assert _callable_params(None, object()) == ("any", None)
+    # <3.10: `Concatenate[X, P]` flattened to `[X, ..., P]`.
+    assert _callable_params(None, [int, P]) == ("prefix", [int])
+    # <3.10: a bare `P` erased to `[]`, surviving in `__parameters__`.
+    assert _callable_params(C[P, int], []) == ("any", None)
+
+
+def test_bare_typeguard_markers_dispatch_as_bool() -> None:
+    # The bare (unsubscripted) `TypeGuard` / `TypeIs` markers map to `bool`.
+    assert issubhint(tx.TypeGuard, bool) is True
+    assert issubhint(tx.TypeIs, bool) is True
+
+
+def test_concatenate_prefix_edge_cases() -> None:
+    P = tx.ParamSpec("P")
+    Q = tx.ParamSpec("Q")
+    # A fixed-arity sub cannot stand in for an open (Concatenate) super.
+    assert issubhint(C[[int], str], C[tx.Concatenate[int, P], str]) is False
+    # Two open prefixes: the sub's prefix cannot be the longer one.
+    assert (
+        issubhint(
+            C[tx.Concatenate[int, str, P], bool],
+            C[tx.Concatenate[int, Q], bool],
+        )
+        is False
+    )

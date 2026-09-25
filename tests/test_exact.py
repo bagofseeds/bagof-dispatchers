@@ -147,3 +147,9 @@ def test_ishintstance_exact_through_a_typevar_bound() -> None:
     assert ishintstance(1, T) is True
     assert ishintstance(True, T) is False
     assert issubhint(bool, T) is False
+
+
+def test_exact_marker_repr() -> None:
+    assert repr(EXACT) == "EXACT"
+    # The metadata object is a singleton.
+    assert EXACT is type(EXACT)()

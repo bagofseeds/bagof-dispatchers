@@ -1,5 +1,8 @@
 """Tests for the hint-introspection helpers."""
 
+# stdlib
+import sys
+
 # dependencies
 import pytest
 import typing_extensions as tx
@@ -9,12 +12,16 @@ from bagof.dispatchers.core import (
     get_concrete_type,
     ishintstance,
     issubclassable,
+    issubscriptable,
     safe_isinstance,
     safe_issubclass,
     type2hint,
     unwrap,
 )
-from bagof.dispatchers.core._introspect import _unwrap_typevar
+from bagof.dispatchers.core._introspect import (
+    _typing_spelling,
+    _unwrap_typevar,
+)
 
 
 class Base(tx.TypedDict):
@@ -228,3 +235,59 @@ def test_type2hint_leaves_an_unhashable_value_alone() -> None:
     # look up and nothing to convert.
     value = {1, 2}
     assert type2hint(value) is value
+
+
+# --- issubscriptable ---------------------------------------------------
+
+
+def test_issubscriptable() -> None:
+    # A class with `__class_getitem__` is subscriptable.
+    assert issubscriptable(list) is True
+    # An instance with `__getitem__` is too.
+    assert issubscriptable([1, 2]) is True
+    # A plain value is not.
+    assert issubscriptable(3) is False
+
+
+# --- unwrap follows a typevar bound ------------------------------------
+
+
+def test_unwrap_typevar_follows_a_bound() -> None:
+    # A bound typevar (no default, no constraints) unwraps to its bound.
+    bound = tx.TypeVar("bound", bound=int)
+    assert _unwrap_typevar(bound) is int
+    assert unwrap(bound, tx.TypeVar) is int
+
+
+# --- _typing_spelling: new-style generics rewritten to `typing` --------
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 9), reason="list[int] needs PEP 585 (3.9+)"
+)
+def test_typing_spelling_rewrites_new_style_generics() -> None:
+    # stdlib
+    import collections.abc as cabc
+
+    assert _typing_spelling(list[int]) == tx.List[int]
+    assert _typing_spelling(dict[str, int]) == tx.Dict[str, int]
+    # Nested inside Annotated, Union, and Callable.
+    assert _typing_spelling(tx.Annotated[list[int], "m"]) == tx.Annotated[
+        tx.List[int], "m"
+    ]
+    assert _typing_spelling(tx.Union[list[int], str]) == tx.Union[
+        tx.List[int], str
+    ]
+    assert _typing_spelling(cabc.Callable[[list[int]], int]) == tx.Callable[
+        [tx.List[int]], int
+    ]
+    # `tuple[()]` is the empty-tuple type.
+    assert _typing_spelling(tuple[()]) == tx.Tuple[()]
+
+
+def test_typing_spelling_leaves_others_unchanged() -> None:
+    # No origin, or a `Literal` (its arguments are values), is left alone.
+    assert _typing_spelling(int) is int
+    assert _typing_spelling(tx.Literal[1]) == tx.Literal[1]
+    # An Annotated whose inner type needs no rewrite is returned unchanged.
+    assert _typing_spelling(tx.Annotated[int, "m"]) == tx.Annotated[int, "m"]
