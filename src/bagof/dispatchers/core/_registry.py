@@ -27,6 +27,7 @@ import warnings
 import typing_extensions as tx
 
 # local
+from ._compat import UnknownHintWarning
 from ._exact import exact_target, is_exact
 from ._introspect import _typing_spelling, normalise_hint
 from ._relation import issubhint
@@ -138,9 +139,14 @@ def _accepts(hint: tx.Any, key: tx.Any) -> bool:
     equivalent to `C`: an exact-`C` registration answers a plain-`C` lookup,
     the lookup convenience the relation itself does not grant (RFC 0001 §4).
 
-    A key the relation cannot compare -- an exotic or malformed hint one of
-    the sibling bags happens to have registered -- is treated as simply not
-    accepting the query, so one bad key never fails the whole lookup.
+    A key that is not a usable type hint -- an exotic or malformed entry one of
+    the sibling bags happens to have registered, or a bare string forward
+    reference -- makes the relation raise a [`TypeError`][], which is read as
+    "does not accept" so one bad key never fails the whole lookup. It is not
+    swallowed silently, though: an [`UnknownHintWarning`][] names the key, so a
+    key that should have matched is not lost without trace. Any other error --
+    a user metaclass whose `#!python __subclasscheck__` raises, say -- is a
+    genuine fault and is left to propagate.
     """
     try:
         target = normalise_hint(key)
@@ -150,21 +156,37 @@ def _accepts(hint: tx.Any, key: tx.Any) -> bool:
             inner = normalise_hint(exact_target(target))
             return issubhint(hint, inner) and issubhint(inner, hint)
         return False
-    except Exception:  # noqa: BLE001 -- a key that cannot be compared
+    except TypeError:
+        _warn_unusable_key(key)
         return False
 
 
 def _strictly_below(a: tx.Any, b: tx.Any) -> bool:
     """Whether key `a` is strictly more specific than key `b`.
 
-    A relation error on either key is read as "not comparable", so a key the
-    relation chokes on never propagates out of the lookup.
+    A [`TypeError`][] from the relation -- a key that is not a usable hint --
+    is read as "not comparable", so it never propagates out of the lookup. The
+    keys compared here have already been accepted by
+    [`_accepts`][bagof.dispatchers.core._registry._accepts] (which warns for a
+    bad one), so no second warning is emitted. Any other error is a genuine
+    fault and is left to propagate.
     """
     try:
         na, nb = normalise_hint(a), normalise_hint(b)
         return issubhint(na, nb) and not issubhint(nb, na)
-    except Exception:  # noqa: BLE001 -- a key that cannot be compared
+    except TypeError:
         return False
+
+
+def _warn_unusable_key(key: tx.Any) -> None:
+    """Warn that a registry key is not a usable hint and was skipped."""
+    warnings.warn(
+        f"registry key {_render(key)!r} is not a usable type hint; it is "
+        f"skipped, so the lookup ignores it. Store a real type hint as the "
+        f"key, or remove it.",
+        UnknownHintWarning,
+        stacklevel=2,
+    )
 
 
 def _exact_key(hint: tx.Any, mapping: tx.Mapping[tx.Any, tx.Any]) -> tx.Any:

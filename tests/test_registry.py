@@ -372,17 +372,48 @@ def test_resolve_hint_tolerates_a_malformed_key() -> None:
     """A key that is not a usable hint does not fail the lookup; it misses.
 
     The relation raises for a value that is not a type or typing construct; a
-    registry that happens to hold one still resolves the other keys.
+    registry that happens to hold one still resolves the other keys, but warns
+    rather than skipping the bad key in silence.
     """
+    from bagof.dispatchers.core import UnknownHintWarning
+
     registry = {5: "bad-key", int: "number", object: "any"}
-    assert resolve_hint(bool, registry) == "number"
+    with pytest.warns(UnknownHintWarning, match="not a usable type hint"):
+        assert resolve_hint(bool, registry) == "number"
 
 
-def test_accepts_and_strictly_below_swallow_relation_errors() -> None:
-    """`_accepts`/`_strictly_below` read a relation error as not-comparable."""
+def test_accepts_warns_and_strictly_below_is_quiet_on_a_bad_key() -> None:
+    """`_accepts` warns for a bad key; `_strictly_below` reads it as not-below.
+
+    A key `_accepts` cannot read raises a relation `TypeError`, read as "does
+    not accept" *and* warned about, so the skip is not silent.
+    `_strictly_below` only ever sees keys `_accepts` already vetted, so it
+    stays quiet on the same signal.
+    """
+    from bagof.dispatchers.core import UnknownHintWarning
     from bagof.dispatchers.core._registry import _accepts, _strictly_below
 
-    # `issubhint(bool, 5)` raises (5 is not a hint) -> not accepting.
-    assert _accepts(bool, 5) is False
-    # `issubhint(int, 5)` raises (5 as a super-hint is not a hint) -> False.
-    assert _strictly_below(int, 5) is False
+    with pytest.warns(UnknownHintWarning, match="not a usable type hint"):
+        assert _accepts(bool, 5) is False
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert _strictly_below(int, 5) is False
+
+
+def test_accepts_does_not_swallow_a_genuine_error() -> None:
+    """A non-`TypeError` from the relation (real fault) is not hidden.
+
+    A key whose `__subclasscheck__` raises a `RuntimeError` is a genuine error,
+    so it propagates rather than being read as "does not accept".
+    """
+    from bagof.dispatchers.core._registry import _accepts
+
+    class Raising(type):
+        def __subclasscheck__(cls, other: object) -> bool:
+            raise RuntimeError("boom")
+
+    class Key(metaclass=Raising):
+        pass
+
+    with pytest.raises(RuntimeError, match="boom"):
+        _accepts(int, Key)
