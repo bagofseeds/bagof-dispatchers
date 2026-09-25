@@ -297,3 +297,19 @@ def test_typing_spelling_leaves_others_unchanged() -> None:
     assert _typing_spelling(tx.Literal[1]) == tx.Literal[1]
     # An Annotated whose inner type needs no rewrite is returned unchanged.
     assert _typing_spelling(tx.Annotated[int, "m"]) == tx.Annotated[int, "m"]
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 9), reason="types.GenericAlias needs 3.9+"
+)
+def test_typing_spelling_leaves_an_unrebuildable_alias_unchanged() -> None:
+    # stdlib
+    import types
+
+    # A `GenericAlias` over a class with no `__class_getitem__` cannot be
+    # rebuilt (`SomeClass[int]` raises), so the hint is returned as it was.
+    class NonGeneric:
+        pass
+
+    alias = types.GenericAlias(NonGeneric, (int,))
+    assert _typing_spelling(alias) is alias

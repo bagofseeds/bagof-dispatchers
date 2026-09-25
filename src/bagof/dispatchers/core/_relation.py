@@ -114,7 +114,9 @@ def _warn_key(hint: tx.Any) -> tx.Any:
     origin = safe_get_origin(hint)
     try:
         hash(origin)
-    except TypeError:  # pragma: no cover  -- an unhashable origin
+    except TypeError:
+        # An unhashable origin cannot key the set, so fall back to the form's
+        # own type.
         origin = None
     return origin if origin is not None else id(type(hint))
 
@@ -127,7 +129,8 @@ def _warn_unknown(hint: tx.Any) -> None:
     _WARNED_UNKNOWN.add(key)
     try:
         shown = repr(hint)
-    except Exception:  # pragma: no cover  -- a hint whose repr raises
+    except Exception:
+        # A hint whose own `repr` raises still has to be named in the warning.
         shown = object.__repr__(hint)
     warnings.warn(
         f"Type hint {shown} is not recognised; treating it as `Any` for "

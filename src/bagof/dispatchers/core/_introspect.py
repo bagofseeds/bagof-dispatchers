@@ -216,11 +216,11 @@ def _resolve_alias(hint: tx.Any, seen: tx.Tuple[tx.Any, ...]) -> tx.Any:
         return hint
     if any(alias is each for each in seen):
         # A recursive alias -- stop rather than loop, leaving the origin in
-        # place to be matched structurally. A genuine cycle is only
-        # constructible with native PEP 695 `type X = ... X ...` syntax
-        # (3.12+, exercised by test_native_recursive_alias_stops); the
-        # backport's `__value__` is immutable, so no cycle can be built here.
-        return hint  # pragma: no cover  -- native PEP 695 cycle, 3.12+ only
+        # place to be matched structurally. A cycle arises with native PEP 695
+        # `type X = ... X ...` syntax (3.12+), and with any duck-typed alias
+        # whose `__value__` points back at itself, so it is reachable on every
+        # version.
+        return hint
     value = alias.__value__
     if sub_args:
         # `type L[T] = list[T]`; `L[int]` fills `T` in through typing's own
@@ -753,8 +753,9 @@ def _typing_spelling(hint: tx.Any) -> tx.Any:
         # generic (a user `Generic`) is rebuilt on its own origin.
         typing_origin = _TYPE2HINT.get(origin, origin)
         return typing_origin[spelled if len(spelled) > 1 else spelled[0]]
-    except Exception:  # pragma: no cover  -- defensive: a rebuild that raises
+    except Exception:
         # A rebuild that fails -- a user origin that refuses these
-        # arguments, an exotic `Callable` form -- leaves the hint as it
-        # was, to be matched by its origin instead.
+        # arguments (`types.GenericAlias(SomeClass, (int,))` over a class with
+        # no `__class_getitem__`), an exotic `Callable` form -- leaves the
+        # hint as it was, to be matched by its origin instead.
         return hint

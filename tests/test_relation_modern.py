@@ -107,6 +107,24 @@ def test_native_recursive_alias_stops() -> None:
     assert issubhint(int, resolved) is True
 
 
+def test_duck_typed_recursive_alias_stops() -> None:
+    # A duck-typed alias (any object with `__value__` and `__type_params__`)
+    # whose value points back at itself is a cycle on every version, not just
+    # native PEP 695. Resolving must terminate and leave the hint in place.
+    class Cyclic:
+        __type_params__ = ()  # type: tuple
+
+    self_cycle = Cyclic()
+    self_cycle.__value__ = self_cycle
+    assert resolve_alias(self_cycle) is self_cycle
+
+    first, second = Cyclic(), Cyclic()
+    first.__value__ = second
+    second.__value__ = first
+    # Follows first -> second -> first and stops, no RecursionError.
+    assert resolve_alias(first) is first
+
+
 # --- transparent qualifiers --------------------------------------------
 
 
@@ -267,6 +285,35 @@ def test_unknown_form_warns_once_per_form_not_per_repr() -> None:
         warnings.simplefilter("always")
         assert issubhint(int, a) is True
         assert issubhint(int, b) is True
+    unknowns = [
+        w for w in caught if issubclass(w.category, UnknownHintWarning)
+    ]
+    assert len(unknowns) == 1
+
+
+def test_warn_key_falls_back_for_an_unhashable_origin() -> None:
+    # A form whose origin is unhashable cannot key the warning set, so the
+    # form's own type identity is used instead.
+    from bagof.dispatchers.core import _relation
+
+    # A list has no typing origin, so it *is* the origin -- and is unhashable.
+    assert _relation._warn_key([1, 2]) == id(list)
+
+
+def test_warn_unknown_survives_a_hint_whose_repr_raises() -> None:
+    # A hint must still be named in the warning even when its own `repr`
+    # raises; the fallback uses the default object repr.
+    from bagof.dispatchers.core import _relation
+
+    class BadRepr:
+        def __repr__(self) -> str:
+            raise ValueError("boom")
+
+    marker = BadRepr()
+    _relation._WARNED_UNKNOWN.discard(_relation._warn_key(marker))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _relation._warn_unknown(marker)
     unknowns = [
         w for w in caught if issubclass(w.category, UnknownHintWarning)
     ]
