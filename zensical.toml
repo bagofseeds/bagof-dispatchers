@@ -4,24 +4,24 @@ extra_css = ["stylesheets/extra.css"]
 
 nav = [
   {"Bag of" = "https://bagofseeds.github.io/bagof/"},
-  {"Things" = "index.md"},
+  {"Dispatchers" = "index.md"},
 ]
 
 # The site_name is shown in the page header and the browser window title
 #
 # Read more: https://zensical.org/docs/setup/basics/#site_name
-site_name = "bagof-things"
+site_name = "bagof-dispatchers"
 
-site_description = "A template repository for useful things in a bag."
+site_description = "Hint-informed multiple dispatch for Python."
 
 # The site_author attribute. This is used in the HTML head element.
 #
 # Read more: https://zensical.org/docs/setup/basics/#site_author
 site_author = "Yael Balbastre"
 
-site_url = "https://bagofseeds.github.io/bagof-things/"
-repo_url = "https://github.com/bagofseeds/bagof-things"
-repo_name = "bagofseeds/bagof-things"
+site_url = "https://bagofseeds.github.io/bagof-dispatchers/"
+repo_url = "https://github.com/bagofseeds/bagof-dispatchers"
+repo_name = "bagofseeds/bagof-dispatchers"
 
 copyright = """
 Copyright &copy; 2026 The authors
@@ -81,7 +81,7 @@ repo = "fontawesome/brands/github"
 # ----------------------------------------------------------------------------
 # [[project.extra.social]]
 # icon = "fontawesome/brands/github"
-# link = "https://github.com/bagofseeds/bagof-things"
+# link = "https://github.com/bagofseeds/bagof-dispatchers"
 
 # ----------------------------------------------------------------------------
 # mkdocstrings

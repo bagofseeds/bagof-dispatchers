@@ -1,16 +1,15 @@
 [project]
-name = "bagof-things"
-# Replace these template contacts before publishing.
+name = "bagof-dispatchers"
 authors = [
-    {name = "Your Name", email = "your.email@example.com"},
+    {name = "Yael Balbastre", email = "yael.balbastre@gmail.com"},
 ]
 maintainers = [
-    {name = "Your Name", email = "your.email@example.com"},
+    {name = "Yael Balbastre", email = "yael.balbastre@gmail.com"},
 ]
-description = "Template package for bagof.things"
+description = "Hint-informed multiple dispatch for Python"
 readme = "README.md"
 license = {text = "MIT"}
-keywords = ["bagof", "template", "python"]
+keywords = ["bagof", "dispatch", "multiple-dispatch", "typing"]
 classifiers = [
     "Development Status :: 1 - Planning",
     "Intended Audience :: Developers",
@@ -30,10 +29,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/bagofseeds/bagof-things"
-Documentation = "https://github.com/bagofseeds/bagof-things#readme"
-Issues = "https://github.com/bagofseeds/bagof-things/issues"
-Repository = "https://github.com/bagofseeds/bagof-things"
+Homepage = "https://github.com/bagofseeds/bagof-dispatchers"
+Documentation = "https://bagofseeds.github.io/bagof-dispatchers/"
+Issues = "https://github.com/bagofseeds/bagof-dispatchers/issues"
+Repository = "https://github.com/bagofseeds/bagof-dispatchers"
 
 [project.optional-dependencies]
 test = [
@@ -68,7 +67,7 @@ dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
 distance-dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
 
 [tool.versioningit.write]
-file = "src/bagof/things/_version.py"
+file = "src/bagof/dispatchers/_version.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
