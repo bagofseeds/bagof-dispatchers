@@ -439,20 +439,33 @@ which registry it is:
   *same shared instance* extends **one** `Function`. This is how you build a
   shared, cross-module generic function.
 
-Get a `Function` to hand around with `d.function("area")` or `d["area"]`
-(collision-safe) or the sugar `d.area` (for names that don't clash with a
-`Dispatcher` member); `@dispatch` also *returns* the `Function`. Add methods with
-`@dispatch` on `def area(...)` (name from the def) or `@area.register` /
-`@area.dispatch` on any function (name ignored — the `def _` form). Explicit
-signatures: `@dispatch(int, scale=float, priority=0)` and
+Get a `Function` to hand around through the dispatcher's **`functions`
+namespace**: `d.functions["area"]` (item) or the sugar `d.functions.area`
+(attribute); both **get-or-create** the `Function`, so `area = d.functions.area`
+in one module and registrations in another compose. `@dispatch` also *returns*
+the `Function`. Add methods with `@dispatch` on `def area(...)` (name from the
+def) or `@area.register` / `@area.dispatch` on any function (name ignored — the
+`def _` form). Explicit signatures: `@dispatch(int, scale=float, priority=0)` and
 `area.register(int, scale=float)(callable)`.
+
+`d.functions` is a **protocol-only namespace**: it exposes the mapping protocol
+(`d.functions["area"]`, `d.functions.area`, `for name in d.functions`,
+`len(d.functions)`, `name in d.functions`) and **no named methods**, so *every*
+function name — `register`, `items`, `map`, … — is safe there while the
+`Dispatcher` itself keeps ordinary methods (`d.register(...)`, `d.clear_cache()`)
+with no collision. (Attribute access ignores `_`-prefixed names so tool/REPL
+probes never mint empty functions.) The namespace's key is the identity rule
+above: on a `Dispatcher()` you construct it is the bare name, so `d.functions.area`
+is unambiguous; on the module-level `dispatch` the key is `(module, __qualname__)`,
+so there you take the `Function` from the decorator's return value (or a qualified
+lookup) rather than by bare-name attribute.
 
 ```python
 # a shared, cross-module generic function
 # registry.py
 from bagof.dispatchers import Dispatcher
 dispatch = Dispatcher()
-area = dispatch.area                 # the (initially empty) Function
+area = dispatch.functions.area       # the (initially empty) Function
 
 # shapes.py
 from registry import dispatch
@@ -477,11 +490,11 @@ Surface (`__all__`), two documented groups:
 `eq_safenan`, `Unset`, `UNSET`, `NoneType`, `UnionType`, `UNION_TYPES`.
 
 Key objects:
-- `Dispatcher()` — a registry: a namespace of `Function`s. The module-level
-  `dispatch` keys by `(module, __qualname__)` (per-module isolation); an instance
-  you construct keys by `__qualname__` (shared across modules). Access a function
-  via `d.function("area")`, `d["area"]`, or the `d.area` sugar; `d.functions` is
-  the mapping view.
+- `Dispatcher()` — a registry. Identity rule as above (module-level `dispatch`:
+  `(module, __qualname__)`; constructed instance: `__qualname__`). Functions are
+  reached through the `d.functions` namespace (`d.functions.area` /
+  `d.functions["area"]`, iterable by name), a **protocol-only** object carrying no
+  named methods, so no function name collides with a `Dispatcher` method.
 - `Function` — `__call__(*args, **kwargs)`, `dispatch(*args, **kwargs) -> Method`
   (bind-then-select without calling), `resolve(*hints, **named_hints,
   default=UNSET, ambiguity="raise") -> Method`, `register(...)`,
