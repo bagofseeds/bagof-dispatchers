@@ -74,9 +74,10 @@
    uniform across spellings and **forward-tolerant** — an unrecognised or future
    hint degrades to `Any`-like behaviour and warns, never crashes.
 
-7. **Repeated TypeVars (`(T, T)`)** are supported for applicability in v1 with a
-   narrow specificity tie-break; Julia's full diagonal semantics are deferred.
-   Flagged for review.
+7. **Repeated TypeVars (`(T, T)`)** are supported for applicability and for a
+   narrow specificity tie-break (implemented in Phase 7: a signature whose
+   repeated TypeVars constrain more arguments to one consistent type is more
+   specific); Julia's full diagonal semantics are deferred. Flagged for review.
 
 ---
 
@@ -314,9 +315,22 @@ middle between Julia's strict diagonal and mypy's join.
 
 **Specificity with TypeVars.** Position-wise a TypeVar is replaced by its table
 entry, so `(int, int) < (T, T) ≡ (Any, Any)`. One tie-break inside `≡`: when
-`A ≡ B` position-wise, the signature with more repeated-TypeVar position groups
-is strictly more specific (recovers Julia's `same_type` outcome). **Flag:
-review** — least-precedented rule.
+`A ≡ B` position-wise, the signature whose repeated TypeVars group *strictly
+more* arguments into one consistent type is more specific (recovers Julia's
+`same_type` outcome). **Implemented** (Phase 7): the tie-break is the last
+selection step, reached only when two methods are already equally specific by
+priority, MRO and tightness. It compares the two methods' TypeVar groupings
+over the bound arguments — argument positions grouped by TypeVar identity — and
+one grouping wins only when it is a strict refinement of the other (it ties
+every pair the other ties, and at least one pair more), all landed hints being
+equivalent. When neither grouping refines the other — equal groupings
+(`(T, U)` vs `(U, T)`), or each tying a pair the other does not (`(T, T, U)` vs
+`(T, U, U)`) — the pair stays incomparable and hence ambiguous. It therefore
+only ever breaks a tie that was ambiguous before, never overturns a strict
+specificity win, and never makes two genuinely independent signatures
+comparable. A signature with a repeated group beats one with none, including a
+fully unannotated `(Any, Any)` — the least-surprising reading of "more
+constraint = more specific" where §3 was otherwise silent.
 
 **Hint-level `resolve` with TypeVars in the query** uses `issubhint` unchanged.
 
@@ -879,9 +893,17 @@ the siblings already do) before the core-magic shim PR merges.
 - **Phase 6 — Dependent import migration.** One PR each for
   converters/validators/factories (§8.2), `ambiguity="warn"` → `"raise"`; magic
   swaps `UnionType`.
-- **Phase 7 — TypeVar specificity tie-break + `(T,T)` polish.** §3 repeated-group
-  rule, constrained same-constraint, solved-`T` messages. **Review recommended**
-  (least-precedented rule).
+- **Phase 7 — TypeVar specificity tie-break + `(T,T)` polish.** *Implemented.*
+  The §3 repeated-group rule is the last selection step (after priority, MRO
+  and tightness, before declaring ambiguity): a method whose repeated TypeVars
+  group strictly more arguments into one consistent type wins an otherwise
+  tied pair. Groupings are compared by TypeVar identity through `_lattice`;
+  `_pair_ambiguous`/`ambiguities()` no longer flag a pair the tie-break
+  separates. Genuinely independent groupings (`(T,U)`/`(U,T)`) and partial
+  refinements stay ambiguous. Covered by `tests/test_function.py` (the
+  repeated-TypeVar cases) and the repeated-TypeVar sweep in
+  `tests/test_reference_engine.py`. **Review recommended** (least-precedented
+  rule).
 - **Phase 8 (v2).** TypedDict shape matching, introduced in `_lattice.py`
   under an explicit, accurate name, and flipping TypedDict to value-dependent
   (+ the separate owner decision on `ishintstance`/validators); full
