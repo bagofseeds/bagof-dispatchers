@@ -443,6 +443,27 @@ def test_impl_unknown_option_leaves_no_orphan() -> None:
     assert len(registry.functions) == 0
 
 
+def test_failed_registration_keeps_a_namespace_first_handle() -> None:
+    """A handle minted by namespace access survives a later failed register.
+
+    The rollback drops only a function the failing call itself created; a
+    pre-existing empty function reached earlier through the namespace is left
+    in place, so the handle a caller is holding stays valid.
+    """
+    registry = Dispatcher()
+    handle = registry.functions.render  # minted empty, before any register
+
+    # `render` keys the same way `d.functions.render` does (qualname equal to
+    # the bare name), so the failing call touches that very key.
+    render = _named("synthetic_render", "render", ret=1)
+
+    with pytest.raises(TypeError):
+        registry(render, scale=float)  # a stray keyword: registration fails
+
+    assert registry.functions.render is handle
+    assert "render" in registry.functions
+
+
 def test_overlay_bad_named_hint_leaves_no_orphan() -> None:
     """A hint for a parameter the function lacks rolls back the function."""
     registry = Dispatcher()

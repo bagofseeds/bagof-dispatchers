@@ -255,15 +255,17 @@ class Dispatcher:
         if args and _is_impl(args[0]):
             impl = args[0]
             key = self._key_for_impl(impl)
-            function = self._get_or_create(key, None)
+            function, created = self._get_or_create(key, None)
             # Let `Function.register` do the validation and adopt the name;
             # its return value (the callable) is dropped -- the name binds to
             # the function, the dispatcher's convention. A registration that
-            # fails leaves no empty function behind.
+            # fails leaves no empty function behind -- but only one this call
+            # made, never one a namespace access minted earlier.
             try:
                 function.register(*args, **options)
             except BaseException:
-                self._discard_orphan(key, function)
+                if created:
+                    self._discard_orphan(key, function)
                 raise
             return function
 
@@ -271,11 +273,12 @@ class Dispatcher:
         # returned decorator is applied.
         def decorator(fn: tx.Callable[..., tx.Any]) -> Function:
             key = self._key_for_impl(fn)
-            function = self._get_or_create(key, None)
+            function, created = self._get_or_create(key, None)
             try:
                 function.register(*args, **options)(fn)
             except BaseException:
-                self._discard_orphan(key, function)
+                if created:
+                    self._discard_orphan(key, function)
                 raise
             return function
 
@@ -306,8 +309,9 @@ class Dispatcher:
 
         Registration creates the function before it is validated, so a
         failure would otherwise leave an empty one reachable through the
-        namespace. Removed only when it is still the one just made and holds
-        no methods, so a later successful registration is never disturbed.
+        namespace. Called only for a function this registration created;
+        removed only when it is still that one and holds no methods, so a
+        concurrent writer's registration is never disturbed.
         """
         with self._lock:
             if (
@@ -356,7 +360,10 @@ class Dispatcher:
         self, name: str, module: tx.Optional[str]
     ) -> Function:
         """The function named `name`, created empty if new."""
-        return self._get_or_create(self._key_for_name(name, module), name)
+        function, _created = self._get_or_create(
+            self._key_for_name(name, module), name
+        )
+        return function
 
     def _has_function_name(
         self, name: str, module: tx.Optional[str]
@@ -372,13 +379,20 @@ class Dispatcher:
 
     def _get_or_create(
         self, key: tx.Any, name: tx.Optional[str]
-    ) -> Function:
+    ) -> tx.Tuple[Function, bool]:
+        """The function at `key`, and whether this call created it.
+
+        `created` is `#!python True` only when the key was absent and a fresh
+        empty function was made for it, so a caller can tell its own new
+        function from one a namespace access minted earlier.
+        """
         with self._lock:
             function = self._functions.get(key)
             if function is None:
                 function = Function(name)
                 self._functions[key] = function
-            return function
+                return function, True
+            return function, False
 
 
 class _ModuleDispatcher(Dispatcher):
