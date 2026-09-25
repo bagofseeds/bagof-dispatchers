@@ -511,6 +511,134 @@ def test_register_overlay_stray_argument_is_an_error() -> None:
         f.register((int,), 5)(m)
 
 
+def test_register_direct_with_priority() -> None:
+    """`register(fn, priority=5)` registers directly at that priority."""
+    f = Function("f")
+
+    def m(x: int) -> int:
+        return x
+
+    returned = f.register(m, priority=5)
+    assert returned is m
+    assert f.methods[0].priority == 5
+
+
+def test_register_decorator_with_priority() -> None:
+    """`register(priority=5)` is the no-hint decorator at a priority."""
+    f = Function("f")
+
+    @f.register(priority=5)
+    def m(x: int) -> int:
+        return x
+
+    assert m.__name__ == "m"  # the wrapped function is returned
+    assert f.methods[0].priority == 5
+
+
+def test_register_overlay_with_priority() -> None:
+    """A hint overlay can carry a priority alongside its hints."""
+    f = Function("f")
+
+    @f.register((int,), priority=3)
+    def m(x) -> int:  # noqa: ANN001
+        return x
+
+    assert f.methods[0].priority == 3
+
+
+def test_register_unknown_keyword_points_to_the_dict_form() -> None:
+    """A stray keyword is an option error naming the dict form for hints."""
+    f = Function("f")
+
+    def m(scale) -> None:  # noqa: ANN001
+        ...
+
+    with pytest.raises(TypeError, match=r"unexpected keyword 'scale'"):
+        f.register(scale=float)(m)
+    with pytest.raises(TypeError, match=r"register\(\{'scale': float\}\)"):
+        f.register(scale=float)(m)
+
+
+def test_register_overlay_rejects_a_non_hint_element() -> None:
+    """A tuple element that is not a real hint is a registration error (S1)."""
+    f = Function("f")
+
+    def m(x, y) -> None:  # noqa: ANN001
+        ...
+
+    # A 2-tuple is not a hint; neither is a bare number.
+    with pytest.raises(TypeError, match="not a type or a typing construct"):
+        f.register(((str, int),))(m)
+    with pytest.raises(TypeError, match="not a type or a typing construct"):
+        f.register((5,))(m)
+    with pytest.raises(TypeError, match="not a type or a typing construct"):
+        f.register({"x": 5})(m)
+
+
+def test_register_overlay_accepts_parametrised_hints() -> None:
+    """A parametrised hint (`Exact[int]`, `List[int]`) overlays fine (S1)."""
+    f = Function("f")
+
+    @f.register((Exact[int],))
+    def m(x) -> str:  # noqa: ANN001
+        return "exact"
+
+    assert f(1) == "exact"
+    with pytest.raises(NoMethodError):
+        f(True)  # bool is not exactly int
+
+
+def test_register_overlay_double_target_is_an_error() -> None:
+    """Hinting a parameter both positionally and by name is an error (S3)."""
+    f = Function("f")
+
+    def m(x, y) -> None:  # noqa: ANN001
+        ...
+
+    with pytest.raises(TypeError, match="twice"):
+        f.register((int,), {"x": str})(m)
+
+
+def test_register_overlay_keeps_varargs_and_varkw_names() -> None:
+    """Overlaying keeps the `*args` / `**kwargs` written names (S2)."""
+    f = Function("f")
+
+    @f.register((int,))
+    def m(a, *items, **opts) -> None:  # noqa: ANN001, ANN002, ANN003
+        ...
+
+    body = f.methods[0].describe().split(" @ ")[0]
+    assert "*items" in body and "**opts" in body
+
+
+def test_register_overlay_hints_varargs_by_name() -> None:
+    """A dict hint can target `*args`, setting its element hint (gap)."""
+    f = Function("f")
+
+    @f.register({"args": int})
+    def m(a, *args) -> str:  # noqa: ANN001, ANN002
+        return "m"
+
+    assert f.methods[0].signature.varargs is int
+    assert f("anything", 1, 2) == "m"
+    with pytest.raises(NoMethodError):
+        f("anything", "not int")
+
+
+def test_register_overlay_hints_varkw_by_name() -> None:
+    """A dict hint can target `**kwargs`, setting its value hint (gap)."""
+    f = Function("f")
+
+    @f.register({"kw": str})
+    def m(**kw) -> str:  # noqa: ANN003
+        return "m"
+
+    assert f.methods[0].signature.varkw is str
+    assert f(a="ok") == "m"
+    with pytest.raises(NoMethodError):
+        f(a=3)  # 3 is not a str
+
+
 def test_register_replacement_warns() -> None:
     """Re-registering an identical signature replaces it with a warning."""
     f = Function("f")
@@ -728,6 +856,74 @@ def test_registration_warns_on_guaranteed_ambiguity() -> None:
         f.register(by_second)
 
 
+def test_union_spelling_pair_warns_and_is_listed() -> None:
+    """Two differently-spelled but equivalent unions are guaranteed ambiguous.
+
+    `Union[int, str]` and `Union[str, int]` are equal but not written the same
+    way, so both are kept; a call matching one matches the other with no most
+    specific method, so registering the second warns and `ambiguities()` lists
+    the pair (M2).
+    """
+    f = Function("f")
+
+    def first(x: typing.Union[int, str]) -> int:
+        return 1
+
+    def second(x: typing.Union[str, int]) -> int:
+        return 2
+
+    f.register(first)
+    with pytest.warns(RuntimeWarning, match="ambiguous"):
+        f.register(second)
+    assert len(f.ambiguities()) == 1
+    with pytest.raises(AmbiguousMethodError):
+        f(1)
+
+
+def test_optional_spelling_pair_warns_and_is_listed() -> None:
+    """`Optional[int]` and `Union[None, int]` are equivalent, distinct forms.
+
+    Same as the union case: equal yet spelled differently, so guaranteed
+    ambiguous -- a warning at registration and a listed pair (M2).
+    """
+    f = Function("f")
+
+    def first(x: typing.Optional[int]) -> int:
+        return 1
+
+    def second(x: typing.Union[None, int]) -> int:
+        return 2
+
+    f.register(first)
+    with pytest.warns(RuntimeWarning, match="ambiguous"):
+        f.register(second)
+    assert len(f.ambiguities()) == 1
+    with pytest.raises(AmbiguousMethodError):
+        f(1)
+
+
+def test_strictly_ordered_pair_is_not_ambiguous() -> None:
+    """A strictly-ordered pair (`int` below `object`) is not ambiguous.
+
+    One method is unambiguously more specific, so registering the second does
+    not warn and `ambiguities()` stays empty (M2: only a pair with no strict
+    order is reported).
+    """
+    f = Function("f")
+
+    def narrow(x: int) -> int:
+        return 1
+
+    def wide(x: object) -> int:
+        return 2
+
+    f.register(narrow)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        f.register(wide)  # strictly ordered -> no ambiguity warning
+    assert f.ambiguities() == []
+
+
 # --- Exact -------------------------------------------------------------
 
 
@@ -911,7 +1107,9 @@ def test_distinct_typevars_are_both_kept() -> None:
     Both are equivalent to `(Any, Any)`, so `Signature.__eq__` (semantic
     equivalence) reports them equal; registration must instead compare the
     signatures *as written*, so the two coexist rather than one silently
-    replacing the other.
+    replacing the other. Being equivalent yet distinct, they are also
+    guaranteed ambiguous, so registering the second warns about the ambiguity
+    (never about a replacement).
     """
     T, U = _typevar_pair()
     f = Function("f")
@@ -922,11 +1120,11 @@ def test_distinct_typevars_are_both_kept() -> None:
     def free(x: T, y: U) -> str:
         return "free"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        f.register(same)
-        f.register(free)  # must NOT warn about replacement
-    assert len(f.methods) == 2
+    f.register(same)
+    with pytest.warns(RuntimeWarning, match="ambiguous") as caught:
+        f.register(free)  # warns about ambiguity, not replacement
+    assert len(f.methods) == 2  # both kept -- neither replaced the other
+    assert not any("replacing" in str(w.message) for w in caught)
 
 
 def test_bound_typevar_and_plain_are_both_kept() -> None:
@@ -935,6 +1133,8 @@ def test_bound_typevar_and_plain_are_both_kept() -> None:
     A bound TypeVar is *equivalent* to its bound, so `Signature.__eq__` reports
     the two signatures equal; registration must compare them structurally so
     the TypeVar method does not silently replace the plain one (or vice versa).
+    Equivalent-yet-distinct, they are guaranteed ambiguous, so registering the
+    second warns about the ambiguity, not a replacement.
     """
     TB = typing.TypeVar("TB", bound=int)
     f = Function("f")
@@ -945,15 +1145,20 @@ def test_bound_typevar_and_plain_are_both_kept() -> None:
     def plain(x: int) -> str:
         return "plain"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        f.register(tv)
+    f.register(tv)
+    with pytest.warns(RuntimeWarning, match="ambiguous") as caught:
         f.register(plain)
     assert len(f.methods) == 2
+    assert not any("replacing" in str(w.message) for w in caught)
 
 
 def test_typevar_and_unannotated_are_both_kept() -> None:
-    """`(x: T, y: T)` and an unannotated `(x, y)` are distinct spellings."""
+    """`(x: T, y: T)` and an unannotated `(x, y)` are distinct spellings.
+
+    Both reduce to `(Any, Any)`, so they are equivalent yet spelled
+    differently: both kept, and guaranteed ambiguous (a warning, never a
+    replacement).
+    """
     T, _ = _typevar_pair()
     f = Function("f")
 
@@ -963,11 +1168,11 @@ def test_typevar_and_unannotated_are_both_kept() -> None:
     def bare(x, y) -> str:  # noqa: ANN001 -- unannotated, so (Any, Any)
         return "bare"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        f.register(repeated)
+    f.register(repeated)
+    with pytest.warns(RuntimeWarning, match="ambiguous") as caught:
         f.register(bare)
     assert len(f.methods) == 2
+    assert not any("replacing" in str(w.message) for w in caught)
 
 
 def test_identical_spelling_replaces_with_warning() -> None:
@@ -1000,7 +1205,10 @@ def test_distinct_typevar_spellings_are_order_independent() -> None:
     forwards = Function("f")
     backwards = Function("f")
     with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
+        # The equivalent-yet-distinct pair is ambiguous either way round; the
+        # point here is that both are kept regardless of order, so the
+        # ambiguity warning is not what is under test.
+        warnings.simplefilter("ignore", RuntimeWarning)
         forwards.register(same)
         forwards.register(free)
         backwards.register(free)

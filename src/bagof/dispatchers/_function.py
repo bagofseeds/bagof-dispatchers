@@ -35,8 +35,20 @@ from . import _errors
 from ._errors import AmbiguousMethodError, NoMethodError
 from ._lattice import equivalent, is_value_dependent, mro_index
 from ._method import Method
-from ._signature import Parameter, Signature, _render_hint
-from .core import UNSET, ishintstance, issubhint
+from ._signature import (
+    Parameter,
+    Signature,
+    _catch_all_or_any,
+    _render_hint,
+)
+from .core import (
+    UNSET,
+    ishintstance,
+    issubhint,
+    normalise_hint,
+    safe_get_origin,
+)
+from .core._compat import is_plausible_hint
 from .core._exact import exact_target, is_exact
 
 __all__ = ["Function"]
@@ -156,7 +168,7 @@ class Function:
 
     # -- registration ---------------------------------------------------
 
-    def register(self, *args: tx.Any, priority: int = 0) -> tx.Any:
+    def register(self, *args: tx.Any, **options: tx.Any) -> tx.Any:
         """Register a method, or return a decorator that does.
 
         `register` takes **either** an implementation **or** hints -- never
@@ -165,10 +177,10 @@ class Function:
 
         * **Implementation form** -- `#!python f.register(impl)`, where `impl`
           is any callable: a function, a **class** (dispatched on its
-          constructor's signature), or a callable instance. The signature is
-          read from `impl` itself. `#!python f.register(int)` registers the
-          `#!python int` **type** as an implementation, dispatched on its
-          constructor -- it is *not* read as a hint.
+          `#!python __init__` / `#!python __new__`), or a callable instance.
+          The signature is read from `impl` itself. `#!python f.register(int)`
+          registers the `#!python int` **type** as an implementation,
+          dispatched on its constructor -- it is *not* read as a hint.
         * **Hint-overlay form** -- the argument is a `#!python tuple` of
           positional hints and/or a `#!python dict` of named hints, and a
           decorator is returned that overlays those hints onto the wrapped
@@ -185,6 +197,20 @@ class Function:
         `#!python dict` is hints, anything else is the implementation, and no
         argument at all is the hint-overlay decorator with nothing to overlay.
 
+        **Named hints go in the dict, never as keyword arguments.** A keyword
+        argument to `register` is a registration *option* -- only `#!python
+        priority` is understood -- so `#!python f.register(int, priority=5)`
+        registers `#!python int` at priority 5, while `#!python
+        f.register(scale=float)` is an error pointing to `#!python
+        f.register({"scale": float})`.
+
+        Parameters
+        ----------
+        priority
+            A tie-break applied before the type-based order: a higher priority
+            wins between two otherwise equally specific methods. Defaults to
+            `0`. Given as a keyword, alongside either form.
+
         A method registered with the same signature *as written* as one already
         registered replaces it, with a [`RuntimeWarning`][] -- the case a
         module reload or a doubled decorator produces.
@@ -198,6 +224,7 @@ class Function:
             (the [`functools.singledispatch`][functools.singledispatch]
             convention).
         """
+        priority = _registration_priority(options)
         if args and not isinstance(args[0], (tuple, dict)):
             # Implementation form: the first argument is the callable itself.
             impl = args[0]
@@ -450,11 +477,13 @@ class Function:
 
         !!! example
             ```pycon
-            >>> f = Function("g")
-            >>> _ = f.register(float, object)
-            >>> _ = f.register(object, float)
+            >>> f = Function("area")
+            >>> @f.register((float, object))
+            ... def rank(a, b): return 1
+            >>> @f.register((object, float))
+            ... def order(a, b): return 2
             >>> [(a.name, b.name) for a, b in f.ambiguities()]
-            [('g', 'g')]
+            [('rank', 'order')]
             ```
         """
         methods = self._methods
@@ -926,8 +955,22 @@ def _pair_ambiguous_resolved(
     second_binding = _bind_shape(second.signature, shape)
     if first_binding is None or second_binding is None:
         return False
-    if first.signature.le(second.signature, shape) or second.signature.le(
-        first.signature, shape
+    a_le = first.signature.le(second.signature, shape)
+    b_le = second.signature.le(first.signature, shape)
+    # A strict one-way order means one method is unambiguously more specific,
+    # so the pair is not ambiguous. If neither holds (incomparable) or both
+    # hold (equivalent yet spelled differently, so neither replaced the other
+    # at registration), a call can match both with no most specific method --
+    # carry on to confirm their hints are comparable at every argument.
+    if a_le != b_le:
+        return False
+    # Neither is strictly more specific. If the signatures differ in tightness
+    # -- one absorbs fewer arguments into a `*args` / `**kwargs`, or leans on
+    # fewer defaults -- the tighter one always wins that tie-break, so the pair
+    # is never actually ambiguous. Only an equal-tightness pair is guaranteed
+    # ambiguous (a fixed-arity method beating a `*args` tail is not).
+    if _tightness(first_binding, first.signature) != _tightness(
+        second_binding, second.signature
     ):
         return False
     first_landed = _landed_hints(first.signature, first_binding)
@@ -1135,6 +1178,26 @@ def _why_unbindable(
 # --- registration helpers ----------------------------------------------
 
 
+def _registration_priority(options: tx.Dict[str, tx.Any]) -> int:
+    """Pull `priority` out of the registration options, rejecting the rest.
+
+    A keyword argument to `register` is a registration option, never a named
+    hint -- those go in a dict. Only `priority` is understood; any other
+    keyword is a mistake, named with a pointer to the dict form.
+    """
+    priority = options.pop("priority", 0)
+    if options:
+        unexpected = sorted(options)[0]
+        shown = _render_hint(options[unexpected])
+        raise TypeError(
+            f"register() got an unexpected keyword {unexpected!r}. Keyword "
+            f"arguments to register are options (priority=...), not hints; "
+            f"pass named hints as a dict, e.g. "
+            f"register({{{unexpected!r}: {shown}}})."
+        )
+    return priority
+
+
 def _split_hint_args(
     args: tx.Tuple[tx.Any, ...],
 ) -> tx.Tuple[tx.Tuple[tx.Any, ...], tx.Dict[str, tx.Any]]:
@@ -1180,8 +1243,11 @@ def _overlay(
     """Overlay explicit hints onto a callable's own signature.
 
     Positional hints replace the first parameters' hints in order; named hints
-    replace the hints of the parameters they name. Names, kinds and defaults
-    are kept, so a call still binds the way the function's own parameters say.
+    replace the hints of the parameters they name, and may also name the
+    `#!python *args` / `#!python **kwargs` catch-all to set its element / value
+    hint. Names, kinds and defaults are kept, so a call still binds the way the
+    function's own parameters say. Each hint is normalised and checked to be a
+    real type hint, and a parameter may not be given a hint twice.
     """
     base = Signature.from_callable(fn)
     base._settle()
@@ -1197,23 +1263,68 @@ def _overlay(
             f"positional parameter(s), but {len(hints)} hint(s) were given "
             f"to register it with."
         )
+    varargs_name = base._varargs_name
+    varkw_name = base._varkw_name
     replacements = {}  # type: tx.Dict[str, tx.Any]
+    varargs_hint = base.varargs  # the *args element hint, or None
+    varkw_hint = base.varkw  # the **kwargs value hint, or None
     for parameter, hint in zip(overridable, hints):
-        replacements[parameter.name] = hint
+        replacements[parameter.name] = _overlay_hint(fn, parameter.name, hint)
     for name, hint in named_hints.items():
-        if name not in base.parameters:
+        checked = _overlay_hint(fn, name, hint)
+        if name == varargs_name:
+            varargs_hint = _catch_all_or_any(checked)
+        elif name == varkw_name:
+            varkw_hint = _catch_all_or_any(checked)
+        elif name in base.parameters:
+            if name in replacements:
+                raise TypeError(
+                    f"{getattr(fn, '__name__', fn)} is given a hint for "
+                    f"{name!r} twice -- once by position and once by name. "
+                    f"Give it just one."
+                )
+            replacements[name] = checked
+        else:
             raise TypeError(
                 f"{getattr(fn, '__name__', fn)} has no parameter {name!r} to "
                 f"register a hint for."
             )
-        replacements[name] = hint
     new_parameters = {}  # type: tx.Dict[str, Parameter]
     for parameter in parameters:
         hint = replacements.get(parameter.name, parameter.hint)
         new_parameters[parameter.name] = Parameter(
             parameter.name, hint, parameter.kind, parameter.default
         )
-    return Signature(new_parameters, base.varargs, base.varkw)
+    signature = Signature(new_parameters, varargs_hint, varkw_hint)
+    # Keep the catch-alls' written names, so the method still renders as
+    # `*items` / `**opts` rather than the generic `*args` / `**kwargs`.
+    signature._varargs_name = varargs_name
+    signature._varkw_name = varkw_name
+    return signature
+
+
+def _overlay_hint(
+    fn: tx.Callable[..., tx.Any], target: str, hint: tx.Any
+) -> tx.Any:
+    """Normalise a registration hint and check it is a real type hint.
+
+    A value that is not a type or typing construct -- a stray tuple, a number,
+    a string -- would otherwise register a method that silently never matches,
+    so it is refused at registration with a message naming the parameter. A
+    parametrised form (`#!python Annotated[int, ...]`, `#!python Exact[int]`)
+    is plausible through its origin even when the whole is not.
+    """
+    normalised = normalise_hint(hint)
+    plausible = is_plausible_hint(normalised) or is_plausible_hint(
+        safe_get_origin(normalised)
+    )
+    if not plausible:
+        raise TypeError(
+            f"register(...) got {hint!r} as the hint for {target!r} of "
+            f"{getattr(fn, '__name__', fn)}, which is not a type or a typing "
+            f"construct. Pass a type hint, such as int or List[int]."
+        )
+    return normalised
 
 
 def _replace_or_append(
