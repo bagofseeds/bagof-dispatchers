@@ -3,6 +3,7 @@
 # stdlib
 import functools
 import inspect
+import sys
 import typing
 import warnings
 
@@ -704,6 +705,95 @@ def test_hint_eq_resolved_hints_use_equivalence() -> None:
     """No forward reference on either side: `_hint_eq` uses equivalence."""
     assert sigmod._hint_eq(int, int)
     assert not sigmod._hint_eq(int, str)
+
+
+def test_hint_eq_top_level_string_matches_forward_ref() -> None:
+    """A top-level raw string and a `ForwardRef` naming it compare equal."""
+    assert sigmod._hint_eq("Later", tx.ForwardRef("Later"))
+    assert not sigmod._hint_eq("Later", tx.ForwardRef("Other"))
+
+
+# --- PEP 585 builtin generics keep bare-string forward refs ------------
+#
+# A `types.GenericAlias` (`list["X"]`, `dict[str, "X"]`) keeps its forward
+# reference as a *bare string* -- unlike `typing.List["X"]`, which wraps it in
+# a `ForwardRef`. So a nested bare string reached during recursion is a genuine
+# reference and must be treated as one, or comparing two such signatures feeds
+# the unresolved name to the sub-hint relation and crashes.
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 9),
+    reason="PEP 585 builtin generics (list[...]) need Python 3.9+",
+)
+def test_has_forward_ref_pep585_bare_string_arg() -> None:
+    """A bare string in a PEP 585 builtin generic is a forward reference."""
+    assert sigmod._has_forward_ref(list["X"])  # noqa: F821
+    assert sigmod._has_forward_ref(dict[str, "X"])  # noqa: F821
+    assert sigmod._has_forward_ref(
+        typing.Dict[str, list["X"]]  # noqa: F821
+    )
+    # A fully resolved builtin generic still holds no reference.
+    assert not sigmod._has_forward_ref(list[int])
+    assert not sigmod._has_forward_ref(dict[str, int])
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 9),
+    reason="PEP 585 builtin generics (list[...]) need Python 3.9+",
+)
+def test_pep585_nested_forward_ref_signatures_differ_without_warning() -> None:
+    """`list["Zed"]` vs `list["Yed"]` compare unequal, no raise, no warning.
+
+    The regression: the bare string a `types.GenericAlias` keeps was ignored
+    during recursion, so the two hints fell through to the sub-hint relation,
+    which raised `TypeError` trying to use the undefined name as a type.
+    """
+
+    def p(x: list["Zed"]) -> None: ...  # noqa: F821
+
+    def q(x: list["Yed"]) -> None: ...  # noqa: F821
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert Signature.from_callable(p) != Signature.from_callable(q)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 9),
+    reason="PEP 585 builtin generics (list[...]) need Python 3.9+",
+)
+def test_pep585_nested_forward_ref_signatures_same_name_equal() -> None:
+    """Two signatures with the same PEP 585 nested forward ref are equal."""
+
+    def p(x: list["Zed"]) -> None: ...  # noqa: F821
+
+    def q(x: list["Zed"]) -> None: ...  # noqa: F821
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert Signature.from_callable(p) == Signature.from_callable(q)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 9),
+    reason="PEP 585 builtin generics (list[...]) need Python 3.9+",
+)
+def test_pep585_dict_and_nested_builtin_generic_signatures_differ() -> None:
+    """`dict[str, "X"]` / `Dict[str, list["X"]]` defer and compare by name."""
+
+    def p(x: dict[str, "X"]) -> None: ...  # noqa: F821
+
+    def q(x: dict[str, "Y"]) -> None: ...  # noqa: F821
+
+    def r(x: typing.Dict[str, list["X"]]) -> None: ...  # noqa: F821
+
+    def s(x: typing.Dict[str, list["Y"]]) -> None: ...  # noqa: F821
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert Signature.from_callable(p) != Signature.from_callable(q)
+        assert Signature.from_callable(r) != Signature.from_callable(s)
 
 
 # --- partial / callable instances (defect 2) ---------------------------

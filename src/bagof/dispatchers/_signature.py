@@ -914,7 +914,7 @@ def _forward_name(hint: tx.Any) -> tx.Optional[str]:
     return getattr(hint, "__forward_arg__", None)
 
 
-def _has_forward_ref(hint: tx.Any, top_level: bool = True) -> bool:
+def _has_forward_ref(hint: tx.Any) -> bool:
     """Whether a hint holds a forward reference anywhere, however nested.
 
     A hint kept as a raw string, a [`ForwardRef`][typing.ForwardRef], or a
@@ -923,20 +923,18 @@ def _has_forward_ref(hint: tx.Any, top_level: bool = True) -> bool:
     namespace behind it, so the sub-hint relation cannot read it and it is
     compared structurally instead.
 
-    A bare string is a forward reference only as the *whole* hint. When
-    recursing into a hint's arguments, [`typing`][] has already wrapped a
-    genuine nested forward reference in a [`ForwardRef`][typing.ForwardRef];
-    the only bare strings it leaves inside a hint are
-    [`Literal`][typing.Literal] members and [`Annotated`][typing.Annotated]
-    metadata, which are values rather than references. So a nested bare string
-    is not read as a forward reference -- only a `ForwardRef` is -- and a
-    `Literal`'s members and an `Annotated`'s metadata are never descended
-    into.
+    Every bare string reached here is a forward reference. The two sources of a
+    *decorative* string -- a [`Literal`][typing.Literal] member and
+    [`Annotated`][typing.Annotated] metadata -- are guarded before any string
+    is reached: a `Literal` returns early without descending into its members,
+    and an `Annotated` recurses into its wrapped type only, never its metadata.
+    So every other string, at any depth, is a genuine reference: a
+    [`ForwardRef`][typing.ForwardRef], or a bare string a PEP 585 builtin
+    generic (`#!python list["Node"]`) or a `#!python Union` member keeps
+    unwrapped.
     """
     if isinstance(hint, str):
-        # A bare string is a reference only as the whole hint; nested, it is a
-        # `Literal` member or `Annotated` metadata reached below, never a ref.
-        return top_level
+        return True
     if getattr(hint, "__forward_arg__", None) is not None:
         return True
     if any(safe_get_origin(hint) is form for form in _LITERAL_FORMS):
@@ -946,10 +944,8 @@ def _has_forward_ref(hint: tx.Any, top_level: bool = True) -> bool:
     if metadata is not None:
         # `Annotated[T, ...]`: only the wrapped type `T` can carry a reference;
         # the metadata is arbitrary values, so it is not descended into.
-        return _has_forward_ref(hint.__origin__, top_level=False)
-    return any(
-        _has_forward_ref(arg, top_level=False) for arg in tx.get_args(hint)
-    )
+        return _has_forward_ref(hint.__origin__)
+    return any(_has_forward_ref(arg) for arg in tx.get_args(hint))
 
 
 def _hint_eq(a: tx.Any, b: tx.Any) -> bool:
