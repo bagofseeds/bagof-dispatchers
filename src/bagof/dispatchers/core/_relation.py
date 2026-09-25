@@ -8,7 +8,13 @@ from collections import abc
 import typing_extensions as tx
 
 # local
-from ._compat import UNION_TYPES, UnknownHintWarning, spellings
+from ._compat import (
+    UNION_TYPES,
+    UnknownHintWarning,
+    is_plausible_hint,
+    is_typeddict_marker,
+    spellings,
+)
 from ._exact import exact_target, is_exact
 from ._introspect import (
     eq_safenan,
@@ -31,9 +37,25 @@ _NEVER_FORMS = spellings("Never") + spellings("NoReturn")
 _LITERALSTRING_FORMS = spellings("LiteralString")
 _TYPEGUARD_FORMS = spellings("TypeGuard") + spellings("TypeIs")
 
-# `ParamSpec` shapes a `Callable` parameter list can carry that this
-# version handles only by degrading -- comparable to itself, nothing else.
+# `Concatenate` shapes a `Callable` parameter list can carry: a fixed,
+# contravariant prefix followed by an open `ParamSpec` tail (RFC 11.1).
 _CONCATENATE_FORMS = spellings("Concatenate")
+
+# Every spelling of the forms the relation reads by identity. On 3.8-3.10
+# `typing_extensions` ships its own `Any` / `Literal`, distinct objects from
+# `typing`'s, so a single-object `is` check silently misses the other.
+_ANY_FORMS = spellings("Any")
+_LITERAL_FORMS = spellings("Literal")
+
+
+def _is_any(hint: tx.Any) -> bool:
+    """Whether `hint` is `Any`, in any spelling."""
+    return any(hint is form for form in _ANY_FORMS)
+
+
+def _is_literal(origin: tx.Any) -> bool:
+    """Whether `origin` is the `Literal` form, in any spelling."""
+    return any(origin is form for form in _LITERAL_FORMS)
 
 
 def _is_never(hint: tx.Any) -> bool:
@@ -82,20 +104,54 @@ def _equivalent(a: tx.Any, b: tx.Any) -> bool:
 _WARNED_UNKNOWN = set()  # type: set
 
 
-def _warn_unknown(hint: tx.Any) -> None:
-    """Warn once that `hint` is unrecognised and treated as `Any`."""
+def _warn_key(hint: tx.Any) -> tx.Any:
+    """A stable, hashable key identifying an unknown *form*.
+
+    A future form and every hint built from it (`Unpack[Ts]`, `Unpack[Us]`,
+    ...) share one origin, so the origin -- or the form itself when it has
+    none -- keys the warning, deduping per form rather than per `repr`.
+    """
+    origin = safe_get_origin(hint)
     try:
-        key = repr(hint)
-    except Exception:  # pragma: no cover  -- a hint whose repr raises
-        key = object.__repr__(hint)
+        hash(origin)
+    except TypeError:  # pragma: no cover  -- an unhashable origin
+        origin = None
+    return origin if origin is not None else id(type(hint))
+
+
+def _warn_unknown(hint: tx.Any) -> None:
+    """Warn once per form that `hint` is unrecognised and treated as `Any`."""
+    key = _warn_key(hint)
     if key in _WARNED_UNKNOWN:
         return
     _WARNED_UNKNOWN.add(key)
+    try:
+        shown = repr(hint)
+    except Exception:  # pragma: no cover  -- a hint whose repr raises
+        shown = object.__repr__(hint)
     warnings.warn(
-        f"Type hint {key} is not recognised; treating it as `Any` for "
+        f"Type hint {shown} is not recognised; treating it as `Any` for "
         "dispatch.",
         UnknownHintWarning,
         stacklevel=3,
+    )
+
+
+def _not_a_hint_message(obj: tx.Any) -> str:
+    """The error text for an object that is not a usable type hint."""
+    if isinstance(obj, str):
+        # A bare string is a forward reference, which cannot be resolved
+        # without the namespace it was written in -- not available here.
+        return (
+            f"Cannot use the string {obj!r} as a type hint: a forward "
+            "reference needs the namespace it was written in to be "
+            "resolved, which is not available here. Pass the type itself, "
+            "not its name."
+        )
+    kind = type(obj).__name__
+    return (
+        f"Expected a type hint, but got {obj!r} (of type {kind}), which is "
+        "not a type or a typing construct."
     )
 
 
@@ -139,25 +195,35 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
     if _is_never(hint):
         # A bottom type describes no value.
         return False
-    if hint is tx.Any:
+    if _is_any(hint):
         return True
     # Resolve typevars to their bound/constraints (never their default), so
     # a typevar behaves exactly like the hint it stands for.
     hint = unwrap(hint, tx.Annotated)
     while isinstance(hint, tx.TypeVar):
-        hint = unwrap(_typevar_upper(hint), tx.Annotated)
+        upper = normalise_hint(_typevar_upper(hint))
+        # Exactness can be reached through a bound (`TypeVar(bound=Exact[C])`),
+        # so re-check before the `Annotated` wrapper is stripped.
+        if is_exact(upper):
+            return type(obj) is normalise_hint(exact_target(upper))
+        hint = unwrap(upper, tx.Annotated)
     hint = _known_form(hint)
-    if hint is tx.Any:
+    if _is_any(hint):
         return True
     origin_uw = get_origin_uw(hint)
     if origin_uw is type:
         return _ishintstance_type(obj, hint)
-    if origin_uw is tx.Literal:
+    if _is_literal(origin_uw):
         return _ishintstance_literal(obj, hint)
     if origin_uw in UNION_TYPES:
         args = get_args_uw(hint)
         if args:
             return any(ishintstance(obj, arg) for arg in args)
+    if is_typeddict_marker(origin_uw):
+        # The bare `TypedDict` marker: a value is one iff its type is a
+        # `TypedDict` (`safe_issubclass` reads it structurally). Without
+        # this it would fall to the opaque rule and accept everything.
+        return safe_issubclass(type(obj), origin_uw)
     if isinstance(origin_uw, type):
         # Only the origin can be checked here: a value carries its type,
         # and a type carries no arguments - `type([1])` is `list`, never
@@ -234,17 +300,28 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     """
     hint, superhint = normalise_hint(hint), normalise_hint(superhint)
 
-    # `Exact` first, before any `Annotated` metadata is unwrapped.
+    # `Exact` first, before any `Annotated` metadata is unwrapped. `Exact[C]`
+    # is a *leaf* subtype of `C`: an exactly-`C` value is a `C`, so
+    # `Exact[C] <= C`, but neither `C` nor any subclass of `C` is exactly-`C`,
+    # so nothing ordinary is `<= Exact[C]`. Keeping it a proper leaf is what
+    # makes `<=` a preorder (reflexive and transitive) with `Exact` present.
+    if is_exact(hint):
+        target = normalise_hint(exact_target(hint))
+        if is_exact(superhint):
+            # `Exact[D] <= Exact[C]` iff `D` and `C` are the same type.
+            supertarget = normalise_hint(exact_target(superhint))
+            return _equivalent(target, supertarget)
+        # `Exact[D] <= P` iff `D <= P` (an exactly-`D` value is a `D`).
+        return issubhint(target, superhint)
     if is_exact(superhint):
         target = normalise_hint(exact_target(superhint))
-        if is_exact(hint):
-            # `Exact[D] <= Exact[C]` iff `D` and `C` are the same type.
-            return _equivalent(normalise_hint(exact_target(hint)), target)
-        # `q <= Exact[C]` iff `q` is equivalent to `C`.
-        return _equivalent(hint, target)
-    if is_exact(hint):
-        # `Exact[D] <= P` iff `D <= P` (`Exact[D]` is strictly below `D`).
-        return issubhint(normalise_hint(exact_target(hint)), superhint)
+        # The only ordinary hints below `Exact[C]` are `Literal`s whose every
+        # value has type exactly `C`: `Literal[1] <= Exact[int]`, but
+        # `Literal[True]` (a `bool`) does not.
+        if _is_literal(get_origin_uw(hint)):
+            args = get_args_uw(hint)
+            return bool(args) and all(type(arg) is target for arg in args)
+        return False
 
     hint, superhint = _known_form(hint), _known_form(superhint)
 
@@ -256,7 +333,7 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
         return True
 
     # shortcircuits
-    if superhint is tx.Any:
+    if _is_any(superhint):
         return True
 
     if hint is superhint:
@@ -265,7 +342,7 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     # Unwrap superhint origin
     origin_uw = get_origin_uw(superhint)
 
-    if origin_uw is tx.Any:
+    if _is_any(origin_uw):
         return True
 
     if isinstance(origin_uw, tx.TypeVar):
@@ -293,7 +370,7 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
         # For bounds, the bound must be a subhint of the superhint
         return issubhint(_typevar_upper(hint), superhint)
 
-    if origin_uw is not tx.Literal and get_origin_uw(hint) is tx.Literal:
+    if not _is_literal(origin_uw) and _is_literal(get_origin_uw(hint)):
         # The hint is a Literal and the superhint is not, so the class,
         # union and NoneType branches below cannot see the literal's
         # values - they only ever compare origins. A Literal is a subhint
@@ -308,7 +385,7 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     if origin_uw in UNION_TYPES:
         return _issubunion(hint, superhint)
 
-    if origin_uw is tx.Literal:
+    if _is_literal(origin_uw):
         return _issubliteral(hint, superhint)
 
     if origin_uw is type(None):
@@ -320,13 +397,23 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     if origin_uw is abc.Callable:
         return _issubcallable(hint, superhint)
 
+    if is_typeddict_marker(origin_uw):
+        # The bare `TypedDict` marker as a super-hint: `safe_issubclass`
+        # reads it structurally. Without this it would fall to the opaque
+        # rule below and accept everything.
+        return _issubclasshint(hint, superhint, origin_uw)
+
     if isinstance(origin_uw, type):
         return _issubclasshint(hint, superhint, origin_uw)
 
-    # An unrecognised or future super-hint is opaque: treat it as `Any`, so
-    # a method annotated with it stays reachable, and say so once.
-    _warn_unknown(superhint)
-    return True
+    # A recognised typing construct with no branch of its own -- or a future
+    # form -- is opaque: treated as `Any` so a method annotated with it stays
+    # reachable, and reported once. An object that is plainly *not* a hint (a
+    # value, a plain function) is a caller error, so it raises instead.
+    if is_plausible_hint(superhint):
+        _warn_unknown(superhint)
+        return True
+    raise TypeError(_not_a_hint_message(superhint))
 
 
 def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
@@ -391,10 +478,10 @@ def _issubliteral(hint: tx.Any, superhint: tx.Any) -> bool:
     """Check that a hint is a sub-hint for a Literal."""
     hint_uw = unwrap(hint)
     superhint_uw = unwrap(superhint)
-    if safe_get_origin(superhint_uw) is not tx.Literal:
+    if not _is_literal(safe_get_origin(superhint_uw)):
         # Superhint is not a literal -> error
         raise TypeError(f"Super-hint {superhint} is not a Literal")
-    if safe_get_origin(hint_uw) is not tx.Literal:
+    if not _is_literal(safe_get_origin(hint_uw)):
         # Hint is not a Literal, cannot be a subhint
         return False
     # !! We use tx.get_origin instead of safe_get_origin
@@ -532,29 +619,27 @@ def _issubtype(hint: tx.Any, superhint: tx.Any) -> bool:
     return safe_issubclass(args[0], superargs[0])
 
 
-def _is_paramspec_like(params: tx.Any) -> bool:
-    """Whether a `Callable` parameter list is a `ParamSpec`/`Concatenate`."""
-    if isinstance(params, tx.ParamSpec):
-        return True
-    if isinstance(params, (tx.ParamSpecArgs, tx.ParamSpecKwargs)):
-        return True
-    return any(safe_get_origin(params) is form for form in _CONCATENATE_FORMS)
-
-
 def _issubcallable(hint: tx.Any, superhint: tx.Any) -> bool:
     """Check that a hint is a sub-hint for a `Callable[...]`.
 
-    Parameters are compared contravariantly and the return type
-    covariantly. `#!python Callable[..., R]` accepts any parameter list. A
-    `ParamSpec`/`Concatenate` parameter list is compared only for equality
-    -- it degrades rather than raising.
+    Parameters are compared contravariantly and the return type covariantly.
+    A bare `ParamSpec` parameter list is a wildcard `#!python ...` on either
+    side; a `#!python Concatenate[X, P]` list is a contravariant fixed prefix
+    followed by an open tail (RFC 11.1). A callable *class* -- a function
+    type, `#!python type`, `#!python Type[C]`, or a class with `__call__` --
+    has no parameter list, so it stands in only for an unparametrised
+    `Callable`.
     """
     hint_uw = unwrap(hint)
     superhint_uw = unwrap(superhint)
-    if get_origin_uw(hint_uw) is not abc.Callable:
-        # Only a callable hint can stand in for a `Callable`.
-        return False
     superargs = safe_get_args(superhint_uw)
+    hint_origin = get_origin_uw(hint_uw)
+    if hint_origin is not abc.Callable:
+        # A callable *class* has no parameter list: it can only stand in for a
+        # bare `Callable`, exactly as `list` cannot stand in for `List[int]`.
+        if not safe_issubclass(hint_origin, abc.Callable):
+            return False
+        return not superargs
     if not superargs:
         # A bare `Callable` constrains nothing further.
         return True
@@ -569,23 +654,75 @@ def _issubcallable(hint: tx.Any, superhint: tx.Any) -> bool:
     # Return type is covariant.
     if not issubhint(sub_ret, sup_ret):
         return False
-    return _issubcallable_params(sub_params, sup_params)
+    return _issubcallable_params(
+        hint_uw, superhint_uw, sub_params, sup_params
+    )
 
 
-def _issubcallable_params(sub: tx.Any, sup: tx.Any) -> bool:
-    """Compare two `Callable` parameter lists, contravariantly."""
-    # `Callable[..., R]` on either side accepts any parameter list.
-    if sub is Ellipsis or sup is Ellipsis:
+def _callable_params(
+    alias: tx.Any, params: tx.Any
+) -> tx.Tuple[str, tx.Any]:
+    """Classify a `Callable` parameter list (RFC 11.1).
+
+    Returns one of `#!python ("any", None)` for a wildcard (`#!python ...`, a
+    bare `ParamSpec`, or an unknown shape), `#!python ("prefix", [X, ...])`
+    for a `Concatenate` fixed prefix followed by an open tail, or
+    `#!python ("list", [...])` for a fixed parameter list. The `alias` is the
+    whole `Callable[...]` hint, needed to reach `__parameters__` where an
+    older Python has erased the `ParamSpec` out of the arguments.
+    """
+    if params is Ellipsis or isinstance(
+        params, (tx.ParamSpec, tx.ParamSpecArgs, tx.ParamSpecKwargs)
+    ):
+        return "any", None
+    if any(safe_get_origin(params) is form for form in _CONCATENATE_FORMS):
+        # `Concatenate[X1, ..., Xn, P]`: the fixed prefix is everything but
+        # the trailing `ParamSpec`.
+        return "prefix", list(tx.get_args(params)[:-1])
+    seq = list(params) if isinstance(params, (list, tuple)) else None
+    if seq is None:
+        # An unknown shape degrades to a wildcard rather than raising.
+        return "any", None
+    parameters = getattr(alias, "__parameters__", ())
+    has_ps = any(isinstance(p, tx.ParamSpec) for p in parameters)
+    if seq and isinstance(seq[-1], tx.ParamSpec):
+        # Below 3.10 `Concatenate[X, P]` is flattened to `[X, ..., P]`.
+        return "prefix", seq[:-1]
+    if not seq and has_ps:
+        # Below 3.10 a bare `P` is erased to `[]`, surviving only in
+        # `__parameters__` -- so an empty list plus a `ParamSpec` there is a
+        # wildcard, not a genuine zero-argument list.
+        return "any", None
+    return "list", seq
+
+
+def _issubcallable_params(
+    sub_alias: tx.Any, sup_alias: tx.Any, sub: tx.Any, sup: tx.Any
+) -> bool:
+    """Compare two `Callable` parameter lists, contravariantly (RFC 11.1)."""
+    sub_kind, sub_val = _callable_params(sub_alias, sub)
+    sup_kind, sup_val = _callable_params(sup_alias, sup)
+    # A wildcard on either side accepts any parameter list.
+    if sub_kind == "any" or sup_kind == "any":
         return True
-    # A ParamSpec / Concatenate list degrades to equality: comparable to an
-    # identical one, and to nothing else, rather than raising.
-    if _is_paramspec_like(sub) or _is_paramspec_like(sup):
-        return sub == sup
-    if not (isinstance(sub, (list, tuple)) and isinstance(sup, (list, tuple))):
-        return sub == sup
-    if len(sub) != len(sup):
+    sub_open = sub_kind == "prefix"
+    sup_open = sup_kind == "prefix"
+    # A closed (fixed-arity) sub cannot stand in for an open super, which may
+    # be called with arbitrarily many arguments the sub does not accept.
+    if sup_open and not sub_open:
         return False
-    # Contravariant: each super-parameter must be a sub-hint of the matching
-    # sub-parameter (a function taking `int` can stand in for one taking
-    # `bool`, since it also accepts every `bool`).
-    return all(issubhint(sp, bp) for bp, sp in zip(sub, sup))
+    # A fixed list must be at least as long as an open sub's committed prefix.
+    if sub_open and not sup_open and len(sup_val) < len(sub_val):
+        return False
+    # Two fixed lists must have equal arity.
+    if not sub_open and not sup_open and len(sub_val) != len(sup_val):
+        return False
+    # Two open prefixes: the sub's prefix cannot be the longer, or it would
+    # demand arguments the super need not supply.
+    if sub_open and sup_open and len(sub_val) > len(sup_val):
+        return False
+    # Compare the overlapping fixed positions contravariantly: each
+    # super-parameter must be a sub-hint of the matching sub-parameter (a
+    # function taking `int` can stand in for one taking `bool`).
+    overlap = min(len(sub_val), len(sup_val))
+    return all(issubhint(sup_val[i], sub_val[i]) for i in range(overlap))
