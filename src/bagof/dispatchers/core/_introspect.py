@@ -29,21 +29,6 @@ from ._compat import (
 )
 from ._sentinels import UNSET
 
-# optionals
-if tx.TYPE_CHECKING:
-    import numpy as _np
-else:
-    try:
-        import numpy as _np
-    except ImportError:  # pragma: no cover  -- numpy is optional
-        _np = None
-
-
-REAL_TYPES = (
-    (numbers.Real, _np.floating) if _np is not None else (numbers.Real,)
-)
-"""The real-number types [`eq_safenan`][] recognises."""
-
 
 def _looks_like_class(x: tx.Any) -> bool:
     """Whether `x` is a real class, not a parametrised generic alias.
@@ -608,7 +593,9 @@ def eq_safenan(x: tx.Any) -> tx.Any:
 
     !!! note
         Only real numbers are recognised. A complex NaN is returned
-        unchanged, and so still compares unequal to itself.
+        unchanged, and so still compares unequal to itself. A numpy scalar
+        is recognised through its [`numbers.Real`][] ABC registration, so
+        no numpy import is needed here.
 
     !!! example
         ```pycon
@@ -619,7 +606,7 @@ def eq_safenan(x: tx.Any) -> tx.Any:
         True
         ```
     """
-    if isinstance(x, REAL_TYPES) and math.isnan(x):
+    if isinstance(x, numbers.Real) and math.isnan(x):
         return _NAN
     return x
 
