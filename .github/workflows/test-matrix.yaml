@@ -1,0 +1,28 @@
+name: Run matrix of tests
+description: Run matrix of tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Commit / Branch / Tag / SHA to checkout
+        required: false
+        default: ""
+
+  workflow_call:
+    inputs:
+      tag:
+        description: Commit / Branch / Tag / SHA to checkout
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: bagofseeds/actions/.github/workflows/test-matrix.yaml@main
+    with:
+      tag: ${{ inputs.tag }}
+      requirements-file: tests/requirements.txt

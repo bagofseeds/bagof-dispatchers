@@ -1,0 +1,95 @@
+[project]
+name = "bagof-things"
+# Replace these template contacts before publishing.
+authors = [
+    {name = "Your Name", email = "your.email@example.com"},
+]
+maintainers = [
+    {name = "Your Name", email = "your.email@example.com"},
+]
+description = "Template package for bagof.things"
+readme = "README.md"
+license = {text = "MIT"}
+keywords = ["bagof", "template", "python"]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3 :: Only",
+    "Typing :: Typed",
+]
+dynamic = ["version"]
+requires-python = ">=3.8"
+dependencies = [
+    "typing_extensions>=4.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/bagofseeds/bagof-things"
+Documentation = "https://github.com/bagofseeds/bagof-things#readme"
+Issues = "https://github.com/bagofseeds/bagof-things/issues"
+Repository = "https://github.com/bagofseeds/bagof-things"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7",
+]
+
+[build-system]
+requires = [
+    "setuptools>=59.0",
+    "wheel>=0.45.1",
+    "versioningit>=1.0",
+]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["bagof*"]
+namespaces = true
+
+[tool.versioningit]
+default-version = "0+unknown"
+
+[tool.versioningit.vcs]
+default-tag = "0.1"
+
+[tool.versioningit.format]
+distance = "{base_version}+{distance}.{vcs}{rev}"
+dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
+distance-dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
+
+[tool.versioningit.write]
+file = "src/bagof/things/_version.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 79
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["ANN", "B", "E", "F", "I", "UP", "W"]
+ignore = [
+    "ANN002",   # Do not type *args
+    "ANN003",   # Do not type *kwargs
+    "ANN401",   # Allow typing with Any
+    # pyupgrade rules whose fixes break Python 3.8 (the supported floor)
+    "UP006",    # list[...] annotations need 3.9 at runtime
+    "UP007",    # X | Y unions need 3.10
+    "UP035",    # deprecated typing import (typing_extensions is intentional)
+    "UP045",    # X | None optionals need 3.10
+]
+
+[tool.codespell]
+check-filenames = true
+skip = ".git,*.egg-info,build,dist,*.pdf,*.svg"
