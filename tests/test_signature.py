@@ -644,6 +644,31 @@ def test_nested_forward_ref_signatures_same_name_equal() -> None:
         assert Signature.from_callable(f) == Signature.from_callable(g)
 
 
+def test_signature_equality_ignores_literal_and_annotated_metadata() -> None:
+    """String `Literal` members / `Annotated` metadata are not forward refs.
+
+    They are values, so equality goes through the ordinary hint relation --
+    matching the non-string-metadata cases (`Annotated[int, 1]`,
+    `Literal[1, 2]`) -- rather than the structural forward-reference path,
+    which would wrongly split hints that differ only in a doc string.
+    """
+    kind = Parameter.POSITIONAL_OR_KEYWORD
+
+    def one(hint: tx.Any) -> Signature:
+        return Signature({"x": Parameter("x", hint, kind)})
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        # `Annotated[int, "doc"]` is just `int` for dispatch.
+        assert one(tx.Annotated[int, "doc"]) == one(int)
+        # Two `Annotated` hints differing only in metadata are equal.
+        assert one(tx.Annotated[int, "doc"]) == one(tx.Annotated[int, "other"])
+        # A union of string `Literal`s equals the flattened `Literal`.
+        assert one(tx.Union[tx.Literal["a"], tx.Literal["b"]]) == one(
+            tx.Literal["a", "b"]
+        )
+
+
 def test_has_forward_ref_recurses_and_terminates() -> None:
     """`_has_forward_ref` finds a nested name, bottoms out on plain types."""
     assert sigmod._has_forward_ref("Later")
@@ -653,6 +678,26 @@ def test_has_forward_ref_recurses_and_terminates() -> None:
     assert sigmod._has_forward_ref(nested)
     assert not sigmod._has_forward_ref(int)
     assert not sigmod._has_forward_ref(typing.List[int])
+
+
+def test_has_forward_ref_ignores_literal_members_and_metadata() -> None:
+    """A `Literal` member and `Annotated` metadata are values, not refs.
+
+    `typing` keeps them as bare strings inside a hint, but wraps a genuine
+    nested forward reference in a `ForwardRef` -- so a nested bare string is
+    never a reference, and only the wrapped type of an `Annotated` is
+    descended into.
+    """
+    # A `Literal`'s string members are values, not forward references.
+    assert not sigmod._has_forward_ref(tx.Literal["a"])
+    assert not sigmod._has_forward_ref(tx.Literal["a", "b"])
+    assert not sigmod._has_forward_ref(typing.List[tx.Literal["a"]])
+    # `Annotated` metadata is arbitrary values, so a bare string there is not
+    # a reference; only the wrapped type carries one.
+    assert not sigmod._has_forward_ref(tx.Annotated[int, "doc"])
+    assert sigmod._has_forward_ref(
+        tx.Annotated[typing.List["X"], "doc"]  # noqa: F821
+    )
 
 
 def test_hint_eq_resolved_hints_use_equivalence() -> None:
