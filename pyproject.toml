@@ -75,6 +75,16 @@ file = "src/bagof/dispatchers/_version.py"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.coverage.run]
+source = ["bagof.dispatchers"]
+
+[tool.coverage.report]
+exclude_also = [
+    # Type-checking-only blocks never run at runtime.
+    "if tx.TYPE_CHECKING:",
+    "if tx.TYPE_CHECKING or",
+]
+
 [tool.ruff]
 line-length = 79
 target-version = "py38"
