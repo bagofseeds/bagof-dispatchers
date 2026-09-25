@@ -7,7 +7,7 @@ top level, and the sibling bags, are built on these names.
 """
 
 # local
-from ._compat import UNION_TYPES, NoneType, UnionType
+from ._compat import UNION_TYPES, NoneType, UnionType, UnknownHintWarning
 from ._introspect import (
     eq_safenan,
     get_args_uw,
@@ -17,6 +17,8 @@ from ._introspect import (
     issubclassable,
     issubscriptable,
     normalise_hint,
+    resolve_alias,
+    resolve_newtype,
     safe_get_args,
     safe_get_origin,
     safe_isinstance,
@@ -37,6 +39,8 @@ __all__ = [
     "get_args_uw",
     "unwrap",
     "normalise_hint",
+    "resolve_alias",
+    "resolve_newtype",
     "is_typeddict",
     "typeddict_required_keys",
     "safe_issubclass",
@@ -51,4 +55,5 @@ __all__ = [
     "NoneType",
     "UnionType",
     "UNION_TYPES",
+    "UnknownHintWarning",
 ]

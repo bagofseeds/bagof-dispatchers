@@ -22,9 +22,12 @@ EXACT = _ExactMarker()
 
 if tx.TYPE_CHECKING:
     # To a type checker, `Exact[C]` is just `C`: it is `Annotated[C, EXACT]`,
-    # and the checker sees through the metadata.
+    # and the checker sees through the metadata. A generic alias, so
+    # `Exact[int]` substitutes the type variable and stays a two-argument
+    # `Annotated` -- `Exact = Annotated` would make `Exact[int]` a one-argument
+    # `Annotated[int]`, which a checker rejects.
     _T = tx.TypeVar("_T")
-    Exact = tx.Annotated
+    Exact = tx.Annotated[_T, EXACT]  # type: tx.TypeAlias
 else:
 
     class Exact:
