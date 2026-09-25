@@ -1087,13 +1087,23 @@ def _render_hint(hint: tx.Any) -> str:
     return text.replace("typing_extensions.", "").replace("typing.", "")
 
 
-def _render_parameters(sig: "Signature") -> str:
+def _render_parameters(
+    sig: "Signature",
+    highlight: tx.Optional[tx.Collection[tx.Any]] = None,
+) -> str:
     """Render a signature's parameters with `/`, `*`, `*args`, `**kwargs`.
 
     The markers land where Python puts them: a `/` after the positional-only
     group, a bare `*` (or `#!python *args: H`) before the keyword-only group,
     and `#!python **kwargs: H` last.
+
+    When `highlight` is given, each named slot it lists is marked with a
+    leading `#!python !` on its hint -- an offending argument in a dispatch
+    error (`#!python x: !int`). A slot is named by its parameter name, or by
+    `Parameter.VAR_POSITIONAL` / `Parameter.VAR_KEYWORD` for the
+    `#!python *args` / `#!python **kwargs` catch-alls.
     """
+    marked = frozenset(highlight) if highlight else frozenset()
     out = []  # type: tx.List[str]
     positional_only = [
         p for p in sig._parameters.values() if p.kind is _POSITIONAL_ONLY
@@ -1103,34 +1113,46 @@ def _render_parameters(sig: "Signature") -> str:
         for p in sig._parameters.values()
         if p.kind is _POSITIONAL_OR_KEYWORD
     ]
-    out.extend(_render_parameter(p) for p in positional_only)
+    out.extend(
+        _render_parameter(p, p.name in marked) for p in positional_only
+    )
     if positional_only:
         out.append("/")
-    out.extend(_render_parameter(p) for p in positional_or_keyword)
+    out.extend(
+        _render_parameter(p, p.name in marked)
+        for p in positional_or_keyword
+    )
     if sig._varargs is not None:
-        out.append(_render_varargs(sig._varargs))
+        out.append(
+            _render_varargs(sig._varargs, _VAR_POSITIONAL in marked)
+        )
     elif sig._kwonly:
         out.append("*")
-    out.extend(_render_parameter(p) for p in sig._kwonly)
+    out.extend(
+        _render_parameter(p, p.name in marked) for p in sig._kwonly
+    )
     if sig._varkw is not None:
-        out.append(_render_varkw(sig._varkw))
+        out.append(_render_varkw(sig._varkw, _VAR_KEYWORD in marked))
     return ", ".join(out)
 
 
-def _render_parameter(param: Parameter) -> str:
-    text = f"{param.name}: {_render_hint(param.hint)}"
+def _render_parameter(param: Parameter, mark: bool = False) -> str:
+    bang = "!" if mark else ""
+    text = f"{param.name}: {bang}{_render_hint(param.hint)}"
     if not param.required:
         text += f" = {param.default!r}"
     return text
 
 
-def _render_varargs(hint: tx.Any) -> str:
+def _render_varargs(hint: tx.Any, mark: bool = False) -> str:
+    bang = "!" if mark else ""
     if hint is tx.Any:
-        return "*args"
-    return f"*args: {_render_hint(hint)}"
+        return f"*args{': !Any' if mark else ''}"
+    return f"*args: {bang}{_render_hint(hint)}"
 
 
-def _render_varkw(hint: tx.Any) -> str:
+def _render_varkw(hint: tx.Any, mark: bool = False) -> str:
+    bang = "!" if mark else ""
     if hint is tx.Any:
-        return "**kwargs"
-    return f"**kwargs: {_render_hint(hint)}"
+        return f"**kwargs{': !Any' if mark else ''}"
+    return f"**kwargs: {bang}{_render_hint(hint)}"

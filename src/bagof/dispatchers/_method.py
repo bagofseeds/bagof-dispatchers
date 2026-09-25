@@ -103,9 +103,23 @@ class Method:
             return base
         return f"{base}:{self.lineno}"
 
-    def __repr__(self) -> str:
-        body = _render_parameters(self.signature)
+    def describe(
+        self, highlight: tx.Optional[tx.Collection[tx.Any]] = None
+    ) -> str:
+        """The named signature and where it was defined, for an error.
+
+        The rendering matches [`repr`][repr], except that each slot named in
+        `highlight` is marked with a leading `#!python !` on its hint -- the
+        offending argument in a dispatch error. A slot is named by its
+        parameter name, or by `Parameter.VAR_POSITIONAL` /
+        `Parameter.VAR_KEYWORD` for the `#!python *args` / `#!python **kwargs`
+        catch-alls.
+        """
+        body = _render_parameters(self.signature, highlight)
         return f"{self.name}({body}) @ {self.location}"
+
+    def __repr__(self) -> str:
+        return self.describe()
 
     def __eq__(self, other: tx.Any) -> bool:
         if not isinstance(other, Method):
