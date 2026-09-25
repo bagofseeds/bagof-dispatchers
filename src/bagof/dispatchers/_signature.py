@@ -910,18 +910,42 @@ def _forward_name(hint: tx.Any) -> tx.Optional[str]:
     return getattr(hint, "__forward_arg__", None)
 
 
+def _has_forward_ref(hint: tx.Any) -> bool:
+    """Whether a hint holds a forward reference anywhere, however nested.
+
+    A hint kept as a raw string, a [`ForwardRef`][typing.ForwardRef], or a
+    generic that carries one at any depth (`#!python List["Later"]`,
+    `#!python Optional["Node"]`) is still unresolved. Such a hint has no
+    namespace behind it, so the sub-hint relation cannot read it and it is
+    compared structurally instead.
+    """
+    if isinstance(hint, str):
+        return True
+    if getattr(hint, "__forward_arg__", None) is not None:
+        return True
+    return any(_has_forward_ref(arg) for arg in tx.get_args(hint))
+
+
 def _hint_eq(a: tx.Any, b: tx.Any) -> bool:
     """Whether two parameter hints are equivalent, forward references included.
 
-    When either side is still a forward reference the two are compared by
-    name -- an unresolved name is never handed to the sub-hint relation, which
-    has no namespace to resolve it and would raise. Two resolved hints are
+    An unresolved name is never handed to the sub-hint relation, which has no
+    namespace to resolve it and would treat the name as [`Any`][typing.Any].
+    When either side is a top-level forward reference the two are compared by
+    name, so a raw string and a [`ForwardRef`][typing.ForwardRef] naming the
+    same thing match. When the forward reference is nested inside a generic
+    (`#!python List["Later"]`, `#!python Optional["Node"]`) the two are
+    compared structurally instead -- a generic alias compares by its origin and
+    its arguments, and each nested `ForwardRef` by name, so two genuinely
+    different spellings do not collapse to equal. Two fully resolved hints are
     compared with [`equivalent`][bagof.dispatchers._lattice.equivalent].
     """
     a_name = _forward_name(a)
     b_name = _forward_name(b)
     if a_name is not None or b_name is not None:
         return a_name == b_name
+    if _has_forward_ref(a) or _has_forward_ref(b):
+        return a == b
     return equivalent(a, b)
 
 
@@ -967,9 +991,13 @@ def _hint_source(fn: tx.Callable[..., tx.Any]) -> tx.Any:
 
 
 def _has_forward(raw: tx.Optional[tx.Dict[str, tx.Any]]) -> bool:
-    """Whether any raw annotation is still a forward reference."""
+    """Whether any raw annotation still holds a forward reference.
+
+    A nested forward reference counts too -- a stringised modern spelling like
+    `#!python Optional["list[int]"]` on an older Python defers as a whole.
+    """
     return any(
-        _forward_name(value) is not None
+        _has_forward_ref(value)
         for value in (raw or {}).values()
     )
 

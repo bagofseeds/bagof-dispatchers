@@ -614,6 +614,53 @@ def test_signature_deferred_same_forward_name_equal() -> None:
     assert Signature.from_callable(a) == Signature.from_callable(b)
 
 
+def test_nested_forward_ref_signatures_differ_without_warning() -> None:
+    """A forward reference nested in a generic is compared by name, quietly.
+
+    `List["Later"]` and `List["Other"]` name different types, so the two
+    signatures are unequal -- and the comparison must not route the unresolved
+    names through the sub-hint relation, which would both warn and treat each
+    name as `Any` (making the two wrongly equal).
+    """
+
+    def f(x: typing.List["Later"]) -> None: ...  # noqa: F821
+
+    def g(x: typing.List["Other"]) -> None: ...  # noqa: F821
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert Signature.from_callable(f) != Signature.from_callable(g)
+
+
+def test_nested_forward_ref_signatures_same_name_equal() -> None:
+    """Two signatures with the same nested forward reference are equal."""
+
+    def f(x: typing.List["Later"]) -> None: ...  # noqa: F821
+
+    def g(x: typing.List["Later"]) -> None: ...  # noqa: F821
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert Signature.from_callable(f) == Signature.from_callable(g)
+
+
+def test_has_forward_ref_recurses_and_terminates() -> None:
+    """`_has_forward_ref` finds a nested name, bottoms out on plain types."""
+    assert sigmod._has_forward_ref("Later")
+    assert sigmod._has_forward_ref(tx.ForwardRef("Later"))
+    assert sigmod._has_forward_ref(typing.List["Later"])  # noqa: F821
+    nested = typing.Optional[typing.List["Later"]]  # noqa: F821
+    assert sigmod._has_forward_ref(nested)
+    assert not sigmod._has_forward_ref(int)
+    assert not sigmod._has_forward_ref(typing.List[int])
+
+
+def test_hint_eq_resolved_hints_use_equivalence() -> None:
+    """No forward reference on either side: `_hint_eq` uses equivalence."""
+    assert sigmod._hint_eq(int, int)
+    assert not sigmod._hint_eq(int, str)
+
+
 # --- partial / callable instances (defect 2) ---------------------------
 
 
