@@ -23,7 +23,11 @@
    **both** the hint-level subtype relation (`issubhint`, `ishintstance`, and
    every introspection helper they need) **and** the signature-level order
    (tuples, arity, TypeVar consistency, `Exact`, MRO refinement, ambiguity).
-   Its only dependency is `typing_extensions`; it depends on neither
+   The top-level `bagof.dispatchers` API is **dispatch-only** (`dispatch`,
+   `Dispatcher`, `Function`, `Method`, `Signature`, `Parameter`, `Exact`, the
+   errors); the relation and introspection helpers live under the
+   **`bagof.dispatchers.core`** namespace, which is what `bagof-core-magic`
+   re-exports. Its only dependency is `typing_extensions`; it depends on neither
    `bagof-core-magic` nor `bagof-hints`. `bagof-core-magic` **depends on
    `bagof-dispatchers`** and re-exports the relocated names unchanged, keeping
    only the magic object model. End-state dependency graph:
@@ -477,17 +481,20 @@ from registry import area
 area(Circle(1))                      # sees shapes.py's method
 ```
 
-Surface (`__all__`), two documented groups:
+Surface — **two namespaces, disjoint object sets**:
 
-**Dispatch** — `dispatch`, `Dispatcher`, `Function`, `Method`, `Signature`,
-`Exact`, `resolve_hint`, `DispatchError`, `NoMethodError`,
-`AmbiguousMethodError`.
+**`bagof.dispatchers`** (`__all__`, the clean public API) — `dispatch`,
+`Dispatcher`, `Function`, `Method`, `Signature`, `Parameter`, `Exact`,
+`DispatchError`, `NoMethodError`, `AmbiguousMethodError`.
 
-**Hints** — `issubhint`, `ishintstance`, `safe_get_origin`, `safe_get_args`,
-`get_origin_uw`, `get_args_uw`, `unwrap`, `normalise_hint`, `is_typeddict`,
-`typeddict_required_keys`, `safe_issubclass`, `safe_isinstance`,
-`issubclassable`, `issubscriptable`, `get_concrete_type`, `type2hint`,
-`eq_safenan`, `Unset`, `UNSET`, `NoneType`, `UnionType`, `UNION_TYPES`.
+**`bagof.dispatchers.core`** (`__all__`, the relation/introspection helpers
+`bagof-core-magic` reuses) — `issubhint`, `ishintstance`, `resolve_hint`,
+`safe_get_origin`, `safe_get_args`, `get_origin_uw`, `get_args_uw`, `unwrap`,
+`normalise_hint`, `is_typeddict`, `typeddict_required_keys`, `safe_issubclass`,
+`safe_isinstance`, `issubclassable`, `issubscriptable`, `get_concrete_type`,
+`type2hint`, `eq_safenan`, `Unset`, `UNSET`, `NoneType`, `UnionType`,
+`UNION_TYPES`. `Exact` is documented under the top-level API (its canonical home)
+and understood by `issubhint`/`ishintstance` in `.core`.
 
 Key objects:
 - `Dispatcher()` — a registry. Identity rule as above (module-level `dispatch`:
@@ -514,8 +521,9 @@ Key objects:
   `from_hints(*hints, **named_hints)` for explicit registration
   (`@dispatch(int, scale=float)`); `bind(args, kwargs) -> Optional[Binding]`;
   `le(other, shape)` = specificity for a shape.
-- `resolve_hint(hint, mapping, *, default=UNSET, ambiguity="raise")` — the
-  hint-level functional API, `get_from_registry`'s successor.
+- `bagof.dispatchers.core.resolve_hint(hint, mapping, *, default=UNSET,
+  ambiguity="raise")` — the hint-level functional API, `get_from_registry`'s
+  successor (lives in `.core`, since it is the helper `bagof-core-magic` reuses).
 
 Hooks — the naive `pre_check`/`post_check`/`__apply__`/`__error__` are **dropped**
 (ordinary decorators; `dispatch()`/`resolve()` expose the only dispatch-specific
@@ -558,41 +566,49 @@ the failing argument; a binding failure is rendered in words after the signature
 
 ```
 src/bagof/dispatchers/
-  __init__.py       # re-exports + __all__ only
-  _compat.py        # NoneType, UnionType, UNION_TYPES, special-form pinning + structural fallback,
-                    #   TypedDict markers, spellings(name), UnknownHintWarning
-  _sentinels.py     # Unset, UNSET
-  _introspect.py    # safe_get_origin/args, get_origin_uw/args_uw, unwrap, normalise_hint (now resolves
-                    #   aliases/NewType/qualifiers), resolve_alias, resolve_newtype, issubclassable,
-                    #   issubscriptable, is_typeddict, typeddict_required_keys, safe_issubclass,
-                    #   safe_isinstance, get_concrete_type, type2hint, _typing_spelling, eq_safenan
-  _exact.py         # Exact, EXACT sentinel, is_exact, exact_target
-  _relation.py      # issubhint (+ branches) and ishintstance (+ helpers) — Exact-aware, Callable-variance-aware,
-                    #   opaque fall-through for unknown forms, _typevar_upper
-  _lattice.py       # equivalent(), is_instance() (Exact + v2 TypedDict shape), mro_index(), TypeVar solving,
-                    #   value-dependence classifier — calls issubhint directly
-  _signature.py     # Signature
-  _method.py        # Method (+ deferred hint resolution)
-  _function.py      # Function: methods tuple, pairwise order, cache + abc token, dispatch/resolve/__call__/
-                    #   __get__, ambiguities, register, from_mapping
-  _registry.py      # resolve_hint(): get_from_registry's successor over Function.from_mapping
-  _dispatcher.py    # Dispatcher, `dispatch`
-  _errors.py        # DispatchError, NoMethodError, AmbiguousMethodError, message builders
-  _constants.py     # `__dispatch_*__` attribute names
+  __init__.py        # CLEAN public API — re-exports ONLY: dispatch, Dispatcher, Function, Method,
+                     #   Signature, Parameter, Exact, DispatchError, NoMethodError, AmbiguousMethodError
+  _lattice.py        # equivalent(), is_instance() (Exact + v2 TypedDict shape), mro_index(), TypeVar
+                     #   solving, value-dependence classifier — dispatch-internal, builds on core._relation
+  _signature.py      # Signature, Parameter, Binding, the precomputed per-method binder
+  _method.py         # Method (+ deferred hint resolution)
+  _function.py       # Function: methods tuple, per-shape order, two-level cache + abc token,
+                     #   dispatch/resolve/__call__/__get__, ambiguities, register, from_mapping
+  _dispatcher.py     # Dispatcher, the module-level `dispatch`, the `functions` namespace
+  _errors.py         # DispatchError, NoMethodError, AmbiguousMethodError, message builders
+  _constants.py      # `__dispatch_*__` attribute names
+  core/
+    __init__.py      # facade — re-exports the relation/introspection helpers reused by bagof.core.magic
+    _compat.py       # NoneType, UnionType, UNION_TYPES, special-form pinning + structural fallback,
+                     #   TypedDict markers, spellings(name), UnknownHintWarning
+    _sentinels.py    # Unset, UNSET
+    _exact.py        # Exact, EXACT sentinel, is_exact, exact_target  (re-exported at the top level too)
+    _introspect.py   # safe_get_origin/args, get_origin_uw/args_uw, unwrap, normalise_hint (resolves
+                     #   aliases/NewType/qualifiers), resolve_alias, resolve_newtype, issubclassable,
+                     #   issubscriptable, is_typeddict, typeddict_required_keys, safe_issubclass,
+                     #   safe_isinstance, get_concrete_type, type2hint, _typing_spelling, eq_safenan
+    _relation.py     # issubhint (+ branches), ishintstance (+ helpers) — Exact/Callable-variance-aware,
+                     #   opaque fall-through for unknown forms, _typevar_upper
+    _registry.py     # resolve_hint(): get_from_registry's successor over Function.from_mapping
 tests/
   # moved verbatim from bagof-core-magic: test_issubhint*.py, test_subhint_semantics.py,
   #   test_typeddict_spellings.py, and the ishintstance/introspection halves of test_introspection.py
   test_introspect.py, test_relation_callable.py, test_relation_modern.py, test_exact.py, test_lattice.py,
   test_signature.py, test_dispatch_values.py, test_dispatch_hints.py, test_registry.py,
   test_typevars.py, test_cache.py, test_docstrings.py, test_import.py, test_module_surface.py
-docs/index.md (dispatch), docs/hints.md (the relation/introspection API, moved from core-magic's api.md)
+docs/index.md (dispatch), docs/core.md (the relation/introspection API, moved from core-magic's api.md)
 ```
 
 `pyproject.toml`: **`dependencies = ["typing_extensions>=4.13"]`** — nothing
 else, in Phase 0 and forever (optional test extra may add `numpy` only to
-exercise `eq_safenan`). Flat private modules per house rule; a
-`bagof.dispatchers.hints` subpackage was rejected because griffe would document
-the same objects under two dotted paths.
+exercise `eq_safenan`). Private modules stay `_`-prefixed per house rule; the one
+public subpackage is `core/`, whose `__init__` is a facade (no code) re-exporting
+the helpers. The split is clean for griffe because the two namespaces export
+**disjoint** object sets — dispatch objects at the top, relation/introspection
+helpers under `.core` — so nothing is documented under two dotted paths; `Exact`
+(the one object both use) is documented once, under the top-level API. Two doc
+pages: `docs/index.md` (dispatch) and `docs/core.md` (the relation/introspection
+API, moved from core-magic's `api.md`).
 
 ### 7a. Per-function relocation table
 
@@ -602,8 +618,8 @@ CPython-derived in core-magic — checked). The `dataclasses`-derived code is in
 
 | Function (core-magic `__init__.py` lines) | Verdict | Justification |
 |---|---|---|
-| `NoneType`, `UnionType`, `UNION_TYPES`, `_SPECIAL_FORMS`, `_is_special_form` (47–94) | PORT → `_compat.py` (+ structural special-form fallback, see §11.2) | version pinning already right for 3.8–3.14 |
-| `Unset`, `UNSET` (97–122) | PORT → `_sentinels.py` | needed for `resolve(default=)` |
+| `NoneType`, `UnionType`, `UNION_TYPES`, `_SPECIAL_FORMS`, `_is_special_form` (47–94) | PORT → `core/_compat.py` (+ structural special-form fallback, see §11.2) | version pinning already right for 3.8–3.14 |
+| `Unset`, `UNSET` (97–122) | PORT → `core/_sentinels.py` | needed for `resolve(default=)` |
 | `safe_get_origin`, `safe_get_args`, `get_origin_uw`, `get_args_uw` (1389–1437) | PORT | small, version-safe, tested |
 | `unwrap`, `_unwrap_typevar` (1336–1386) | PORT | cycle guard + default→constraints→bound order are subtle and correct |
 | `normalise_hint` (929–950) | REIMPLEMENT-IMPROVED | same signature; now also resolves `TypeAliasType`/`NewType` and strips transparent qualifiers |
@@ -613,12 +629,12 @@ CPython-derived in core-magic — checked). The `dataclasses`-derived code is in
 | `issubclassable`, `issubscriptable` (737–757, 1478–1489) | REIMPLEMENT-IMPROVED | same `GenericAlias` trap guard |
 | `type2hint`, `_TYPE2HINT_NAMES` (1492–1579) | PORT | explicit name table reused for pretty-printing |
 | `_typing_spelling` (1582–1633) | PORT (private) | exact-key fast path in `resolve_hint` |
-| `get_concrete_type` family (484–549) | PORT → `_introspect.py` | pure hint→class introspection; `MagicHint.fallback` uses it via re-export |
+| `get_concrete_type` family (484–549) | PORT → `core/_introspect.py` | pure hint→class introspection; `MagicHint.fallback` uses it via re-export |
 | `eq_safenan`, `_NaN` (1440–1475) | REIMPLEMENT-IMPROVED | drop numpy import at the root (`numbers.Real` covers numpy scalars via ABC); `REAL_TYPES` stays in core-magic |
 | `ishintstance` family (953–1036) | REIMPLEMENT-IMPROVED | verbatim semantics + `Exact` awareness + Protocol guard; no TypedDict change |
 | `issubhint` + all branches (1039–1333) | REIMPLEMENT-IMPROVED | keep structure + documented behaviour; add `Exact`, `Callable` contravariance, constrained-TypeVar/union symmetry, Protocol guard, `_typevar_upper`, opaque fall-through, bounded memo on hashable pairs |
-| `get_from_registry` family (583–735) | REPLACE → `resolve_hint` in `_registry.py` | summed MRO distance is the rejected model; core-magic keeps a 2-line shim |
-| `resolve_alias`, `resolve_newtype` | NEW → `_introspect.py` | PEP 695 `TypeAliasType` / `NewType` resolution (§11) |
+| `get_from_registry` family (583–735) | REPLACE → `resolve_hint` in `core/_registry.py` | summed MRO distance is the rejected model; core-magic keeps a 2-line shim |
+| `resolve_alias`, `resolve_newtype` | NEW → `core/_introspect.py` | PEP 695 `TypeAliasType` / `NewType` resolution (§11) |
 | `get_default` (552–580) | STAYS in core-magic | about default *values*, not the relation |
 | `MagicHint`, `MagicError`, `MultipleCauses`, `REAL_TYPES` (64–481) | STAYS in core-magic | the object model is what core-magic is after the pivot |
 
@@ -633,18 +649,18 @@ CPython-derived in core-magic — checked). The `dataclasses`-derived code is in
 passes) and becomes:
 
 ```python
-from bagof.dispatchers import (            # relocated names: the same objects
+from bagof.dispatchers.core import (       # relocated names: the same objects
     UNSET, Unset, NoneType, UnionType, UNION_TYPES, eq_safenan,
     get_concrete_type, get_origin_uw, get_args_uw, safe_get_origin,
     safe_get_args, safe_isinstance, safe_issubclass, ishintstance,
     issubhint, issubclassable, issubscriptable, is_typeddict,
     typeddict_required_keys, type2hint, unwrap, normalise_hint,
+    resolve_hint as _resolve_hint,
 )
-from bagof.dispatchers import resolve_hint as _resolve_hint
 
 
 def get_from_registry(hint: tx.Any, registry: dict) -> tx.Any:
-    """(existing docstring, plus: new code should call bagof.dispatchers.resolve_hint)"""
+    """(existing docstring, plus: new code should call bagof.dispatchers.core.resolve_hint)"""
     return _resolve_hint(hint, registry, default=None, ambiguity="warn")
 ```
 
@@ -679,7 +695,7 @@ Measured import surfaces:
 - **magic**: `UnionType`
 
 Keep `MagicHint`/`MagicError`/`MultipleCauses` from `bagof.core.magic`; import
-everything else from `bagof.dispatchers` directly. The `get_from_registry(hint,
+everything else from `bagof.dispatchers.core` directly. The `get_from_registry(hint,
 registry) or fallback` call sites (`converters/base.py:308`,
 `validators/base.py:299`, `factories/base.py:257`) become `resolve_hint(hint,
 registry, default=fallback, ambiguity="warn")`, then `"raise"` once each
@@ -785,10 +801,11 @@ the siblings already do) before the core-magic shim PR merges.
   ["typing_extensions>=4.13"]`; `zensical.toml`, `README.md`,
   `tests/test_import.py`. _(Trivial config/rename — suitable for the triage
   layer.)_
-- **Phase 1 — Relocate/reimprove the hint relation + core-magic shim.** Three
-  commits: (1) pure move of `_compat`/`_sentinels`/`_introspect`/`_relation` with
+- **Phase 1 — Relocate/reimprove the hint relation into `core/` + core-magic
+  shim.** Three commits: (1) pure move of `core/_compat`, `core/_sentinels`,
+  `core/_introspect`, `core/_relation` (+ the `core/__init__` facade) with
   core-magic's relation test files moved verbatim and green (reviewable as a diff
-  against core-magic); (2) the §8.3 source improvements + `_exact` + all §11.1
+  against core-magic); (2) the §8.3 source improvements + `core/_exact` + all §11.1
   modern-typing handling (`resolve_alias`, `resolve_newtype`, transparent
   qualifiers, `Never`/`LiteralString`/`TypeGuard`/`TypeIs`, `_typevar_upper`,
   `Unpack`/`ParamSpec`/`Concatenate` degradation, the `GenericAlias` trap,
@@ -810,9 +827,9 @@ the siblings already do) before the core-magic shim PR merges.
   `inspect.Signature.bind`** over generated signatures/shapes (success/failure and
   slot assignment must agree exactly, incl. `/`, `*`, defaults, `*args`,
   `**kwargs`, duplicate-value cases).
-- **Phase 4 — `_function.py` + `_errors.py` + `_registry.py`.** Name-aware value
-  dispatch (§2.2): shape plans, per-shape specificity, the two-level cache, abc
-  token, `dispatch_defaults`, `register` with replacement + ambiguity warnings,
+- **Phase 4 — `_function.py` + `_errors.py` + `core/_registry.py`.** Name-aware
+  value dispatch (§2.2): shape plans, per-shape specificity, the two-level cache,
+  abc token, `dispatch_defaults`, `register` with replacement + ambiguity warnings,
   both errors with named-signature rendering (`!` marker + binding-failure words),
   `Function.from_mapping`, `resolve_hint` with exact-key fast path, parity suite
   ported from core-magic. **[Fable Scope: Review Only] — MANDATORY** (the order is
@@ -826,9 +843,11 @@ the siblings already do) before the core-magic shim PR merges.
   `dispatch_defaults=True`; (h) `**kwargs: H` checked, missing annotation compares
   as `Any`; (i) error rendering names the failing argument and never `repr`s
   values; (j) `ambiguities()`'s heuristic shapes documented as such.
-- **Phase 5 — `_dispatcher.py`, `__init__.py`, docs.** Name grouping,
-  `update_wrapper`; two doc pages (dispatch, hints); 3.8-safe `pycon`;
-  `test_docstrings.py`, `test_module_surface.py` covering both name groups.
+- **Phase 5 — `_dispatcher.py`, both `__init__.py` files, docs.** The clean
+  top-level `__init__` + the `core/__init__` facade, the `functions` namespace,
+  name grouping, `update_wrapper`; two doc pages (`docs/index.md` dispatch,
+  `docs/core.md` the relation API); 3.8-safe `pycon`; `test_docstrings.py`,
+  `test_module_surface.py` asserting the two namespaces stay disjoint and complete.
 - **Phase 6 — Dependent import migration.** One PR each for
   converters/validators/factories (§8.2), `ambiguity="warn"` → `"raise"`; magic
   swaps `UnionType`.
