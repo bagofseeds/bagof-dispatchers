@@ -93,3 +93,6 @@ ignore = [
 [tool.codespell]
 check-filenames = true
 skip = ".git,*.egg-info,build,dist,*.pdf,*.svg"
+# Domain terms, not typos: CLOS (Common Lisp Object System) and multipledispatch's
+# `supercedes` function name (spelled that way upstream).
+ignore-words-list = "clos,supercedes"

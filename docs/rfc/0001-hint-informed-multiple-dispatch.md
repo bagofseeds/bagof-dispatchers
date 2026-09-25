@@ -884,9 +884,9 @@ is uniform across spellings and forward-tolerant. Two measured facts shape this:
    check on a special form must accept both spellings** — the `_TYPEDDICT_MARKERS`
    trick generalised via a `_compat.spellings(name)` helper.
 
-### 11.1 Per-construct handling (native / te-backport / handling / v1 scope)
+### 11.1 Per-construct handling (native / typing_extensions backport / handling / v1 scope)
 
-| Construct | Native | te | Handling · v1 scope |
+| Construct | Native | typing_extensions | Handling · v1 scope |
 |---|---|---|---|
 | **PEP 695 `def f[T]` / `class C[T]`** | 3.12 | — (syntax) | `__type_params__` holds ordinary `TypeVar`s; dispatch identical to legacy. Use `getattr(tv, "__default__", tx.NoDefault)` (native 3.12 TypeVars lack `has_default`). **Support** |
 | **PEP 695 `type X = …` (`TypeAliasType`)** | 3.12 | 4.6+ | `resolve_alias(hint)` in `_introspect`: detect by duck type (`__value__` + `__type_params__`) or either spelling; return `__value__`; substitute args for a subscripted `G[int]` via typing's own `__getitem__`; recursive with cycle guard; called at top of `issubhint`/`ishintstance` and from `normalise_hint` (not `unwrap`). **Support** |
@@ -894,18 +894,18 @@ is uniform across spellings and forward-tolerant. Two measured facts shape this:
 | **PEP 696 defaults** | 3.13 | 4.4+ | read bound/constraints only via `_typevar_upper`; default ignored. **Support** |
 | **PEP 646 `TypeVarTuple`/`Unpack`/`*Ts`** | 3.11 | 4.1+ | degrade: `*args: *Ts` → `Any` tail; `Unpack[Ts]` in `Tuple[...]` → "zero+ `Any`" slot (prefix/suffix split in `_issubargs`); repeated `Ts` not solved. **Degrade v1**, full ordering deferred |
 | **PEP 612 `ParamSpec`/`Concatenate`** | 3.10 | 4.x | degrade: `Callable[P,R] ≡ Callable[...,R]`; `Concatenate[int,P]` contravariant prefix; `*args: P.args` → `Any` tail; bare `P` as a param → registration `TypeError`. **Degrade v1** |
-| **`NewType`** | 3.5/3.10 | te class 3.8/3.9 | `resolve_newtype` → `__supertype__`, recursive, in `normalise_hint`. **Support** |
+| **`NewType`** | 3.5/3.10 | typing_extensions class 3.8/3.9 | `resolve_newtype` → `__supertype__`, recursive, in `normalise_hint`. **Support** |
 | **`Never`/`NoReturn`** | 3.11/3.6 | 4.1+ | bottom type; a `Never` param makes a method never applicable (explicit "forbid this combination"). **Support** |
 | **`TypeGuard`/`TypeIs`** | 3.10/3.13 | 4.x/4.10+ | treat as `bool`. **Support** |
 | **`LiteralString`** | 3.11 | 4.1+ | treat as `str`. **Support** |
 | **`Self`** | 3.11 | 4.0+ | method → owner class via `__get__`; free function → unknown-form rule. **Support/Degrade** |
 | **`Required`/`NotRequired`/`ReadOnly`** | 3.11/3.11/3.13 | 4.0+/4.9+ | transparent qualifiers → unwrap to inner. **Support** |
 | **`Final`/`ClassVar`** | 3.8 | — | transparent qualifiers → inner. **Support** |
-| **`Annotated`/`Doc` (PEP 727)** | 3.9/te | 4.x/4.9+ | transparent except `EXACT`; `Annotated` is a class ≤3.12, not 3.13 (pinned). **Support** |
+| **`Annotated`/`Doc` (PEP 727)** | 3.9/typing_extensions | 4.x/4.9+ | transparent except `EXACT`; `Annotated` is a class ≤3.12, not 3.13 (pinned). **Support** |
 | **PEP 604 `X \| Y`** | 3.10 | — | `types.UnionType` in `UNION_TYPES`; 3.14 `types.UnionType is typing.Union` (pinned; verify). **Support** |
 | **PEP 585 `list[int]`** | 3.9 | — | `isinstance(list[int], type)` is True on 3.9/3.10 → guard with `get_origin(x) is None` before treating as a class; `≡ List[int]`. **Support** |
 | **User `Generic[T]`** | 3.8 | — | origin `isinstance`, args covariant regardless of declared variance (documented value-dispatch divergence). **Support** |
-| **Unknown / future form** | — | te first | opaque rule (§11.2). **Degrade** |
+| **Unknown / future form** | — | typing_extensions first | opaque rule (§11.2). **Degrade** |
 
 Numeric-tower note (docs): `issubhint(int, T_bound_float)` is False — the spec's
 float/complex promotion is a static convention; dispatch follows runtime
@@ -931,16 +931,16 @@ in `safe_issubclass`, no future form can raise out of the relation.
 
 ### 11.3 Support-matrix conclusion (one line per version)
 
-- **3.8** — everything modern from te; no `list[int]`/`X | Y` at runtime, so
-  stringified annotations of those raise `TypeError` in `get_type_hints` (catch
-  & defer); `NewType` is a te class (verify).
+- **3.8** — everything modern from typing_extensions; no `list[int]`/`X | Y` at
+  runtime, so stringified annotations of those raise `TypeError` in
+  `get_type_hints` (catch & defer); `NewType` is a typing_extensions class (verify).
 - **3.9** — PEP 585 arrives and `isinstance(list[int], type)` is True → guard
   `issubclassable`/`safe_issubclass` with `get_origin(x) is None`.
 - **3.10** — `X | Y`, `ParamSpec`/`Concatenate`/`TypeAlias`/`TypeGuard` native;
   `NewType` becomes a class; both spellings required.
 - **3.11** — `Any` becomes a class (pinned); `Never`/`Self`/`LiteralString`/
-  `TypeVarTuple`/`Unpack`/`Required` native; `GenericAlias` trap fixed; te still
-  owns `Unpack`/`TypeVarTuple`/`TypeVar` — both spellings.
+  `TypeVarTuple`/`Unpack`/`Required` native; `GenericAlias` trap fixed;
+  typing_extensions still owns `Unpack`/`TypeVarTuple`/`TypeVar` — both spellings.
 - **3.12** — PEP 695 syntax + native `TypeAliasType` (duck-type it); native PEP
   695 TypeVars lack `__default__` (`getattr(..., NoDefault)`); `Annotated` still
   a class.
