@@ -316,10 +316,10 @@ def test_extra_keyword_checked_against_varkw() -> None:
 
 
 def test_register_overlays_positional_hint() -> None:
-    """`register(hint)` overlays the hint onto the first parameter."""
+    """`register((hint,))` overlays the hint onto the first parameter."""
     f = Function("f")
 
-    @f.register(int)
+    @f.register((int,))
     def _(x) -> str:  # noqa: ANN001 -- overlaid by the register hint
         return "int"
 
@@ -332,7 +332,7 @@ def test_register_overlay_keeps_names_and_defaults() -> None:
     """Overlaying keeps the function's parameter names, kinds and defaults."""
     f = Function("f")
 
-    @f.register(int, scale=float)
+    @f.register((int,), {"scale": float})
     def _(shape, scale=1.0) -> tuple:  # noqa: ANN001
         return (shape, scale)
 
@@ -341,10 +341,10 @@ def test_register_overlay_keeps_names_and_defaults() -> None:
 
 
 def test_register_overlay_by_name() -> None:
-    """A named hint overlays the parameter it names."""
+    """A named hint (a dict) overlays the parameter it names."""
     f = Function("f")
 
-    @f.register(y=int)
+    @f.register({"y": int})
     def _(x, y) -> str:  # noqa: ANN001
         return "m"
 
@@ -353,15 +353,39 @@ def test_register_overlay_by_name() -> None:
         f("anything", "not int")
 
 
+def test_register_overlay_returns_the_implementation() -> None:
+    """The hint-overlay decorator returns the wrapped callable, not `self`."""
+    f = Function("f")
+
+    def impl(x) -> str:  # noqa: ANN001
+        return "m"
+
+    returned = f.register((int,))(impl)
+    assert returned is impl  # singledispatch convention: the callable
+
+
+def test_register_overlay_no_hints_uses_own_signature() -> None:
+    """`register()` with no hints registers by the function's own signature."""
+    f = Function("f")
+
+    @f.register()
+    def _(x: int) -> str:
+        return "int"
+
+    assert f(3) == "int"
+    with pytest.raises(NoMethodError):
+        f("a")
+
+
 def test_register_too_many_hints() -> None:
-    """More hints than parameters is a `TypeError`."""
+    """More positional hints than parameters is a `TypeError`."""
     f = Function("f")
 
     def one(x) -> None:  # noqa: ANN001
         ...
 
     with pytest.raises(TypeError, match="positional parameter"):
-        f.register(int, str)(one)
+        f.register((int, str))(one)
 
 
 def test_register_unknown_named_hint() -> None:
@@ -372,7 +396,7 @@ def test_register_unknown_named_hint() -> None:
         ...
 
     with pytest.raises(TypeError, match="no parameter"):
-        f.register(missing=int)(one)
+        f.register({"missing": int})(one)
 
 
 def test_register_direct_returns_the_function_object() -> None:
@@ -385,6 +409,106 @@ def test_register_direct_returns_the_function_object() -> None:
     returned = f.register(m)
     assert returned is m
     assert f(3) == 3
+
+
+def test_register_class_dispatches_on_its_constructor() -> None:
+    """`register(SomeClass)` registers the class on its constructor signature.
+
+    A type is a callable, so it is an implementation -- dispatched on its
+    `__init__`, not read as a hint (#14).
+    """
+    f = Function("f")
+
+    class Widget:
+        def __init__(self, size: int) -> None:
+            self.size = size
+
+    def fallback(x: object) -> str:
+        return "object"
+
+    returned = f.register(Widget)
+    assert returned is Widget
+    f.register(fallback)
+    # A call whose first argument is an int selects the Widget constructor.
+    made = f(3)
+    assert isinstance(made, Widget) and made.size == 3
+    assert f("a") == "object"
+
+
+def test_register_int_is_an_implementation_not_a_hint() -> None:
+    """`register(int)` registers the `int` type itself as an implementation."""
+    f = Function("f")
+    returned = f.register(int)
+    assert returned is int
+    # It dispatches on int's constructor: f("3") builds int("3") == 3.
+    assert f("3") == 3
+    assert len(f.methods) == 1
+    assert f.methods[0].function is int
+
+
+def test_register_callable_instance() -> None:
+    """A callable instance registers, dispatched on its `__call__`."""
+    f = Function("f")
+
+    class Doubler:
+        def __call__(self, x: int) -> int:
+            return x * 2
+
+    doubler = Doubler()
+    returned = f.register(doubler)
+    assert returned is doubler
+    assert f(5) == 10
+
+
+def test_register_impl_with_extra_positional_is_an_error() -> None:
+    """An implementation plus a stray positional is a `TypeError`."""
+    f = Function("f")
+
+    def m(x: int) -> int:
+        return x
+
+    with pytest.raises(TypeError, match="single implementation"):
+        f.register(m, int)
+
+
+def test_register_non_callable_non_hint_is_an_error() -> None:
+    """A first argument that is neither callable nor hints is a `TypeError`."""
+    f = Function("f")
+    with pytest.raises(TypeError, match="expected a callable"):
+        f.register(3)
+
+
+def test_register_two_tuples_is_an_error() -> None:
+    """Two positional-hint tuples is a `TypeError`."""
+    f = Function("f")
+
+    def m(x) -> None:  # noqa: ANN001
+        ...
+
+    with pytest.raises(TypeError, match="at most one tuple"):
+        f.register((int,), (str,))(m)
+
+
+def test_register_two_dicts_is_an_error() -> None:
+    """Two named-hint dicts is a `TypeError`."""
+    f = Function("f")
+
+    def m(x) -> None:  # noqa: ANN001
+        ...
+
+    with pytest.raises(TypeError, match="at most one dict"):
+        f.register({"x": int}, {"x": str})(m)
+
+
+def test_register_overlay_stray_argument_is_an_error() -> None:
+    """A hint-overlay argument that is neither a tuple nor a dict errors."""
+    f = Function("f")
+
+    def m(x) -> None:  # noqa: ANN001
+        ...
+
+    with pytest.raises(TypeError, match="tuple .*and/or a dict"):
+        f.register((int,), 5)(m)
 
 
 def test_register_replacement_warns() -> None:
@@ -759,6 +883,237 @@ def test_registration_tolerates_unresolved_forward_ref() -> None:
 
 def test_build_plan_returns_existing() -> None:
     """Building a plan for an already-planned shape returns the cached one."""
+    f = Function("f")
+
+    def m(x: int) -> int:
+        return x
+
+    f.register(m)
+    cache = f._refresh()
+    shape = (1, ())
+    first = f._build_plan(shape, cache)
+    second = f._build_plan(shape, cache)
+    assert first is second
+
+
+# --- B1: structural replacement, not equivalence-collapse --------------
+
+
+def _typevar_pair() -> "typing.Tuple[typing.Any, typing.Any]":
+    T = typing.TypeVar("T")
+    U = typing.TypeVar("U")
+    return T, U
+
+
+def test_distinct_typevars_are_both_kept() -> None:
+    """`(x: T, y: T)` and `(x: T, y: U)` are different methods, both kept.
+
+    Both are equivalent to `(Any, Any)`, so `Signature.__eq__` (semantic
+    equivalence) reports them equal; registration must instead compare the
+    signatures *as written*, so the two coexist rather than one silently
+    replacing the other.
+    """
+    T, U = _typevar_pair()
+    f = Function("f")
+
+    def same(x: T, y: T) -> str:
+        return "same"
+
+    def free(x: T, y: U) -> str:
+        return "free"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        f.register(same)
+        f.register(free)  # must NOT warn about replacement
+    assert len(f.methods) == 2
+
+
+def test_bound_typevar_and_plain_are_both_kept() -> None:
+    """A `TypeVar(bound=int)` method and an `int` method are both kept.
+
+    A bound TypeVar is *equivalent* to its bound, so `Signature.__eq__` reports
+    the two signatures equal; registration must compare them structurally so
+    the TypeVar method does not silently replace the plain one (or vice versa).
+    """
+    TB = typing.TypeVar("TB", bound=int)
+    f = Function("f")
+
+    def tv(x: TB) -> str:
+        return "tv"
+
+    def plain(x: int) -> str:
+        return "plain"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        f.register(tv)
+        f.register(plain)
+    assert len(f.methods) == 2
+
+
+def test_typevar_and_unannotated_are_both_kept() -> None:
+    """`(x: T, y: T)` and an unannotated `(x, y)` are distinct spellings."""
+    T, _ = _typevar_pair()
+    f = Function("f")
+
+    def repeated(x: T, y: T) -> str:
+        return "repeated"
+
+    def bare(x, y) -> str:  # noqa: ANN001 -- unannotated, so (Any, Any)
+        return "bare"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        f.register(repeated)
+        f.register(bare)
+    assert len(f.methods) == 2
+
+
+def test_identical_spelling_replaces_with_warning() -> None:
+    """A genuine re-registration (same spelling) still replaces, and warns."""
+    f = Function("f")
+
+    def first(x: int, y: int) -> str:
+        return "first"
+
+    def second(x: int, y: int) -> str:
+        return "second"
+
+    f.register(first)
+    with pytest.warns(RuntimeWarning, match="replacing"):
+        f.register(second)
+    assert len(f.methods) == 1
+    assert f(1, 2) == "second"
+
+
+def test_distinct_typevar_spellings_are_order_independent() -> None:
+    """`(T,T),(T,U)` and `(T,U),(T,T)` give the same set of two methods."""
+    T, U = _typevar_pair()
+
+    def same(x: T, y: T) -> str:
+        return "same"
+
+    def free(x: T, y: U) -> str:
+        return "free"
+
+    forwards = Function("f")
+    backwards = Function("f")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        forwards.register(same)
+        forwards.register(free)
+        backwards.register(free)
+        backwards.register(same)
+    assert len(forwards.methods) == len(backwards.methods) == 2
+
+
+# --- B2: cross-argument MRO conflict stays ambiguous -------------------
+
+
+def test_exact_object_vs_int_int_is_ambiguous() -> None:
+    """`(Exact[int], object)` vs `(int, int)` on `f(3, 3)` is ambiguous.
+
+    The first is strictly more specific at argument 0 (`Exact[int] < int`), the
+    second at argument 1 (`int < object`): a cross-argument conflict with no
+    most specific method. MRO refinement must not break the tie by reading
+    `Exact[int]` as `int` at position 0 and letting the second win on 1 alone.
+    """
+    f = Function("f")
+
+    def exact_first(x: Exact[int], y: object) -> str:
+        return "exact_first"
+
+    def int_int(x: int, y: int) -> str:
+        return "int_int"
+
+    _quiet_register(f, exact_first, int_int)
+    with pytest.raises(AmbiguousMethodError):
+        f(3, 3)
+
+
+def test_literal_object_vs_int_int_is_ambiguous() -> None:
+    """The `Literal[1]`-in-place-of-`Exact[int]` shape is ambiguous too."""
+    f = Function("f")
+
+    def lit_first(x: typing.Literal[1], y: object) -> str:
+        return "lit_first"
+
+    def int_int(x: int, y: int) -> str:
+        return "int_int"
+
+    _quiet_register(f, lit_first, int_int)
+    with pytest.raises(AmbiguousMethodError):
+        f(1, 1)
+
+
+def test_single_dispatch_diamond_still_refines() -> None:
+    """The plain single-argument diamond still resolves by MRO (B2 regression).
+
+    `D(B, C)` with methods on `B` and `C`: `B` comes first in `D`'s MRO, so it
+    wins -- the refinement the B2 fix must preserve.
+    """
+
+    class B:
+        pass
+
+    class C:
+        pass
+
+    class D(B, C):
+        pass
+
+    f = Function("f")
+
+    def for_b(x: B) -> str:
+        return "B"
+
+    def for_c(x: C) -> str:
+        return "C"
+
+    _quiet_register(f, for_b, for_c)
+    assert f(D()) == "B"
+
+
+# --- N1/N2: cache token re-read, bounded cache, clear_cache ------------
+
+
+def test_clear_cache_keeps_methods_and_forces_recompute() -> None:
+    """`clear_cache` drops cached plans but leaves the methods untouched."""
+    f = Function("f")
+
+    def m(x: int) -> int:
+        return x
+
+    f.register(m)
+    assert f(1) == 1
+    assert f._cache.shape_plans  # a plan was cached
+    f.clear_cache()
+    assert not f._cache.shape_plans  # dropped
+    assert list(f.methods)  # methods survive
+    assert f(2) == 2  # still dispatches
+
+
+def test_call_cache_is_bounded() -> None:
+    """The per-shape call cache never grows past its cap."""
+    from bagof.dispatchers import _function as engine
+
+    f = Function("f")
+
+    def handle(x: object) -> int:
+        return 1
+
+    f.register(handle)
+    cap = engine._CALL_CACHE_CAP
+    # Each distinct argument *type* is a distinct call key under one shape.
+    for index in range(cap + 50):
+        made = type(f"T{index}", (), {})
+        f(made())
+    assert len(f._cache.call_cache) <= cap  # bounded
+
+
+def test_ensure_rereads_token_under_lock() -> None:
+    """`_ensure` stamps the cache with the token read under the lock (N1)."""
     import abc as _abc
 
     f = Function("f")
@@ -767,8 +1122,54 @@ def test_build_plan_returns_existing() -> None:
         return x
 
     f.register(m)
-    cache = f._refresh(_abc.get_cache_token())
-    shape = (1, ())
-    first = f._build_plan(shape, cache)
-    second = f._build_plan(shape, cache)
-    assert first is second
+    with f._lock:
+        cache = f._ensure()
+    assert cache.token == _abc.get_cache_token()
+
+
+# --- N4: resolve() Exact convenience agrees with resolve_hint ----------
+
+
+def test_resolve_exact_convenience_matches_plain_query() -> None:
+    """`resolve(int)` reaches an `Exact[int]` method (RFC §4 convenience)."""
+    f = Function("f")
+
+    def exact(x: Exact[int]) -> str:
+        return "exact"
+
+    f.register(exact)
+    # A plain-`int` query reaches the Exact[int] method, though `int` is not a
+    # sub-hint of `Exact[int]` -- matching resolve_hint's key convenience.
+    assert f.resolve(int).name == "exact"
+
+
+def test_resolve_exact_convenience_agrees_with_resolve_hint() -> None:
+    """`resolve` and `resolve_hint` answer the Exact convenience alike."""
+    from bagof.dispatchers.core import resolve_hint
+
+    f = Function("f")
+
+    def exact(x: Exact[int]) -> str:
+        return "exact"
+
+    f.register(exact)
+    via_function = f.resolve(int)
+    registry = {Exact[int]: "exact"}
+    via_registry = resolve_hint(int, registry)
+    assert via_function.name == "exact"
+    assert via_registry == "exact"
+
+
+def test_resolve_exact_still_prefers_exact_over_plain() -> None:
+    """With an `Exact[int]` and an `int` method, `resolve(int)` picks Exact."""
+    f = Function("f")
+
+    def exact(x: Exact[int]) -> str:
+        return "exact"
+
+    def plain(x: int) -> str:
+        return "plain"
+
+    _quiet_register(f, exact, plain)
+    # Both applicable to an `int` query; Exact[int] is the leaf, so it wins.
+    assert f.resolve(int).name == "exact"

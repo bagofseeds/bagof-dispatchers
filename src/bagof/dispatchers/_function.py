@@ -24,7 +24,6 @@ argument-type key, and the cache is dropped when the methods change or when an
 # stdlib
 import abc
 import functools
-import inspect
 import threading
 import warnings
 
@@ -52,6 +51,12 @@ _NO_TOKEN = object()
 
 # A placeholder positional/keyword value used to bind a bare call *shape*.
 _PLACEHOLDER = object()
+
+# The most call keys one shape's plan caches before it starts evicting the
+# oldest. A function called with unboundedly many distinct argument-type keys
+# (many value-dependent literals, say) then keeps a bounded working set rather
+# than growing without limit.
+_CALL_CACHE_CAP = 1024
 
 
 class _Cache:
@@ -128,6 +133,11 @@ class Function:
 
     def __init__(self, name: tx.Optional[str] = None) -> None:
         self._name = name
+        # Re-entrant, not a plain lock: registration can re-enter itself. A
+        # deferred forward reference resolved during selection evaluates the
+        # annotation, which may import a module that registers another method;
+        # and `ishintstance` can reach a user `__instancecheck__` /
+        # `__subclasshook__` that dispatches back into this same function.
         self._lock = threading.RLock()
         self._methods = ()  # type: tx.Tuple[Method, ...]
         self._cache = _Cache((), _NO_TOKEN)
@@ -146,45 +156,69 @@ class Function:
 
     # -- registration ---------------------------------------------------
 
-    def register(
-        self, *hints: tx.Any, priority: int = 0, **named_hints: tx.Any
-    ) -> tx.Any:
+    def register(self, *args: tx.Any, priority: int = 0) -> tx.Any:
         """Register a method, or return a decorator that does.
 
-        Three spellings:
+        `register` takes **either** an implementation **or** hints -- never
+        both in a way that could be confused, since a type is both a callable
+        and a valid hint:
 
-        * `#!python f.register(fn)` registers `fn`, reading its signature
-          from its own annotations.
-        * `#!python f.register(int, scale=float)` returns a decorator that
-          registers the function it wraps, **overlaying** the given hints onto
-          the function's own parameters -- `#!python int` onto the first
-          parameter, `#!python scale=float` onto the parameter named `scale`
-          -- keeping the function's parameter names, kinds and defaults.
-        * `#!python f.register(priority=1)` (or either form above with
-          `#!python priority=`) sets the tie-break priority.
+        * **Implementation form** -- `#!python f.register(impl)`, where `impl`
+          is any callable: a function, a **class** (dispatched on its
+          constructor's signature), or a callable instance. The signature is
+          read from `impl` itself. `#!python f.register(int)` registers the
+          `#!python int` **type** as an implementation, dispatched on its
+          constructor -- it is *not* read as a hint.
+        * **Hint-overlay form** -- the argument is a `#!python tuple` of
+          positional hints and/or a `#!python dict` of named hints, and a
+          decorator is returned that overlays those hints onto the wrapped
+          function's own parameters, keeping its names, kinds and defaults:
 
-        Registering a function whose signature matches one already registered
-        replaces it, with a [`RuntimeWarning`][] -- the case a module reload
-        or a doubled decorator produces.
+            * `#!python @f.register((int, float))` -- positional hints (always
+              a tuple, even for one: `#!python (int,)`);
+            * `#!python @f.register({"scale": float})` -- named hints;
+            * `#!python @f.register((int,), {"scale": float})` -- both;
+            * `#!python @f.register()` -- no hints, register by the wrapped
+              function's own signature.
+
+        The form is chosen by the first argument's type: a `#!python tuple` or
+        `#!python dict` is hints, anything else is the implementation, and no
+        argument at all is the hint-overlay decorator with nothing to overlay.
+
+        A method registered with the same signature *as written* as one already
+        registered replaces it, with a [`RuntimeWarning`][] -- the case a
+        module reload or a doubled decorator produces.
 
         Returns
         -------
-        Function or Callable
-            The function itself when a method was registered directly (so
-            `#!python f.register(fn)` and `#!python @f.register` both leave the
-            name bound to the function), or the decorator otherwise.
+        Callable
+            The registered callable, in both forms -- so `#!python
+            f.register(fn)`, `#!python @f.register` and `#!python
+            @f.register((int,))` all leave the name bound to the function
+            (the [`functools.singledispatch`][functools.singledispatch]
+            convention).
         """
-        if (
-            len(hints) == 1
-            and not named_hints
-            and _is_implementation(hints[0])
-        ):
-            return self._add(Method(hints[0], priority=priority))
+        if args and not isinstance(args[0], (tuple, dict)):
+            # Implementation form: the first argument is the callable itself.
+            impl = args[0]
+            if len(args) > 1:
+                raise TypeError(
+                    "register(impl) takes a single implementation; to overlay "
+                    "hints, pass them as a tuple and/or a dict -- "
+                    "register((int, str)) or register({'x': int})."
+                )
+            if not callable(impl):
+                raise TypeError(
+                    f"register(...) expected a callable to register, or a "
+                    f"tuple/dict of hints, but got {impl!r}."
+                )
+            return self._add(Method(impl, priority=priority))
 
-        def decorator(fn: tx.Callable[..., tx.Any]) -> "Function":
+        hints, named_hints = _split_hint_args(args)
+
+        def decorator(fn: tx.Callable[..., tx.Any]) -> tx.Any:
             signature = _overlay(fn, hints, named_hints)
-            self._add(Method(fn, signature, priority=priority))
-            return self
+            return self._add(Method(fn, signature, priority=priority))
 
         return decorator
 
@@ -290,34 +324,29 @@ class Function:
         token = abc.get_cache_token()
         cache = self._cache
         if cache.token != token or cache.methods is not self._methods:
-            cache = self._refresh(token)
+            cache = self._refresh()
         shape = Signature.shape(args, kwargs)
         plan = cache.shape_plans.get(shape)
         if plan is not None:
             key = _call_key(args, kwargs, plan)
-            if key is not None:
-                try:
-                    hit = cache.call_cache.get(key, _MISS)
-                except TypeError:
-                    hit = _MISS
-                if hit is not _MISS:
-                    return hit
+            try:
+                hit = cache.call_cache.get(key, _MISS)
+            except TypeError:
+                # An unhashable value at a value-dependent argument makes the
+                # key unhashable, so this call was never cached; resolve it.
+                hit = _MISS
+            if hit is not _MISS:
+                return hit
         # A miss (or an as-yet-unplanned shape): resolve under the lock, where
         # the cache cannot be swapped out underneath the write.
         with self._lock:
-            cache = self._ensure(token)
+            cache = self._ensure()
             plan = cache.shape_plans.get(shape)
             if plan is None:
                 plan = self._build_plan(shape, cache)
             method = self._resolve_values(args, kwargs, plan)
             key = _call_key(args, kwargs, plan)
-            if key is not None:
-                try:
-                    cache.call_cache[key] = method
-                except TypeError:
-                    # An unhashable value at a value-dependent argument -- this
-                    # call cannot be a cache key, so it is simply not cached.
-                    pass
+            _store_call(cache.call_cache, key, method)
             return method
 
     def resolve(
@@ -335,6 +364,15 @@ class Function:
         sub-hint relation. Returns the chosen
         [`Method`][bagof.dispatchers.Method].
 
+        As a lookup convenience -- the same one
+        [`resolve_hint`][bagof.dispatchers.core.resolve_hint] grants, and
+        matching RFC 0001 §4 -- a method whose parameter is
+        [`Exact`][bagof.dispatchers.Exact]`[C]` is reachable by a plain-`C`
+        query, even though `#!python C` on its own is not a sub-hint of
+        `#!python Exact[C]`. This does not change the sub-hint relation or the
+        specificity order, only which methods a hint query counts as
+        applicable.
+
         Parameters
         ----------
         default
@@ -347,9 +385,8 @@ class Function:
             `#!python "warn"` takes the first registered and warns; `#!python
             "ignore"` takes it silently.
         """
-        token = abc.get_cache_token()
         with self._lock:
-            cache = self._ensure(token)
+            cache = self._ensure()
             shape = Signature.shape(hints, named_hints)
             plan = cache.shape_plans.get(shape)
             if plan is None:
@@ -434,22 +471,40 @@ class Function:
 
     # -- cache management -----------------------------------------------
 
-    def _ensure(self, token: tx.Any) -> _Cache:
-        """Return a cache valid for `token` and the current methods.
+    def _ensure(self) -> _Cache:
+        """Return a cache valid for the current ABC token and methods.
 
-        The caller holds the lock. A stale cache -- built for other methods or
-        an older ABC token -- is replaced with a fresh empty one.
+        The caller holds the lock. The ABC cache token is re-read here, under
+        the lock, rather than trusted from a value read before it was taken: a
+        token that advanced in between would otherwise stamp the fresh cache
+        with a stale value and let the next reader serve it. A stale cache --
+        built for other methods or an older token -- is replaced with a fresh
+        empty one.
         """
+        token = abc.get_cache_token()
         cache = self._cache
         if cache.token != token or cache.methods is not self._methods:
             cache = _Cache(self._methods, token)
             self._cache = cache
         return cache
 
-    def _refresh(self, token: tx.Any) -> _Cache:
-        """Take the lock and return a cache valid for `token`."""
+    def _refresh(self) -> _Cache:
+        """Take the lock and return a cache valid for the current token."""
         with self._lock:
-            return self._ensure(token)
+            return self._ensure()
+
+    def clear_cache(self) -> None:
+        """Drop the dispatch cache, so the next call recomputes selection.
+
+        The registered methods are untouched; only the cached shape plans and
+        per-call results are discarded. Rarely needed -- registration and an
+        [`abc.register`][abc.ABCMeta.register] elsewhere both invalidate the
+        cache on their own -- but available for a value whose
+        `#!python isinstance` behaviour has changed in a way the ABC cache
+        token does not track.
+        """
+        with self._lock:
+            self._cache = _Cache(self._methods, _NO_TOKEN)
 
     def _build_plan(self, shape: tx.Any, cache: _Cache) -> _Plan:
         """Work out and store the plan for `shape` (caller holds the lock)."""
@@ -579,6 +634,16 @@ class Function:
         strict = False
         for key in won:
             here, there = won[key], lost[key]
+            # A refinement may never overrule a strict specificity win the
+            # other way: if the loser's hint is strictly more specific at this
+            # argument, the two conflict across arguments and must stay
+            # ambiguous rather than be decided by MRO. This is what keeps
+            # `Exact[int]/object` vs `int/int` ambiguous -- both read as `int`
+            # at position 0 by MRO, so without this check the second would win
+            # on position 1 alone (RFC 0001 §2.2: the refinements are partial
+            # and none overrides a strict specificity win).
+            if issubhint(there, here) and not issubhint(here, there):
+                return False
             value = args[key] if isinstance(key, int) else kwargs[key]
             value_type = type(value)
             a = mro_index(here, value_type)
@@ -917,17 +982,39 @@ def _landed_hints(
     return result
 
 
+def _store_call(
+    call_cache: tx.Dict[tx.Any, Method], key: tx.Any, method: Method
+) -> None:
+    """Cache `method` under `key`, bounding the cache and skipping bad keys.
+
+    The per-plan cache is capped: when it is full and the key is new, the
+    oldest entry (dict insertion order) is evicted first, so a function called
+    with unboundedly many distinct keys keeps only a bounded working set. A key
+    that cannot be hashed -- an unhashable value at a value-dependent argument
+    -- is simply not cached.
+    """
+    try:
+        if key not in call_cache and len(call_cache) >= _CALL_CACHE_CAP:
+            call_cache.pop(next(iter(call_cache)))
+        call_cache[key] = method
+    except TypeError:
+        # An unhashable value-dependent argument: this call cannot be a key.
+        pass
+
+
 def _call_key(
     args: tx.Sequence[tx.Any],
     kwargs: tx.Mapping[str, tx.Any],
     plan: _Plan,
-) -> tx.Optional[tx.Tuple[tx.Any, ...]]:
+) -> tx.Tuple[tx.Any, ...]:
     """The cache key for a concrete call under a shape's plan.
 
     The type of each argument keys it, plus the value itself where the shape's
     hints read a value rather than a type (a `#!python Literal`, a
-    `#!python type[...]`). A value-dependent argument whose value is unhashable
-    cannot be a key, so the whole call is left uncached and the key is `None`.
+    `#!python type[...]`). The key tuple is always built; a value-dependent
+    argument whose value is unhashable is wrapped so the tuple builds fine and
+    the [`TypeError`][] surfaces only when the key is hashed (on a `dict`
+    access), where the caller catches it and leaves the call uncached.
     """
     value_dependent = plan.value_dependent
     parts = [len(args)]  # type: tx.List[tx.Any]
@@ -1048,16 +1135,41 @@ def _why_unbindable(
 # --- registration helpers ----------------------------------------------
 
 
-def _is_implementation(candidate: tx.Any) -> bool:
-    """Whether a single `register` argument is a function to register.
+def _split_hint_args(
+    args: tx.Tuple[tx.Any, ...],
+) -> tx.Tuple[tx.Tuple[tx.Any, ...], tx.Dict[str, tx.Any]]:
+    """Split the hint-overlay arguments into positional and named hints.
 
-    A plain function, method, lambda or [`functools.partial`][] is an
-    implementation; a type or typing construct is a *hint* the caller is
-    overlaying, so it makes `register` a decorator instead.
+    The arguments are a `#!python tuple` of positional hints, a `#!python dict`
+    of named hints, both, or neither. Anything else -- or two of the same kind
+    -- is a caller error.
     """
-    return inspect.isroutine(candidate) or isinstance(
-        candidate, functools.partial
-    )
+    hints = ()  # type: tx.Tuple[tx.Any, ...]
+    named = {}  # type: tx.Dict[str, tx.Any]
+    seen_tuple = False
+    seen_dict = False
+    for arg in args:
+        if isinstance(arg, tuple):
+            if seen_tuple:
+                raise TypeError(
+                    "register(...) takes at most one tuple of positional "
+                    "hints."
+                )
+            hints = arg
+            seen_tuple = True
+        elif isinstance(arg, dict):
+            if seen_dict:
+                raise TypeError(
+                    "register(...) takes at most one dict of named hints."
+                )
+            named = arg
+            seen_dict = True
+        else:
+            raise TypeError(
+                f"register(...) hints must be given as a tuple (positional) "
+                f"and/or a dict (named), but got {arg!r}."
+            )
+    return hints, named
 
 
 def _overlay(
@@ -1107,14 +1219,19 @@ def _overlay(
 def _replace_or_append(
     methods: tx.Tuple[Method, ...], method: Method
 ) -> tx.Tuple[Method, ...]:
-    """`methods` with `method` added, replacing one of identical signature.
+    """`methods` with `method` added, replacing one spelled the same way.
 
-    A method whose signature matches one already registered replaces it in
-    place, with a [`RuntimeWarning`][] -- the shape a module reload or a
-    doubled decorator produces. A method with a new signature is appended.
+    A method whose signature is written the *same way* as one already
+    registered -- same parameter names, kinds, required-ness and structurally
+    equal hints -- replaces it in place, with a [`RuntimeWarning`][]; that is
+    the shape a module reload or a doubled decorator produces. A method that is
+    merely *equivalent* under the sub-hint relation but spelled differently
+    (`#!python (x: T, y: T)` vs `#!python (x: T, y: U)`, `#!python Exact[int]`
+    vs `#!python int`) is a distinct method and is appended -- selection then
+    orders the two, and `_warn_new_ambiguities` flags them if they clash.
     """
     for index, existing in enumerate(methods):
-        if existing.signature == method.signature:
+        if existing.signature.same_as(method.signature):
             warnings.warn(
                 f"replacing an existing method {existing.describe()} with a "
                 f"new one of the same signature.",

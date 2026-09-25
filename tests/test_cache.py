@@ -124,8 +124,7 @@ def test_non_value_dependent_call_key_uses_types() -> None:
         return "m"
 
     f.register(m)
-    token = abc.get_cache_token()
-    cache = f._refresh(token)
+    cache = f._refresh()
     shape = (2, ())
     plan = f._build_plan(shape, cache)
     key = _call_key((1, "a"), {}, plan)
@@ -237,15 +236,18 @@ def test_keyvalue_notimplemented_for_other_types() -> None:
     assert _KeyValue(1).__eq__(1) is NotImplemented
 
 
-def test_call_key_none_when_unhashable() -> None:
-    """A value-dependent unhashable value yields no cache key when hashed."""
+def test_call_key_builds_but_defers_hash_when_unhashable() -> None:
+    """A value-dependent unhashable value still builds a key; hash defers.
 
-    class Plan(_Plan):
-        pass
-
+    `_call_key` always returns a tuple -- it never signals "uncacheable" with
+    `None`. An unhashable value at a value-dependent argument is wrapped so the
+    tuple builds fine and the `TypeError` surfaces only when the key is hashed
+    (on the surrounding `dict` access), which the engine catches to leave the
+    call uncached.
+    """
     # Fabricate a plan whose single positional is value-dependent.
     plan = _Plan((), {}, frozenset({0}))
     key = _call_key(([1, 2],), {}, plan)  # a list is unhashable
-    assert key is not None  # the tuple builds fine
+    assert isinstance(key, tuple)  # the tuple always builds
     with pytest.raises(TypeError):
         hash(key)  # hashing it is what raises, and dispatch catches that

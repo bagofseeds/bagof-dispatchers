@@ -1086,3 +1086,172 @@ def test_parameters_mapping_is_readonly() -> None:
     assert "x" in params
     with pytest.raises(TypeError):
         params["y"] = None  # type: ignore[index]
+
+
+# --- from_callable on a class reads its constructor (#14) ---------------
+
+
+def test_from_callable_class_reads_init_hints() -> None:
+    """A class's signature comes from its `__init__`, dropping `self`."""
+
+    class Widget:
+        def __init__(self, size: int, label: str = "w") -> None: ...
+
+    sig = Signature.from_callable(Widget)
+    assert list(sig.parameters) == ["size", "label"]
+    assert sig.parameters["size"].hint is int
+    assert sig.parameters["label"].hint is str
+    assert sig.parameters["label"].default == "w"
+
+
+def test_from_callable_dataclass_reads_generated_init() -> None:
+    """A dataclass dispatches on its generated `__init__` fields."""
+    import dataclasses
+
+    @dataclasses.dataclass
+    class Point:
+        x: int
+        y: str = "o"
+
+    sig = Signature.from_callable(Point)
+    assert list(sig.parameters) == ["x", "y"]
+    assert sig.parameters["x"].hint is int
+    assert sig.parameters["y"].hint is str
+
+
+def test_from_callable_class_reads_new_when_no_init() -> None:
+    """A class defining only `__new__` reads its constructor from `__new__`."""
+
+    class Only:
+        def __new__(cls, value: float):  # noqa: ANN204
+            return super().__new__(cls)
+
+    sig = Signature.from_callable(Only)
+    assert list(sig.parameters) == ["value"]
+    assert sig.parameters["value"].hint is float
+
+
+def test_from_callable_builtin_without_signature_falls_back() -> None:
+    """A builtin with no introspectable signature gets a catch-all."""
+    sig = Signature.from_callable(int)
+    assert list(sig.parameters) == []
+    assert sig.varargs is tx.Any
+    assert sig.varkw is tx.Any
+
+
+# --- same_as: structural equality vs semantic equivalence --------------
+
+
+def test_same_as_distinguishes_distinct_typevars() -> None:
+    """`(T, T)` and `(T, U)` are equal (both `Any`) but not `same_as`."""
+    T = tx.TypeVar("T")
+    U = tx.TypeVar("U")
+
+    def same(x: T, y: T) -> None: ...
+
+    def free(x: T, y: U) -> None: ...
+
+    a = Signature.from_callable(same)
+    b = Signature.from_callable(free)
+    assert a == b  # equivalent: both are (Any, Any)
+    assert not a.same_as(b)  # but spelled differently
+    assert a.same_as(Signature.from_callable(same))  # identical spelling
+
+
+def test_same_as_distinguishes_bound_typevar_from_bound() -> None:
+    """A `TypeVar(bound=int)` is equal to `int` but not the same spelling."""
+    TB = tx.TypeVar("TB", bound=int)
+
+    def tv(x: TB) -> None: ...
+
+    def plain(x: int) -> None: ...
+
+    a = Signature.from_callable(tv)
+    b = Signature.from_callable(plain)
+    assert a == b  # a bound TypeVar is equivalent to its bound
+    assert not a.same_as(b)  # but a TypeVar is not the class it is bounded by
+
+
+def test_same_as_distinguishes_exact_from_plain() -> None:
+    """`Exact[int]` and `int` are different spellings (a leaf, not equal)."""
+
+    def exact(x: Exact[int]) -> None: ...
+
+    def plain(x: int) -> None: ...
+
+    a = Signature.from_callable(exact)
+    b = Signature.from_callable(plain)
+    assert not a.same_as(b)
+
+
+def test_same_as_matches_identical_generic_spellings() -> None:
+    """Identically-spelled generics are `same_as`; differing ones are not."""
+
+    def ints(x: tx.List[int]) -> None: ...
+
+    def strs(x: tx.List[str]) -> None: ...
+
+    assert Signature.from_callable(ints).same_as(Signature.from_callable(ints))
+    assert not Signature.from_callable(ints).same_as(
+        Signature.from_callable(strs)
+    )
+
+
+def test_same_as_distinguishes_literal_members() -> None:
+    """`Literal[1]` and `Literal[True]` are distinct spellings (type-aware)."""
+
+    def one(x: tx.Literal[1]) -> None: ...
+
+    def yes(x: tx.Literal[True]) -> None: ...
+
+    assert not Signature.from_callable(one).same_as(
+        Signature.from_callable(yes)
+    )
+
+
+def test_same_as_distinguishes_generic_arity() -> None:
+    """Generics with the same origin but different arity are not `same_as`."""
+
+    def one(x: tx.Tuple[int]) -> None: ...
+
+    def two(x: tx.Tuple[int, str]) -> None: ...
+
+    assert not Signature.from_callable(one).same_as(
+        Signature.from_callable(two)
+    )
+
+
+def test_same_as_compares_varargs_and_varkw() -> None:
+    """`same_as` compares the `*args`/`**kwargs` hints structurally."""
+
+    def a(*args: int) -> None: ...
+
+    def b(*args: int) -> None: ...
+
+    def c(*args: str) -> None: ...
+
+    assert Signature.from_callable(a).same_as(Signature.from_callable(b))
+    # Same shape, different `*args` hint -> not the same.
+    assert not Signature.from_callable(a).same_as(Signature.from_callable(c))
+
+
+def test_same_as_varargs_presence_differs() -> None:
+    """Same parameters but one has `*args` and the other does not -> differ."""
+
+    def has_varargs(x: int, *args: int) -> None: ...
+
+    def no_varargs(x: int) -> None: ...
+
+    assert not Signature.from_callable(has_varargs).same_as(
+        Signature.from_callable(no_varargs)
+    )
+
+
+def test_from_callable_empty_class_takes_object_constructor() -> None:
+    """A class with neither `__init__` nor `__new__` has no dispatched args."""
+
+    class Empty:
+        pass
+
+    sig = Signature.from_callable(Empty)
+    assert list(sig.parameters) == []
