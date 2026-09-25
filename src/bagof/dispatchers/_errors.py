@@ -106,7 +106,8 @@ def render_no_method(
     if method_count == 0:
         return (
             f"{head}\n`{name}` has no methods yet: the module that defines "
-            f"them has not been imported."
+            f"them has not been imported, or it was reached by name from a "
+            f"different module than the one that registered it."
         )
     plural = "s" if method_count != 1 else ""
     parts = [

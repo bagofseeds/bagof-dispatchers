@@ -541,7 +541,7 @@ Key objects:
   include_extras=True)` for hints + `inspect.signature` for names/kinds/defaults
   (unannotated → `Any`; keyword-only params **are** dispatched, by name);
   `from_hints(*hints, **named_hints)` for explicit registration
-  (`@dispatch(int, scale=float)`); `bind(args, kwargs) -> Optional[Binding]`;
+  (`@dispatch((int,), {"scale": float})`); `bind(args, kwargs) -> Optional[Binding]`;
   `le(other, shape)` = specificity for a shape.
 - `bagof.dispatchers.core.resolve_hint(hint, mapping, *, default=UNSET,
   ambiguity="raise")` — the hint-level functional API, `get_from_registry`'s

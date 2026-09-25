@@ -385,10 +385,11 @@ class Signature:
     ) -> "Signature":
         """Build a signature from hints alone, with no callable.
 
-        This is the explicit form behind `#!python @dispatch(int,
-        scale=float)`. Each positional hint becomes a positional-only
-        parameter; each keyword hint a parameter of that name that may be
-        passed either way. Every parameter is required.
+        The primitive behind the def-less registration forms
+        ([`Function.from_mapping`][bagof.dispatchers.Function.from_mapping]).
+        Each positional hint becomes a positional-only parameter; each keyword
+        hint a parameter of that name that may be passed either way. Every
+        parameter is required.
 
         !!! example
             ```pycon

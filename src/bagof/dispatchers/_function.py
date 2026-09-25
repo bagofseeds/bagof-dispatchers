@@ -284,6 +284,7 @@ class Function:
     def _add(self, method: Method) -> "Function":
         """Add `method`, replacing an identical one, and drop the cache."""
         with self._lock:
+            first = not self._methods
             methods = _replace_or_append(self._methods, method)
             self._warn_new_ambiguities(methods, method)
             # Publish the methods tuple first, then invalidate the cache: a
@@ -293,13 +294,20 @@ class Function:
             # build either way round.
             self._methods = methods
             self._cache = _Cache(methods, _NO_TOKEN)
-            if self._name is None:
+            if first:
                 self._adopt_metadata(method.function)
         return method.function
 
     def _adopt_metadata(self, fn: tx.Callable[..., tx.Any]) -> None:
-        """Take name and metadata from the first registered function."""
-        self._name = getattr(fn, "__name__", None)
+        """Take metadata from the first registered function.
+
+        Copies the documentation, module and wrapped callable so the function
+        stands in for its implementation to `#!python help` and introspection.
+        A function reached by name already has that name; it is kept, so
+        registering an anonymous `#!python def _` onto it does not rename it.
+        Only a function that arrived without one takes its name from here.
+        """
+        given = self._name
         try:
             functools.update_wrapper(self, fn, updated=())
         except (AttributeError, TypeError):  # pragma: no cover
@@ -307,6 +315,14 @@ class Function:
             # does not raise for the callables `register` accepts, but a truly
             # exotic one should not break registration -- the name is enough.
             pass
+        if given is not None:
+            # Keep the name the function was reached by, not the first
+            # implementation's, for both the property and introspection.
+            self._name = given
+            self.__name__ = given
+            self.__qualname__ = given
+        else:
+            self._name = getattr(fn, "__name__", None)
 
     def _warn_new_ambiguities(
         self, methods: tx.Tuple[Method, ...], method: Method
