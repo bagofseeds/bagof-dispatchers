@@ -139,7 +139,11 @@ def _source_location(
     """The file and line a callable was defined at, best effort."""
     try:
         filename = inspect.getsourcefile(function) or "<module>"
-    except TypeError:
+    except (TypeError, OSError):
+        # `TypeError` -- a callable with no source module (a builtin, a C
+        # function). `OSError` -- a class or function whose module has no
+        # `__file__`, as in the REPL, a Jupyter cell, `python -c`, or code
+        # built with `exec`; there is no source file to name.
         filename = "<module>"
     code = getattr(function, "__code__", None)
     lineno = getattr(code, "co_firstlineno", None)

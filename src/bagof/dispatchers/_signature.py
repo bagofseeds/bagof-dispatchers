@@ -1291,7 +1291,11 @@ def _render_parameters(
     )
     if sig._varargs is not None:
         out.append(
-            _render_varargs(sig._varargs, _VAR_POSITIONAL in marked)
+            _render_varargs(
+                sig._varargs,
+                sig._varargs_name or "args",
+                _VAR_POSITIONAL in marked,
+            )
         )
     elif sig._kwonly:
         out.append("*")
@@ -1299,7 +1303,13 @@ def _render_parameters(
         _render_parameter(p, p.name in marked) for p in sig._kwonly
     )
     if sig._varkw is not None:
-        out.append(_render_varkw(sig._varkw, _VAR_KEYWORD in marked))
+        out.append(
+            _render_varkw(
+                sig._varkw,
+                sig._varkw_name or "kwargs",
+                _VAR_KEYWORD in marked,
+            )
+        )
     return ", ".join(out)
 
 
@@ -1311,15 +1321,19 @@ def _render_parameter(param: Parameter, mark: bool = False) -> str:
     return text
 
 
-def _render_varargs(hint: tx.Any, mark: bool = False) -> str:
+def _render_varargs(
+    hint: tx.Any, name: str = "args", mark: bool = False
+) -> str:
     bang = "!" if mark else ""
     if hint is tx.Any:
-        return f"*args{': !Any' if mark else ''}"
-    return f"*args: {bang}{_render_hint(hint)}"
+        return f"*{name}{': !Any' if mark else ''}"
+    return f"*{name}: {bang}{_render_hint(hint)}"
 
 
-def _render_varkw(hint: tx.Any, mark: bool = False) -> str:
+def _render_varkw(
+    hint: tx.Any, name: str = "kwargs", mark: bool = False
+) -> str:
     bang = "!" if mark else ""
     if hint is tx.Any:
-        return f"**kwargs{': !Any' if mark else ''}"
-    return f"**kwargs: {bang}{_render_hint(hint)}"
+        return f"**{name}{': !Any' if mark else ''}"
+    return f"**{name}: {bang}{_render_hint(hint)}"
