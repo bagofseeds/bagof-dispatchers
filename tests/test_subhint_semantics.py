@@ -5,6 +5,7 @@ import pytest
 import typing_extensions as tx
 
 # locals
+from bagof.dispatchers import Exact
 from bagof.dispatchers.core import (
     get_concrete_type,
     ishintstance,
@@ -132,6 +133,9 @@ _PREORDER_CORPUS = [
     tx.Union[bool, int],
     tx.Optional[int],
     tx.Union[tx.List[int], tx.List[str]],
+    tx.Literal[1, 2],
+    tx.Union[tx.Literal[1], tx.Literal[2]],
+    Exact[int],
 ]
 
 

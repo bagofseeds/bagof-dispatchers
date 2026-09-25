@@ -329,6 +329,15 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
         return issubhint(target, superhint)
     if is_exact(superhint):
         target = normalise_hint(exact_target(superhint))
+        # A parametrised union sub-hint distributes member by member, so a
+        # union that is equivalent to a `Literal` (e.g.
+        # `Union[Literal[1], Literal[2]]` == `Literal[1, 2]`) is ordered
+        # against `Exact[C]` the same way that `Literal` is -- keeping the
+        # relation transitive.
+        if get_origin_uw(hint) in UNION_TYPES and get_args_uw(hint):
+            return all(
+                issubhint(member, superhint) for member in get_args_uw(hint)
+            )
         # The only ordinary hints below `Exact[C]` are `Literal`s whose every
         # value has type exactly `C`: `Literal[1] <= Exact[int]`, but
         # `Literal[True]` (a `bool`) does not.

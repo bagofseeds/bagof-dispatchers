@@ -93,6 +93,17 @@ def test_a_bound_typevar_is_not_below_exact() -> None:
     assert issubhint(Exact[int], bound) is True
 
 
+def test_a_union_of_literals_is_ordered_against_exact_by_its_members() -> None:
+    # `Union[Literal[1], Literal[2]]` is equivalent to `Literal[1, 2]`, so it
+    # must order against `Exact[int]` the same way -- otherwise the relation
+    # is not transitive.
+    union = tx.Union[tx.Literal[1], tx.Literal[2]]
+    assert issubhint(union, Exact[int]) is True
+    # A `True` member is a `bool`, not exactly `int`.
+    mixed = tx.Union[tx.Literal[1], tx.Literal[True]]
+    assert issubhint(mixed, Exact[int]) is False
+
+
 # --- the relation stays a preorder with Exact present ------------------
 
 # A corpus that mixes ordinary classes, `Exact` and `Literal`. Bare
