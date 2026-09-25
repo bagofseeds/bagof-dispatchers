@@ -50,6 +50,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 package-dir = {"" = "src"}
 
+[tool.setuptools.package-data]
+"bagof.dispatchers" = ["py.typed"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["bagof*"]
@@ -71,6 +74,16 @@ file = "src/bagof/dispatchers/_version.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["bagof.dispatchers"]
+
+[tool.coverage.report]
+exclude_also = [
+    # Type-checking-only blocks never run at runtime.
+    "if tx.TYPE_CHECKING:",
+    "if tx.TYPE_CHECKING or",
+]
 
 [tool.ruff]
 line-length = 79

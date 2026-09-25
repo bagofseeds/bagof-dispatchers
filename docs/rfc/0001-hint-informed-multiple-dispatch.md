@@ -338,14 +338,27 @@ accept subclasses; variance flags are rejected in signatures; `type[C]`
 constrains class-object arguments, not instance exactness. (Julia gets exactness
 free because concrete types are final; Python needs a marker.)
 
-Runtime semantics:
+Runtime semantics (`Exact[C]` is a **leaf subtype** of `C` — this keeps `⊑`
+a proper preorder, reflexive and transitive, with `Exact` present):
 - values: applicable iff `type(v) is C`; `Exact` of a non-class (other than
   `NoneType`) → registration `TypeError`.
-- hint-level: `issub(q, Exact[C])` iff `q ≡ C`, so `Exact[int]` matches query
-  `int` (and `Annotated[int, …]`, `inv.INT`) but not `bool`.
-- order: `Exact[C] < C`; `issub(Exact[C], P)` iff `issub(C, P)`;
-  `Exact[C]`/`Exact[D]` incomparable for `C ≢ D`. MRO refinement treats it as
-  `C`; class-keyed, so it caches normally.
+- hint-level: `issub(Exact[C], C)` is `True` (an exactly-`C` value is a `C`),
+  but `issub(C, Exact[C])` is **`False`**, and `issub(D, Exact[C])` is `False`
+  for a subclass `D` of `C` — nothing ordinary sits below `Exact[C]`. The only
+  ordinary hints below it are literals whose every value has type exactly `C`:
+  `issub(Literal[v], Exact[C])` iff `type(v) is C` (so `Literal[1] ⊑ Exact[int]`
+  but `Literal[True]`, a `bool`, does not). `issub(Exact[C1], Exact[C2])` iff
+  `C1 ≡ C2`.
+- order: `Exact[C] < C`; `issub(Exact[C], P)` iff `issub(C, P)` — for a `P`
+  that is not itself a Union/TypeVar containing `Exact` — those distribute
+  first (`issub(Exact[C], Union[Exact[C], …])` and
+  `issub(Exact[C], TypeVar(bound=Exact[C]))` are `True`, matched member by
+  member rather than reduced to `issub(C, P)`, which would lose the
+  exactness); `Exact[C]`/`Exact[D]` incomparable for `C ≢ D`. MRO refinement
+  treats it as `C`; class-keyed, so it caches normally.
+- resolution: hint-level `resolve()` (Phase 4) may *additionally* select an
+  `Exact[C]` entry for a query `q ≡ C` — a lookup convenience layered on top of
+  the relation, not a change to `⊑` itself (which keeps `q ⋢ Exact[C]`).
 
 ```python
 from bagof.dispatchers import dispatch, Exact
