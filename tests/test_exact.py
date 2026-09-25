@@ -72,6 +72,18 @@ def test_issubhint_exact_subhint(
     assert issubhint(hint, superhint) is expected
 
 
+def test_exact_distributes_over_a_containing_superhint() -> None:
+    # A super-hint that *contains* `Exact` must distribute first, so the
+    # exactness is matched member by member rather than lost by reducing to
+    # `issubhint(target, superhint)`.
+    assert issubhint(Exact[int], tx.Union[Exact[int], str]) is True
+    assert issubhint(Exact[int], tx.Optional[Exact[int]]) is True
+    T = tx.TypeVar("T", bound=Exact[int])
+    assert issubhint(Exact[int], T) is True
+    # An exact subclass is still not below an `Exact[int]` bound.
+    assert issubhint(Exact[bool], T) is False
+
+
 def test_a_bound_typevar_is_not_below_exact() -> None:
     # A bound typevar stands for `int` *and its subclasses*, so it is not a
     # leaf below `Exact[int]` -- only an exactly-int value is.

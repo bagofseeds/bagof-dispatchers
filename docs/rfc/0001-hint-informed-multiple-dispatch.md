@@ -349,9 +349,13 @@ a proper preorder, reflexive and transitive, with `Exact` present):
   `issub(Literal[v], Exact[C])` iff `type(v) is C` (so `Literal[1] ⊑ Exact[int]`
   but `Literal[True]`, a `bool`, does not). `issub(Exact[C1], Exact[C2])` iff
   `C1 ≡ C2`.
-- order: `Exact[C] < C`; `issub(Exact[C], P)` iff `issub(C, P)`;
-  `Exact[C]`/`Exact[D]` incomparable for `C ≢ D`. MRO refinement treats it as
-  `C`; class-keyed, so it caches normally.
+- order: `Exact[C] < C`; `issub(Exact[C], P)` iff `issub(C, P)` — for a `P`
+  that is not itself a Union/TypeVar containing `Exact` — those distribute
+  first (`issub(Exact[C], Union[Exact[C], …])` and
+  `issub(Exact[C], TypeVar(bound=Exact[C]))` are `True`, matched member by
+  member rather than reduced to `issub(C, P)`, which would lose the
+  exactness); `Exact[C]`/`Exact[D]` incomparable for `C ≢ D`. MRO refinement
+  treats it as `C`; class-keyed, so it caches normally.
 - resolution: hint-level `resolve()` (Phase 4) may *additionally* select an
   `Exact[C]` entry for a query `q ≡ C` — a lookup convenience layered on top of
   the relation, not a change to `⊑` itself (which keeps `q ⋢ Exact[C]`).

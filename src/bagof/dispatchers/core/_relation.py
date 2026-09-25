@@ -311,6 +311,17 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
             # `Exact[D] <= Exact[C]` iff `D` and `C` are the same type.
             supertarget = normalise_hint(exact_target(superhint))
             return _equivalent(target, supertarget)
+        # A super-hint that *contains* `Exact` -- a union with an `Exact`
+        # member, or a typevar bounded/constrained by one -- must distribute
+        # first, so the exactness is matched member by member rather than lost
+        # by reducing to `issubhint(target, superhint)`.
+        sup_origin = get_origin_uw(superhint)
+        if sup_origin in UNION_TYPES and get_args_uw(superhint):
+            return any(
+                issubhint(hint, arg) for arg in get_args_uw(superhint)
+            )
+        if isinstance(sup_origin, tx.TypeVar):
+            return _issubtypevar(hint, superhint)
         # `Exact[D] <= P` iff `D <= P` (an exactly-`D` value is a `D`).
         return issubhint(target, superhint)
     if is_exact(superhint):
