@@ -2,6 +2,7 @@
 
 # stdlib
 import sys
+import typing
 import warnings
 
 # dependencies
@@ -84,7 +85,13 @@ def test_native_pep695_alias() -> None:
     Box = namespace["Box"]
     assert normalise_hint(MyStr) is str
     assert issubhint(MyStr, str) is True
-    assert resolve_alias(Box[int]) == tx.List[int]
+    # A native `type Box[T] = list[T]` resolves to the builtin `list[int]`,
+    # which is never `== typing.List[int]`; compare spelling-agnostically.
+    resolved = resolve_alias(Box[int])
+    assert tx.get_origin(resolved) is list and tx.get_args(resolved) == (int,)
+    assert issubhint(resolved, tx.List[int]) and issubhint(
+        tx.List[int], resolved
+    )
     assert issubhint(Box[bool], Box[int]) is True
 
 
@@ -231,7 +238,7 @@ def test_unknown_form_is_opaque_and_warns_once() -> None:
     marker = tx.Self  # a form the structural relation has no branch for
     from bagof.dispatchers.core import _relation
 
-    _relation._WARNED_UNKNOWN.discard(repr(marker))
+    _relation._WARNED_UNKNOWN.discard(_relation._warn_key(marker))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         assert issubhint(int, marker) is True
@@ -243,3 +250,101 @@ def test_unknown_form_is_opaque_and_warns_once() -> None:
     # Opaque is a sub-hint only of itself and `Any`.
     assert issubhint(marker, int) is False
     assert issubhint(marker, tx.Any) is True
+
+
+def test_unknown_form_warns_once_per_form_not_per_repr() -> None:
+    # Two hints built from one unknown form (`Unpack[Ts]`, `Unpack[Us]`) have
+    # different reprs but share an origin, so the warning fires once, not
+    # twice.
+    from bagof.dispatchers.core import _relation
+
+    Ts = tx.TypeVarTuple("Ts")
+    Us = tx.TypeVarTuple("Us")
+    a, b = tx.Unpack[Ts], tx.Unpack[Us]
+    _relation._WARNED_UNKNOWN.discard(_relation._warn_key(a))
+    _relation._WARNED_UNKNOWN.discard(_relation._warn_key(b))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert issubhint(int, a) is True
+        assert issubhint(int, b) is True
+    unknowns = [
+        w for w in caught if issubclass(w.category, UnknownHintWarning)
+    ]
+    assert len(unknowns) == 1
+
+
+# --- R1: real typing classes are not swallowed as special forms --------
+
+
+def test_typing_protocols_and_abcs_are_not_special_forms() -> None:
+    from bagof.dispatchers.core import issubclassable
+
+    assert issubhint(int, tx.SupportsInt) is True
+    assert issubhint(int, tx.SupportsIndex) is True
+    assert issubclassable(tx.SupportsIndex) is True
+    buffer = getattr(tx, "Buffer", None)
+    if buffer is not None:
+        assert issubhint(bytes, buffer) is True
+
+
+# --- R3: `typing` vs `typing_extensions` spellings of Any/Literal ------
+
+
+@pytest.mark.parametrize("any_form", list({typing.Any, tx.Any}))
+def test_any_spellings_accept_everything(any_form: tx.Any) -> None:
+    assert issubhint(int, any_form) is True
+    assert ishintstance(1, any_form) is True
+
+
+@pytest.mark.parametrize("literal", list({typing.Literal, tx.Literal}))
+def test_literal_spellings_are_understood(literal: tx.Any) -> None:
+    # A `Literal` super-hint must be read by its values, not treated as an
+    # opaque accept-everything form.
+    assert issubhint(int, literal[1]) is False
+    assert issubhint(literal[1], literal[1, 2]) is True
+    assert ishintstance(1, literal[1]) is True
+    assert ishintstance(2, literal[1]) is False
+
+
+# --- R4: the bare TypedDict marker is not opaque -----------------------
+
+
+def test_bare_typeddict_marker_is_not_opaque() -> None:
+    class Movie(tx.TypedDict):
+        title: str
+
+    assert issubhint(dict, tx.TypedDict) is False
+    assert issubhint(Movie, tx.TypedDict) is True
+    assert ishintstance({"title": "x"}, tx.TypedDict) is False
+
+
+# --- D2: obvious non-hints raise, typing-shaped forms stay opaque ------
+
+
+def test_obvious_non_hints_raise_typeerror() -> None:
+    with pytest.raises(TypeError):
+        issubhint(int, "Foo")  # a bare string is an unresolvable forward ref
+    with pytest.raises(TypeError):
+        ishintstance(1, 123)
+    with pytest.raises(TypeError):
+        issubhint(int, [1, 2])
+
+
+def test_typing_shaped_unknown_stays_opaque() -> None:
+    from bagof.dispatchers.core import _relation
+
+    class _FutureForm:
+        __module__ = "typing"
+
+        def __repr__(self) -> str:
+            return "SomeFutureForm"
+
+    marker = _FutureForm()
+    _relation._WARNED_UNKNOWN.discard(_relation._warn_key(marker))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert issubhint(int, marker) is True
+    unknowns = [
+        w for w in caught if issubclass(w.category, UnknownHintWarning)
+    ]
+    assert len(unknowns) == 1
