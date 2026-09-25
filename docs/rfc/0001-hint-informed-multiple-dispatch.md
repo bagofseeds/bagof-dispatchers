@@ -190,7 +190,7 @@ compares the hints of the slots the *same argument* landed in — comparing
   `hint_S(a)` is the hint of the slot each argument `a` landed in (`Any` for an
   unannotated catch-all).
 - **Applicable to values**: `bind(S, C)` succeeds, `∀a ∈ Args(C):
-  is_instance(value_a, hint_S(a))` (an extra positional is checked against `h_*`,
+  ishintstance(value_a, hint_S(a))` (an extra positional is checked against `h_*`,
   an extra keyword against `h_**`), and §3 TypeVar consistency over the bound
   arguments. **Default-filled parameters are not arguments** — their hints are
   not checked and they do not enter specificity (owner's rule; the
@@ -217,8 +217,10 @@ compares the hints of the slots the *same argument* landed in — comparing
 under `⊑_C`. Then, in order, drop members strictly dominated under:
   1. **explicit priority** (higher wins; default 0);
   2. **MRO refinement** (per argument): A dominates B iff for every `a`,
-     `hint_A(a) ≡ hint_B(a)`, or both hints (unwrapped, non-`Exact`) are classes
-     in `type(value_a).__mro__` with `index(hint_A(a)) ≤ index(hint_B(a))`,
+     `hint_A(a) ≡ hint_B(a)`, or both hints (unwrapped, with `Exact[C]` read as
+     `C` per §4 — an `Exact[C]` refines only at index 0, where it agrees with
+     `C`) are classes in `type(value_a).__mro__` with
+     `index(hint_A(a)) ≤ index(hint_B(a))`,
      strictly `<` for some `a` (resolves the diamond `D(B, C)` to `B`, as
      `singledispatch` does; protocols/ABCs not in the MRO, unions, literals and
      parametrised generics give no refinement);
@@ -554,8 +556,10 @@ Caching & thread-safety — **two levels**, because the order is per shape:
 1. A **shape plan** per `σ(C)`: for each method, its precomputed binding outcome
    for that shape (slot assignment or "cannot bind") and the pairwise `⊑_σ`
    matrix over the shape's arguments, plus which arguments are value-dependent
-   (any method's hint there is `Literal`/`type[...]`/TypedDict-shape). Bounded LRU
-   over shapes; rebuilt on `register`.
+   (any method's hint there is `Literal`/`type[...]`, or a `Union`/`TypeVar`
+   whose members or upper bound include one — TypedDict is type-only in v1 and
+   joins this set when the v2 shape check lands). Bounded LRU over shapes;
+   rebuilt on `register`.
 2. Under each plan, a **call cache** keyed by `tuple(type(v_i)) + tuple((k,
    type(w_k)) for k in sorted keywords)`, with `(type, value)` at value-dependent
    arguments; an unhashable value at a value-dependent argument → uncached.
@@ -581,8 +585,11 @@ the failing argument; a binding failure is rendered in words after the signature
 src/bagof/dispatchers/
   __init__.py        # CLEAN public API — re-exports ONLY: dispatch, Dispatcher, Function, Method,
                      #   Signature, Parameter, Exact, DispatchError, NoMethodError, AmbiguousMethodError
-  _lattice.py        # equivalent(), is_instance() (Exact + v2 TypedDict shape), mro_index(), TypeVar
-                     #   solving, value-dependence classifier — dispatch-internal, builds on core._relation
+  _lattice.py        # equivalent(), mro_index(), TypeVar solving, value-dependence classifier —
+                     #   dispatch-internal, builds on core._relation. The value check stays in the
+                     #   relation: the v1 engine calls core.ishintstance directly (no wrapper). The
+                     #   Phase-8 TypedDict-shape value check is introduced then under an explicit,
+                     #   accurate name.
   _signature.py      # Signature, Parameter, Binding, the precomputed per-method binder
   _method.py         # Method (+ deferred hint resolution)
   _function.py       # Function: methods tuple, per-shape order, two-level cache + abc token,
@@ -829,8 +836,9 @@ the siblings already do) before the core-magic shim PR merges.
   whole family; the review checklist includes: both-spelling identity
   everywhere, no `return False` fall-through for unknown forms, alias cycle
   guard, no `.has_default()` calls, and commit-1-is-a-pure-move.
-- **Phase 2 — `_lattice.py`.** `equivalent`, `is_instance`, `mro_index`, TypeVar
-  solving, value-dependence classifier; preorder-law property tests over ~40
+- **Phase 2 — `_lattice.py`.** `equivalent`, `mro_index`, TypeVar solving,
+  value-dependence classifier (the value check stays in the relation —
+  `core.ishintstance` — with no wrapper); preorder-law property tests over ~40
   hints incl. `Exact` and `Callable` pairs. Review recommended (lighter).
 - **Phase 3 — `_signature.py` + `_method.py`.** `Parameter`, the ordered
   name→`Parameter` map, the precomputed per-method binder and `Binding`,
@@ -867,8 +875,9 @@ the siblings already do) before the core-magic shim PR merges.
 - **Phase 7 — TypeVar specificity tie-break + `(T,T)` polish.** §3 repeated-group
   rule, constrained same-constraint, solved-`T` messages. **Review recommended**
   (least-precedented rule).
-- **Phase 8 (v2).** TypedDict shape matching in `_lattice.is_instance` (+ the
-  separate owner decision on `ishintstance`/validators); full
+- **Phase 8 (v2).** TypedDict shape matching, introduced in `_lattice.py`
+  under an explicit, accurate name, and flipping TypedDict to value-dependent
+  (+ the separate owner decision on `ishintstance`/validators); full
   `TypeVarTuple`/`ParamSpec` solving & ordering; per-keyword TypeVar solving
   through `**kwargs: T`; `Callable` deep element check; `DeprecationWarning`
   `__getattr__` in core-magic; the `_polymorph` → `Function` migration (§8.4).

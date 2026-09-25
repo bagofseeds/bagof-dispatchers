@@ -1,0 +1,326 @@
+"""The dispatch-internal lattice layer.
+
+The signature order and method selection (later phases) never call the
+[`core`][bagof.dispatchers.core] relation directly. They go through the small,
+pure helpers here, which sit one step above
+[`issubhint`][bagof.dispatchers.core.issubhint] /
+[`ishintstance`][bagof.dispatchers.core.ishintstance] and answer the four
+questions selection asks of a hint:
+
+* are two hints interchangeable
+  ([`equivalent`][bagof.dispatchers._lattice.equivalent])?
+* where does a hint's class sit in a value's MRO, for the tie-break
+  ([`mro_index`][bagof.dispatchers._lattice.mro_index])?
+* do the arguments bound to one repeated `TypeVar` agree
+  ([`solve_typevar`][bagof.dispatchers._lattice.solve_typevar] /
+  [`typevar_consistent`][bagof.dispatchers._lattice.typevar_consistent])?
+
+and one the cache asks:
+
+* does a hint's applicability depend on the value, not just its type
+  ([`is_value_dependent`][bagof.dispatchers._lattice.is_value_dependent])?
+
+The value check itself stays in the relation: the engine calls
+[`ishintstance`][bagof.dispatchers.core.ishintstance] directly. The v2
+`TypedDict`-shape value check (RFC 0001 §9/§10, Phase 8) will be introduced
+then under an explicit, accurate name, and `is_value_dependent` flips
+`TypedDict` to value-dependent to match.
+"""
+
+# dependencies
+import typing_extensions as tx
+
+# local
+from .core import (
+    UNSET,
+    get_args_uw,
+    get_origin_uw,
+    issubhint,
+    normalise_hint,
+    unwrap,
+)
+from .core._compat import UNION_TYPES
+from .core._exact import exact_target, is_exact
+from .core._introspect import _looks_like_class
+from .core._relation import _is_literal, _typevar_upper
+
+# --- equivalence -------------------------------------------------------
+
+
+def equivalent(a: tx.Any, b: tx.Any) -> bool:
+    """Whether two hints accept exactly the same values.
+
+    `a` and `b` are equivalent (`a ≡ b`) when each is a sub-hint of the
+    other -- they sit in the same equivalence class of the sub-hint
+    preorder, so selection may treat them as interchangeable. This is how
+    `#!python list` and `#!python List`, or a bound `TypeVar` and its
+    bound, come out equal.
+
+    !!! example
+        ```pycon
+        >>> from typing import List
+        >>> equivalent(list, List)
+        True
+        >>> equivalent(bool, int)
+        False
+        ```
+    """
+    a, b = normalise_hint(a), normalise_hint(b)
+    return issubhint(a, b) and issubhint(b, a)
+
+
+# --- MRO refinement ----------------------------------------------------
+
+
+def mro_index(hint: tx.Any, value_type: type) -> tx.Optional[int]:
+    """Where `hint`'s class sits in `value_type`'s MRO, or `None`.
+
+    This drives the MRO tie-break (RFC 0001 §2.2): when two methods are
+    otherwise incomparable, the one whose hint names a *more derived* base
+    of the argument's actual type wins -- the diamond `#!python D(B, C)`
+    resolves to `B`, exactly as
+    [`functools.singledispatch`][functools.singledispatch] does.
+
+    A refinement is only defined when the hint names a single ordinary
+    class that is a nominal base of `value_type`:
+
+    * an [`Exact`][bagof.dispatchers.Exact]`[C]` hint counts as `C`;
+    * a bare class returns its index in
+      `#!python value_type.__mro__`;
+    * a bare, unparametrised alias counts as its origin class, in whichever
+      spelling it was written -- `#!python List` and `#!python list` name
+      the same position, as do `#!python Sequence` and
+      `#!python collections.abc.Sequence`;
+    * a class that is *not* in the MRO -- a `#!python Protocol` or ABC
+      satisfied structurally or by registration rather than inheritance --
+      gives no refinement (`#!python None`);
+    * a `#!python Union`, `#!python Literal`, `#!python type[...]` or any
+      other parametrised generic gives no refinement either.
+
+    Returns
+    -------
+    int or None
+        The index of the hint's class in `#!python value_type.__mro__`
+        (`0` is `value_type` itself), or `#!python None` when no
+        refinement applies.
+
+    !!! example
+        ```pycon
+        >>> class B: pass
+        >>> class C: pass
+        >>> class D(B, C): pass
+        >>> mro_index(B, D) < mro_index(C, D)   # D resolves to B
+        True
+        ```
+    """
+    hint = normalise_hint(hint)
+    if is_exact(hint):
+        cls = normalise_hint(exact_target(hint))
+    else:
+        cls = unwrap(hint, tx.Annotated)
+    # Only a bare class names a position in the MRO. A `TypeVar` or any
+    # non-class does not refine at all.
+    if not _looks_like_class(cls):
+        # A bare typing alias with no arguments is equivalent to its origin
+        # class, whichever spelling it was written in -- `typing.Sequence`
+        # and `collections.abc.Sequence` name the same MRO position. A
+        # *parametrised* generic (`List[int]`, `type[C]`) carries arguments
+        # that constrain more than the class does, so it names no position.
+        if get_args_uw(cls):
+            return None
+        cls = get_origin_uw(cls)
+        if not _looks_like_class(cls):
+            # A union, literal or bare `Callable` has no plain-class origin.
+            return None
+    mro = getattr(value_type, "__mro__", ())
+    for index, base in enumerate(mro):
+        if base is cls:
+            return index
+    return None
+
+
+# --- repeated TypeVar solving ------------------------------------------
+
+
+def solve_typevar(
+    classes: tx.Iterable[tx.Any], typevar: tx.Any
+) -> tx.Any:
+    """Solve one `TypeVar` against the classes bound to its positions.
+
+    A signature may name the same `TypeVar` at several positions
+    (`#!python def same(x: T, y: T)`). For a call to apply, the argument
+    classes that landed in those positions must agree on a single solution
+    (RFC 0001 §3):
+
+    * an **unbound or bound** `TypeVar` follows the *greatest-element*
+      rule -- one of the argument classes must be a super-hint of every
+      other, and that class is the solution. `#!python (int, bool)` solves
+      to `#!python int`; `#!python (int, str)` has no greatest element and
+      is unsolvable.
+    * a **constrained** `TypeVar` requires every argument class to solve to
+      the *same* constraint (a subclass solves as its constraint:
+      `#!python bool` solves `#!python TypeVar("T", int, str)` as
+      `#!python int`). `#!python (int, str)` picks two different
+      constraints and is unsolvable.
+
+    The result is the type the variable stands for -- a class for the
+    greatest-element rule, a constraint for the constrained rule -- which
+    the caller uses both to decide applicability and, later, as the
+    position's hint for specificity. When no positions carry the variable
+    the classes are empty and it stands for its full upper bound.
+
+    Parameters
+    ----------
+    classes
+        The argument classes bound to this variable's positions, in any
+        order.
+    typevar
+        The `TypeVar` (its `#!python __bound__` / `#!python __constraints__`
+        are read; a PEP 696 default is ignored, as elsewhere in dispatch).
+
+    Returns
+    -------
+    Any
+        The solved type, or [`UNSET`][bagof.dispatchers.core.UNSET] when the
+        classes do not agree.
+
+    !!! example
+        ```pycon
+        >>> from typing import TypeVar
+        >>> T = TypeVar("T")
+        >>> solve_typevar((int, bool), T)
+        <class 'int'>
+        >>> typevar_consistent((int, str), T)   # no greatest element
+        False
+        ```
+    """
+    classes = tuple(classes)
+    constraints = getattr(typevar, "__constraints__", ())
+    if constraints:
+        return _solve_constrained(classes, constraints)
+    return _solve_greatest(classes, typevar)
+
+
+def _solve_greatest(
+    classes: tx.Tuple[tx.Any, ...], typevar: tx.Any
+) -> tx.Any:
+    """The greatest-element solution for an unbound/bound `TypeVar`."""
+    if not classes:
+        # No position constrains the variable: it stands for its full upper
+        # bound (its bound, or `Any` when it is unbound).
+        bound = getattr(typevar, "__bound__", None)
+        return bound if bound is not None else tx.Any
+    for candidate in classes:
+        if all(issubhint(other, candidate) for other in classes):
+            return candidate
+    return UNSET
+
+
+def _solve_constrained(
+    classes: tx.Tuple[tx.Any, ...],
+    constraints: tx.Tuple[tx.Any, ...],
+) -> tx.Any:
+    """The same-constraint solution for a constrained `TypeVar`."""
+    if not classes:
+        # No position constrains the variable: it stands for the union of
+        # its constraints, the hint a constrained variable is equivalent to.
+        return tx.Union[constraints]
+    # mypy's rule: the solution is the first constraint every class is a
+    # sub-hint of, so the classes all pick the same one. Testing the whole
+    # group against each constraint in turn -- rather than each class against
+    # the constraints -- makes the answer independent of the order the
+    # constraints and classes are given in.
+    for constraint in constraints:
+        if all(issubhint(cls, constraint) for cls in classes):
+            return constraint
+    return UNSET
+
+
+def typevar_consistent(
+    classes: tx.Iterable[tx.Any], typevar: tx.Any
+) -> bool:
+    """Whether the classes bound to one `TypeVar` agree on a solution.
+
+    The boolean face of
+    [`solve_typevar`][bagof.dispatchers._lattice.solve_typevar]: `True`
+    when a consistent solution exists, `False` when it does not. Use it
+    where only applicability matters and the solved type is not needed.
+
+    !!! example
+        ```pycon
+        >>> from typing import TypeVar
+        >>> T = TypeVar("T")
+        >>> typevar_consistent((int, bool), T)
+        True
+        >>> typevar_consistent((int, str), T)
+        False
+        ```
+    """
+    return solve_typevar(classes, typevar) is not UNSET
+
+
+# --- value dependence --------------------------------------------------
+
+
+def is_value_dependent(hint: tx.Any) -> bool:
+    """Whether a hint's applicability depends on the value, not its type.
+
+    Most hints are decided by an argument's *type* alone: `#!python int`
+    accepts a value iff `#!python type(value)` is `#!python int` or a
+    subclass. A few are decided by the *value* itself, so the dispatch
+    cache must key on the value there, not only on its type (RFC 0001 §6):
+
+    * `#!python Literal[...]` -- `#!python 1` matches `#!python Literal[1]`
+      but `#!python 2` does not, though both are `#!python int`;
+    * `#!python type[C]` / `#!python Type[C]` -- one class object matches
+      and another does not, though both have type `#!python type`;
+    * a `#!python Union` or a `#!python TypeVar` whose members or upper bound
+      include one of the above -- `#!python Optional[Literal["a"]]` keys on
+      the value, and so does a `#!python TypeVar` bounded by a
+      `#!python Literal`.
+
+    Two hints are *not* value-dependent, though they might look it:
+
+    * an [`Exact`][bagof.dispatchers.Exact]`[C]` hint checks
+      `#!python type(value) is C`, which the type alone answers;
+    * a `#!python TypedDict`, in v1: its value-level check is type-only, so
+      the value adds nothing. This flips once the v2 shape check lands.
+
+    !!! example
+        ```pycon
+        >>> from typing import List, Literal
+        >>> is_value_dependent(Literal[1])
+        True
+        >>> is_value_dependent(List[int])
+        False
+        ```
+    """
+    hint = normalise_hint(hint)
+    if is_exact(hint):
+        # `Exact[C]` is `type(value) is C` -- decided by the type alone.
+        return False
+    hint = unwrap(hint, tx.Annotated)
+    origin = get_origin_uw(hint)
+    if _is_literal(origin):
+        return True
+    if origin is type and get_args_uw(hint):
+        # `type[C]`; a bare `type` (no arguments) is decided by the type of
+        # the value alone -- whether it is a class -- so it is not here.
+        return True
+    if origin in UNION_TYPES and get_args_uw(hint):
+        # A union is value-dependent iff any member is: `Optional[Literal[1]]`
+        # and `Union[Type[int], Type[str]]` both key on the value. Nested
+        # container arguments (`List[Literal[1]]`, `Tuple[Literal[1]]`) are
+        # not descended into: `ishintstance` never inspects a container's
+        # items, so the value there does not change the answer.
+        return any(is_value_dependent(arg) for arg in get_args_uw(hint))
+    if isinstance(hint, tx.TypeVar):
+        # A `TypeVar` stands for its upper bound, so it is value-dependent
+        # exactly when that bound is: `TypeVar(bound=Literal[1, 2])` and a
+        # constrained `TypeVar` over literals both key on the value.
+        return is_value_dependent(_typevar_upper(hint))
+    # A `TypedDict` is *not* value-dependent in v1: its value-level check is
+    # type-only (a plain `dict` is not a `TypedDict`), so keying on the value
+    # would only disable caching for no correctness gain. This flips to
+    # `True` when the v2 `TypedDict`-shape check lands (RFC 0001 §6/§9).
+    return False
