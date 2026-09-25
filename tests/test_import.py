@@ -1,9 +1,9 @@
-"""Template smoke tests."""
+"""Smoke tests."""
 
 import importlib
 
 
-def test_template_submodule_is_importable() -> None:
-    """The template package should be importable after installation."""
-    module = importlib.import_module("bagof.things")
+def test_package_is_importable() -> None:
+    """The package should be importable after installation."""
+    module = importlib.import_module("bagof.dispatchers")
     assert module is not None
