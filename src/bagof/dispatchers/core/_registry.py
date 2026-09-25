@@ -137,20 +137,34 @@ def _accepts(hint: tx.Any, key: tx.Any) -> bool:
     [`Exact`][bagof.dispatchers.Exact]`[C]` key is also reachable by a query
     equivalent to `C`: an exact-`C` registration answers a plain-`C` lookup,
     the lookup convenience the relation itself does not grant (RFC 0001 §4).
+
+    A key the relation cannot compare -- an exotic or malformed hint one of
+    the sibling bags happens to have registered -- is treated as simply not
+    accepting the query, so one bad key never fails the whole lookup.
     """
-    target = normalise_hint(key)
-    if issubhint(hint, target):
-        return True
-    if is_exact(target):
-        inner = normalise_hint(exact_target(target))
-        return issubhint(hint, inner) and issubhint(inner, hint)
-    return False
+    try:
+        target = normalise_hint(key)
+        if issubhint(hint, target):
+            return True
+        if is_exact(target):
+            inner = normalise_hint(exact_target(target))
+            return issubhint(hint, inner) and issubhint(inner, hint)
+        return False
+    except Exception:  # noqa: BLE001 -- a key that cannot be compared
+        return False
 
 
 def _strictly_below(a: tx.Any, b: tx.Any) -> bool:
-    """Whether key `a` is strictly more specific than key `b`."""
-    na, nb = normalise_hint(a), normalise_hint(b)
-    return issubhint(na, nb) and not issubhint(nb, na)
+    """Whether key `a` is strictly more specific than key `b`.
+
+    A relation error on either key is read as "not comparable", so a key the
+    relation chokes on never propagates out of the lookup.
+    """
+    try:
+        na, nb = normalise_hint(a), normalise_hint(b)
+        return issubhint(na, nb) and not issubhint(nb, na)
+    except Exception:  # noqa: BLE001 -- a key that cannot be compared
+        return False
 
 
 def _exact_key(hint: tx.Any, mapping: tx.Mapping[tx.Any, tx.Any]) -> tx.Any:

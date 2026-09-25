@@ -12,6 +12,7 @@ from ._compat import (
     UNION_TYPES,
     UnknownHintWarning,
     is_plausible_hint,
+    is_special_form,
     is_typeddict_marker,
     spellings,
 )
@@ -435,6 +436,16 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
         # reads it structurally. Without this it would fall to the opaque
         # rule below and accept everything.
         return _issubclasshint(hint, superhint, origin_uw)
+
+    if is_special_form(origin_uw):
+        # A recognised special form with no branch of its own and nothing left
+        # to check -- a bare, unsubscripted `Annotated` (its origin is itself,
+        # not a class), or a future class-shaped construct -- is opaque:
+        # permissive like `Any`, so a hint or registry key written with it
+        # stays reachable (RFC 0001 §2.1) rather than being mistaken for a
+        # subclassable class below. A subscripted form has already resolved to
+        # its inner origin above, so only a bare one reaches here.
+        return True
 
     if isinstance(origin_uw, type):
         return _issubclasshint(hint, superhint, origin_uw)

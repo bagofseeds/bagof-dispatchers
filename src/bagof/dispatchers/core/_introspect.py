@@ -125,7 +125,15 @@ def unwrap(hint: tx.Any, origin: tx.Any = (tx.Annotated,)) -> tx.Any:
         # A `str` is a `Sequence`, but a single hint - not a list of them.
         origin = (origin,)
     if safe_get_origin(hint) in origin:
-        return unwrap(tx.get_args(hint)[0], origin=origin)
+        args = tx.get_args(hint)
+        if args:
+            return unwrap(args[0], origin=origin)
+        # A bare, unsubscripted special form (e.g. `Annotated`, with no
+        # argument to unwrap to) falls through opaquely rather than raising an
+        # `IndexError` -- so it behaves as an unknown, `Any`-like hint (RFC
+        # 0001 §2.1) both here and everywhere `unwrap`/`safe_get_origin` is a
+        # step in the relation.
+        return hint
     if tx.TypeVar in origin and safe_isinstance(hint, tx.TypeVar):
         return unwrap(_unwrap_typevar(hint), origin=origin)
     return hint
