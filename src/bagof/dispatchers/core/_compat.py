@@ -116,7 +116,10 @@ def _is_typing_class_form(hint: tx.Any) -> bool:
         return False
     if any(hint is marker for marker in _PROTOCOL_MARKERS):
         return False
-    if is_typeddict_marker(hint):
+    if is_typeddict_marker(hint):  # pragma: no cover  -- marker is not a type
+        # On every supported Python the `TypedDict` marker is a function, not
+        # a type, so the `isinstance(hint, type)` guard above already excludes
+        # it; kept defensively should a future spelling make it a class.
         return False
     # Real, checkable classes that merely live in `typing` -- a Protocol
     # (`SupportsInt`, `SupportsIndex`, ...), any `Generic` subclass
