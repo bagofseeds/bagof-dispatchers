@@ -10,6 +10,7 @@ inheriting them.
 """
 
 # stdlib
+import abc
 import typing
 
 # dependencies
@@ -66,7 +67,21 @@ def spellings(name: tx.Any) -> tx.Tuple[tx.Any, ...]:
     return found
 
 
-_SPECIAL_FORMS = (tx.Any, tx.Optional, tx.Literal, tx.Annotated) + UNION_TYPES
+# Every spelling of the forms the relation reads by identity: on 3.8-3.10
+# `typing_extensions` ships its own `Any`/`Literal`, distinct from `typing`'s,
+# so a single-object check misses the other spelling.
+_ANY_FORMS = spellings("Any")
+_LITERAL_FORMS = spellings("Literal")
+_ANNOTATED_FORMS = spellings("Annotated")
+_OPTIONAL_FORMS = spellings("Optional")
+
+_SPECIAL_FORMS = (
+    _ANY_FORMS
+    + _OPTIONAL_FORMS
+    + _LITERAL_FORMS
+    + _ANNOTATED_FORMS
+    + UNION_TYPES
+)
 """The typing constructs that must never be treated as classes."""
 
 # The typing markers a structural special-form must *not* swallow: real
@@ -101,7 +116,54 @@ def _is_typing_class_form(hint: tx.Any) -> bool:
         return False
     if any(hint is marker for marker in _PROTOCOL_MARKERS):
         return False
-    return not is_typeddict_marker(hint)
+    if is_typeddict_marker(hint):
+        return False
+    # Real, checkable classes that merely live in `typing` -- a Protocol
+    # (`SupportsInt`, `SupportsIndex`, ...), any `Generic` subclass
+    # (`typing.IO`), or an ABC (`Buffer` on <=3.11) -- are not special
+    # forms: they can be subclass/instance-checked, so swallowing them
+    # would make the relation silently reject them.
+    if getattr(hint, "_is_protocol", False):
+        return False
+    mro = getattr(hint, "__mro__", ())
+    if any(marker in mro for marker in _GENERIC_MARKERS):
+        return False
+    if isinstance(hint, abc.ABCMeta):
+        return False
+    return True
+
+
+# The `TypeVar` family: objects that are hints in a signature but not classes.
+_TYPEVAR_FAMILY = tuple(
+    form
+    for name in ("TypeVar", "ParamSpec", "ParamSpecArgs", "ParamSpecKwargs",
+                 "TypeVarTuple")
+    for form in (getattr(tx, name, None),)
+    if isinstance(form, type)
+)
+
+
+def is_plausible_hint(obj: tx.Any) -> bool:
+    """Whether `obj` could be a type hint, rather than an obvious non-hint.
+
+    A hint is a class, a typing special form, a member of the
+    [`TypeVar`][typing.TypeVar] family, a [`ForwardRef`][typing.ForwardRef],
+    or any object defined in `typing` / `typing_extensions` -- which covers a
+    future construct of that shape too. An obvious non-hint -- a plain value
+    such as a number, string or container instance, or a plain function -- is
+    not, and the relation raises rather than treating it as `Any`.
+    """
+    if isinstance(obj, type):
+        return True
+    if is_special_form(obj):
+        return True
+    if _TYPEVAR_FAMILY and isinstance(obj, _TYPEVAR_FAMILY):
+        return True
+    forward_ref = getattr(tx, "ForwardRef", None)
+    if isinstance(forward_ref, type) and isinstance(obj, forward_ref):
+        return True
+    module = getattr(obj, "__module__", None)
+    return module in ("typing", "typing_extensions")
 
 
 # `typing.TypedDict` and `typing_extensions.TypedDict` are distinct objects

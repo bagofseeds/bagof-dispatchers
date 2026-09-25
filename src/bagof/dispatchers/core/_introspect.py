@@ -20,6 +20,8 @@ import typing_extensions as tx
 
 # local
 from ._compat import (
+    _ANY_FORMS,
+    _LITERAL_FORMS,
     UNION_TYPES,
     NoneType,
     canonical_typeddict,
@@ -453,7 +455,7 @@ def safe_isinstance(obj: tx.Any, cls: tx.Any) -> bool:
         return any(safe_isinstance(obj, each) for each in cls)
     if is_typeddict(cls):
         return safe_issubclass(type(obj), cls)
-    if isinstance(cls, type) and cls is not tx.Any:
+    if isinstance(cls, type) and not any(cls is form for form in _ANY_FORMS):
         return isinstance(obj, cls)
     return False
 
@@ -720,7 +722,7 @@ def _typing_spelling(hint: tx.Any) -> tx.Any:
     there is nothing to rewrite there.
     """
     origin = tx.get_origin(hint)
-    if origin is None or origin is tx.Literal:
+    if origin is None or any(origin is form for form in _LITERAL_FORMS):
         return hint
     args = tx.get_args(hint)
     try:
