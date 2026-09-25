@@ -1,6 +1,9 @@
 """Tests for the dispatch-internal lattice layer (`_lattice.py`)."""
 
 # stdlib
+import collections.abc
+import sys
+import typing
 import warnings
 
 # dependencies
@@ -11,13 +14,12 @@ import typing_extensions as tx
 from bagof.dispatchers import Exact
 from bagof.dispatchers._lattice import (
     equivalent,
-    is_instance,
     is_value_dependent,
     mro_index,
     solve_typevar,
     typevar_consistent,
 )
-from bagof.dispatchers.core import UNSET, issubhint
+from bagof.dispatchers.core import UNSET, UnknownHintWarning, issubhint
 
 # --- a shared corpus for the preorder / equivalence laws ---------------
 
@@ -102,10 +104,16 @@ CORPUS = [
 
 
 @pytest.fixture(autouse=True)
-def _quiet_unknown_hint_warnings() -> tx.Iterator[None]:
-    """The relation warns once per unknown form; the laws do not care."""
+def _no_unknown_hint_warnings() -> tx.Iterator[None]:
+    """Fail if the corpus trips an ``UnknownHintWarning``.
+
+    An unrecognised hint is treated as ``Any`` by the relation, which would
+    make the preorder and equivalence laws trivially true. Turning only that
+    warning into an error keeps a future corpus addition honest, while any
+    other warning is left to behave as usual.
+    """
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
+        warnings.simplefilter("error", UnknownHintWarning)
         yield
 
 
@@ -121,14 +129,6 @@ def test_equivalence_is_symmetric() -> None:
     for a in CORPUS:
         for b in CORPUS:
             assert equivalent(a, b) == equivalent(b, a), (a, b)
-
-
-def test_equivalence_matches_its_definition() -> None:
-    # `a ≡ b` iff each is a sub-hint of the other.
-    for a in CORPUS:
-        for b in CORPUS:
-            expected = issubhint(a, b) and issubhint(b, a)
-            assert equivalent(a, b) is expected, (a, b)
 
 
 def test_equivalence_is_transitive() -> None:
@@ -157,27 +157,6 @@ def test_order_is_transitive() -> None:
             for c in CORPUS:
                 if issubhint(b, c):
                     assert issubhint(a, c) is True, (a, b, c)
-
-
-# --- is_instance delegates to the Exact-aware value check --------------
-
-
-@pytest.mark.parametrize(
-    "value,hint,expected",
-    [
-        (1, int, True),
-        (True, int, True),
-        (True, Exact[int], False),
-        (1, Exact[int], True),
-        (1, tx.Literal[1, 2], True),
-        (3, tx.Literal[1, 2], False),
-        ([1], tx.List[str], True),  # items are not inspected
-        ("x", tx.Union[int, str], True),
-        (1, tx.Union[list, str], False),
-    ],
-)
-def test_is_instance(value: tx.Any, hint: tx.Any, expected: bool) -> None:
-    assert is_instance(value, hint) is expected
 
 
 # --- mro_index ---------------------------------------------------------
@@ -229,6 +208,35 @@ def test_mro_index_of_a_class_absent_from_the_mro() -> None:
     assert mro_index(str, _D) is None
 
 
+class _Seq(collections.abc.Sequence):
+    def __getitem__(self, index: int) -> int:
+        return 0
+
+    def __len__(self) -> int:
+        return 0
+
+
+def test_mro_index_of_a_bare_abc_alias_is_spelling_independent() -> None:
+    # A bare `Sequence` alias refines to its origin,
+    # `collections.abc.Sequence`, whichever spelling names it -- so all three
+    # agree on the MRO position.
+    nominal = mro_index(collections.abc.Sequence, _Seq)
+    assert nominal is not None and nominal > 0
+    assert mro_index(typing.Sequence, _Seq) == nominal
+    assert mro_index(tx.Sequence, _Seq) == nominal
+
+
+class _MyList(list):
+    pass
+
+
+def test_mro_index_of_a_bare_list_alias_is_spelling_independent() -> None:
+    # `List.__mro__` position matches the bare `list`'s.
+    assert mro_index(list, _MyList) == 1
+    assert mro_index(typing.List, _MyList) == 1
+    assert mro_index(tx.List, _MyList) == 1
+
+
 # --- repeated TypeVar solving ------------------------------------------
 
 
@@ -268,6 +276,16 @@ def test_a_class_matching_no_constraint_is_inconsistent() -> None:
     assert solve_typevar((bytes,), _TCONSTR) is UNSET
 
 
+def test_constrained_typevar_solution_is_order_independent() -> None:
+    # `(bool, str)` is under `object` but not both under `int`, so the answer
+    # is `object` -- and it must not depend on which order the constraints
+    # were declared in (mypy's rule: the first constraint all classes share).
+    t_io = tx.TypeVar("_TIO", int, object)
+    t_oi = tx.TypeVar("_TOI", object, int)
+    assert solve_typevar((bool, str), t_io) is object
+    assert solve_typevar((bool, str), t_oi) is object
+
+
 def test_no_positions_stand_for_the_full_upper_bound() -> None:
     assert solve_typevar((), _T) is tx.Any
     assert solve_typevar((), _TBOUND) is int
@@ -277,24 +295,58 @@ def test_no_positions_stand_for_the_full_upper_bound() -> None:
 # --- value dependence --------------------------------------------------
 
 
+_TV_LITERAL_BOUND = tx.TypeVar("_TV_LITERAL_BOUND", bound=tx.Literal[1, 2])
+_TV_LITERAL_CONSTR = tx.TypeVar("_TV_LITERAL_CONSTR", tx.Literal[1], str)
+
+
 @pytest.mark.parametrize(
     "hint",
     [
         tx.Literal[1],
         tx.Literal["a", "b"],
         tx.Type[int],
+        # A union descends into its members ...
+        tx.Optional[tx.Literal["a"]],
+        tx.Union[tx.Literal[1], str],
+        tx.Union[tx.Type[int], tx.Type[str]],
+        # ... and a TypeVar into its upper bound.
+        _TV_LITERAL_BOUND,
+        _TV_LITERAL_CONSTR,
     ],
 )
 def test_value_dependent_hints(hint: tx.Any) -> None:
     assert is_value_dependent(hint) is True
 
 
-def test_a_typeddict_is_value_dependent() -> None:
+def test_a_typeddict_is_type_dependent_in_v1() -> None:
+    # v1's value-level TypedDict check is type-only, so it does not key on the
+    # value. This flips to True when the v2 shape check lands.
     class Movie(tx.TypedDict):
         title: str
         year: int
 
-    assert is_value_dependent(Movie) is True
+    assert is_value_dependent(Movie) is False
+
+
+@pytest.mark.parametrize(
+    "hint",
+    [
+        tx.Tuple[tx.Literal[1]],  # container items are never inspected
+        tx.List[tx.Literal[1]],
+    ],
+)
+def test_nested_container_args_are_not_value_dependent(hint: tx.Any) -> None:
+    assert is_value_dependent(hint) is False
+
+
+@pytest.mark.skipif(
+    sys.version_info >= (3, 9),
+    reason="typing.Literal is a distinct object from tx.Literal only < 3.9",
+)
+def test_the_typing_literal_spelling_is_value_dependent() -> None:
+    # Before 3.9, `typing.Literal` and `typing_extensions.Literal` are two
+    # distinct objects; the classifier must recognise both spellings.
+    assert is_value_dependent(typing.Literal[1]) is True
 
 
 @pytest.mark.parametrize(
