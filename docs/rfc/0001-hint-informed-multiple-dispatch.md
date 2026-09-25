@@ -57,12 +57,20 @@
    second is what `get_from_registry` is, so the siblings' single-key lookups
    become `resolve_hint(hint, mapping, …)`.
 
-5. **Support Python 3.8 through the latest and future versions** (§11). Every
+5. **Dispatch is name-aware.** A call is bound to each method's parameters the
+   way Python binds it (`inspect.Signature.bind` semantics: positionals by
+   position, keywords by name, keyword-only included), and selection compares the
+   hints each *argument* landed in — reducing provably to positional dispatch for
+   positional calls. This is the model `bagof.magic._polymorph` already uses for
+   field-name dispatch, and it departs from Julia/plum, which dispatch on
+   positionals only.
+
+6. **Support Python 3.8 through the latest and future versions** (§11). Every
    construct is reached through `import typing_extensions as tx`; the relation is
    uniform across spellings and **forward-tolerant** — an unrecognised or future
    hint degrades to `Any`-like behaviour and warns, never crashes.
 
-6. **Repeated TypeVars (`(T, T)`)** are supported for applicability in v1 with a
+7. **Repeated TypeVars (`(T, T)`)** are supported for applicability in v1 with a
    narrow specificity tie-break; Julia's full diagonal semantics are deferred.
    Flagged for review.
 
@@ -154,39 +162,81 @@ Value level (`ishintstance`): `{'a':1} in TD` → **False**; `[1] in List[str]`
 → **True** (items never inspected); `print in Callable[[int],str]` → True;
 `True in Literal[1]` → False (PEP 586); `1 in T` True, `'x' in TB` False.
 
-### 2.2 Definitions (normative)
+### 2.2 Definitions and selection (name-aware, normative)
 
-`⊑` = `issubhint` (which now handles `Exact` internally).
+`⊑` = `issubhint` (which now handles `Exact` internally). Dispatch is
+**name-aware**: a call is bound to each method before selection, and specificity
+compares the hints of the slots the *same argument* landed in — comparing
+"name to name" directly would be wrong for `def f(a, b)` vs `def f(x, y)` called
+`f(1, 2)`, which clearly compete on the same two arguments.
 
-- **Signature** `S = (h_1, …, h_n; tail)`; `tail` from `*args: h_*`; arity range
-  `[min_arity, max_arity]` (defaults lower `min_arity`; a tail makes
-  `max_arity = ∞`). Keyword-only parameters are **not** part of the signature
-  (Julia rule; `plum` agrees).
-- **Position hint** `S[i]` = `h_i` for `i < n`, else `h_*`.
-- **Applicable to values** `(v_1..v_m)`: `min_arity ≤ m ≤ max_arity`,
-  `∀i: is_instance(v_i, S[i])`, plus §3 TypeVar consistency.
-- **Applicable to hints** `(q_1..q_m)`: same, with `issub(q_i, S[i])`.
-- **Specificity** `A ⊑ B` at arity `m`: `∀i<m: A[i] ⊑ B[i]` plus consistency.
-  `A < B` iff `A ⊑ B ∧ ¬(B ⊑ A)`; `A ≡ B` iff both.
-- **Selection.** `Max` = applicable methods with no strictly more specific
-  applicable method. Then, in order:
-  1. `|Max| = 1` → done.
-  2. Drop members strictly dominated under **explicit priority** (higher wins;
-     default 0).
-  3. Drop members strictly dominated under **MRO refinement**: A dominates B iff
-     at every position `A[i] ≡ B[i]`, or both hints (unwrapped, non-`Exact`) are
-     classes in `type(v_i).__mro__` with `index(A[i]) ≤ index(B[i])`, strictly
-     `<` somewhere. Resolves `D(B, C)` to `B`, as `singledispatch` /
-     `get_from_registry` do. Protocols/ABCs not in the MRO, unions, literals and
-     parametrised generics give no refinement.
-  4. Drop members dominated under **arity tightness**: smaller `max_arity`, then
-     larger `min_arity` (fixed arity beats a `*args`/default that merely tolerates
-     the count; Julia orders fixed arity before `Vararg`).
-  5. `|Max| > 1` → **`AmbiguousMethodError`**; `|Max| = 0` → **`NoMethodError`**.
+- **Signature** `S = (params, varargs, varkw)`: `params` is an ordered map
+  `name → Parameter(hint, kind, default)` with `kind ∈ {POSITIONAL_ONLY,
+  POSITIONAL_OR_KEYWORD, KEYWORD_ONLY}`; `varargs` the optional `*args` hint
+  `h_*`; `varkw` the optional `**kwargs` hint `h_**`. Every parameter in `params`
+  is **dispatched** (unannotated → `Any`, so it participates trivially). Return
+  annotation ignored.
+- **Call** `C = (v_0 … v_{n-1}; {k_j: w_j})`; its **shape** `σ(C) = (n, sorted
+  keyword names)`; its **arguments** `Args(C) = {0..n-1} ∪ {k_j}`.
+- **Binding** `bind(S, C)` (an `inspect.Signature.bind` restatement, precomputed
+  per method for speed): positionals fill positional slots in order, surplus →
+  `*args` or fail; each keyword fills the same-named keyword-able parameter if
+  unfilled, else `**kwargs`, else fail; a required parameter left unfilled fails;
+  unfilled parameters with defaults are **default-filled**. On success,
+  `hint_S(a)` is the hint of the slot each argument `a` landed in (`Any` for an
+  unannotated catch-all).
+- **Applicable to values**: `bind(S, C)` succeeds, `∀a ∈ Args(C):
+  is_instance(value_a, hint_S(a))` (an extra positional is checked against `h_*`,
+  an extra keyword against `h_**`), and §3 TypeVar consistency over the bound
+  arguments. **Default-filled parameters are not arguments** — their hints are
+  not checked and they do not enter specificity (owner's rule; the
+  `dispatch_defaults` exception is in §6).
+- **Applicable to hints** (`resolve(*hints, **named_hints)`): the same with
+  `issub(q_a, hint_S(a))`.
+- **Specificity, per call**: for two methods applicable to `C`, `A ⊑_C B` iff
+  `∀a ∈ Args(C): hint_A(a) ⊑ hint_B(a)` plus §3 consistency. The order is defined
+  **per shape** (which slot each argument hits depends on the shape), so it is
+  computed and cached per shape (§6), not once at registration — but it remains a
+  partial order for every shape, so genuine ambiguities still surface.
+- **Reduce-to-positional guarantee (a theorem, to be tested).** For a call with
+  no keywords and methods without `*args`, `hint_S(i)` is the i-th hint of the
+  old positional tuple, so applicability, `⊑_C`, `Max` and every tie-break below
+  coincide *exactly* with a positional engine. Keep a positional reference
+  implementation in `tests/` and assert equality on generated positional calls.
+- **Extra keywords / `**kwargs: T`**: a keyword naming no declared parameter
+  binds to `**kwargs` (or makes the method inapplicable); it is checked against
+  `h_**` when annotated and enters specificity through `hint_S(a)` (= `h_**` or
+  `Any`). No per-keyword TypeVar solving through `**kwargs: T` in v1; `Unpack[TD]`
+  on `**kwargs` is treated as unannotated (§11).
 
-  Priority precedes MRO because explicit beats implicit. Steps 2–4 are partial
-  refinements, so a cross-position conflict remains ambiguous; and none ever
-  overrides a strict specificity win (tested).
+**Selection.** `Max` = applicable methods with no strictly more specific one
+under `⊑_C`. Then, in order, drop members strictly dominated under:
+  1. **explicit priority** (higher wins; default 0);
+  2. **MRO refinement** (per argument): A dominates B iff for every `a`,
+     `hint_A(a) ≡ hint_B(a)`, or both hints (unwrapped, non-`Exact`) are classes
+     in `type(value_a).__mro__` with `index(hint_A(a)) ≤ index(hint_B(a))`,
+     strictly `<` for some `a` (resolves the diamond `D(B, C)` to `B`, as
+     `singledispatch` does; protocols/ABCs not in the MRO, unions, literals and
+     parametrised generics give no refinement);
+  3. **tightness** (restates the old arity rule): fewer arguments absorbed by
+     catch-alls (`*args`/`**kwargs`), then fewer default-filled parameters, then
+     no `**kwargs`, then no `*args`.
+
+  `|Max| = 1` → done; `|Max| > 1` → **`AmbiguousMethodError`**; nothing
+  bindable-and-applicable → **`NoMethodError`**, whose message distinguishes "no
+  method accepts keyword `scake`" (with a `difflib` did-you-mean over all
+  methods' parameter names), "missing argument `y` for every candidate", and
+  "argument types matched nothing". Priority precedes MRO because explicit beats
+  implicit; the refinements are partial, so cross-argument conflicts stay
+  ambiguous and none overrides a strict specificity win (tested).
+
+**Worked cases (each a test):** same names/order → identical to positional for
+all four spellings of `area(c, 2.0)`; different names (`f(a,b)` vs `f(x,y)`) →
+positional call competes per position, keyword call binds only where names exist;
+name reachable only via `**kwargs` → the declared-parameter method wins when
+applicable; same names/different order → equivalent for keyword calls (ambiguous
+without priority) but not positional, so *not* duplicates at registration;
+positional-only (`p(x, /)`) → `p(x=1)` unbindable → `NoMethodError`.
 
 ### 2.3 Where variance enters (reconciled with PEP 483 and `bagof.hints.typevars`)
 
@@ -244,12 +294,17 @@ covariant in return.
   The public `unwrap`'s default→constraints→bound contract stays (factories
   legitimately want the default to *build*).
 
-**Repeated TypeVar `(T, T)` — v1 rule.** Applicability requires a *consistent
-solution*: the argument classes at `T`'s positions must have a **greatest
-element** under `⊑` (`(int, bool)` solves `T = int`; `(int, str)` is not
-applicable — a join to `object` would collapse `(T, T)` to `(bound, bound)`).
-Constrained `T`: all positions solve to the *same* constraint. This is the
-Pythonic middle between Julia's strict diagonal and mypy's join.
+**Repeated TypeVar `(T, T)` — v1 rule.** Consistency is over the **bound
+arguments**: collect the arguments whose landed-slot hint is `T` (declared
+parameters, and surplus positionals when `h_*` is `T`) — so `def same(x: T,
+y: T)` is checked whether the call is `same(1, 2)`, `same(x=1, y=2)` or
+`same(y=2, x=1)`. Applicability requires a *consistent solution*: those argument
+classes must have a **greatest element** under `⊑` (`(int, bool)` solves
+`T = int`; `(int, str)` is not applicable — a join to `object` would collapse
+`(T, T)` to `(bound, bound)`). Constrained `T`: all solve to the *same*
+constraint. A default-filled parameter annotated `T` contributes nothing (it is
+not an argument); `**kwargs: T` does not solve `T` in v1. This is the Pythonic
+middle between Julia's strict diagonal and mypy's join.
 
 **Specificity with TypeVars.** Position-wise a TypeVar is replaced by its table
 entry, so `(int, int) < (T, T) ≡ (Any, Any)`. One tie-break inside `≡`: when
@@ -387,16 +442,27 @@ Surface (`__all__`), two documented groups:
 
 Key objects:
 - `Dispatcher()` — namespace of `Function`s; `dispatch = Dispatcher()` is the
-  module default. Own instances isolate a library's names.
-- `Function` — `__call__`, `dispatch(*args) -> Method`, `resolve(*hints,
+  module default. Own instances isolate a library's names. Look up a function by
+  name with `dispatch.function("area")` or the `dispatch.functions` mapping view.
+- `Function` — `__call__(*args, **kwargs)`, `dispatch(*args, **kwargs) -> Method`
+  (bind-then-select without calling), `resolve(*hints, **named_hints,
   default=UNSET, ambiguity="raise") -> Method`, `register(...)`,
   `from_mapping(mapping)`, `methods`, `ambiguities()`, `clear_cache()`,
-  `__get__` (binds `self`; unannotated `self` → `Any`), `functools.update_wrapper`
-  metadata. **Not** a `dict` subclass.
+  `__get__` (binds `self`/`cls` as argument 0; unannotated → `Any`),
+  `functools.update_wrapper` metadata. **Not** a `dict` subclass.
+  `Function(dispatch_defaults=True)` treats default-filled dispatched parameters
+  as arguments carrying their default value — the `_polymorph` semantics ("a
+  default is as good as a value the caller wrote out"); off by default.
 - `Method` — `signature`, `function`, `priority`, `__call__`, `__repr__`.
-- `Signature` — `from_callable(fn)` via `tx.get_type_hints(fn,
-  include_extras=True)` (unannotated → `Any`; `*args: H` → tail; defaults →
-  `min_arity`; kw-only ignored), `from_hints`, `__le__`/`__lt__` = specificity.
+- `Parameter(name, hint, kind, default)` — frozen; `kind` mirrors
+  `inspect.Parameter.kind`; `required = default is Parameter.empty`.
+- `Signature` — `parameters: Mapping[str, Parameter]` (ordered), `.varargs`,
+  `.varkw`, `.dispatched_names`; `from_callable(fn)` via `tx.get_type_hints(fn,
+  include_extras=True)` for hints + `inspect.signature` for names/kinds/defaults
+  (unannotated → `Any`; keyword-only params **are** dispatched, by name);
+  `from_hints(*hints, **named_hints)` for explicit registration
+  (`@dispatch(int, scale=float)`); `bind(args, kwargs) -> Optional[Binding]`;
+  `le(other, shape)` = specificity for a shape.
 - `resolve_hint(hint, mapping, *, default=UNSET, ambiguity="raise")` — the
   hint-level functional API, `get_from_registry`'s successor.
 
@@ -412,14 +478,28 @@ first dispatch (`bagof.magic._resolve._Deferred` precedent); still unresolvable 
 `tx.get_type_hints(include_extras=True)`, then `annotationlib.get_annotations(fn,
 format=Format.FORWARDREF)`, then raw `__annotations__` + deferral.
 
-Caching & thread-safety: per-`Function` dict keyed by `tuple(type(a) for a in
-args)`; value-dependent positions (`Literal`, `type[...]`, TypedDict in v2)
-contribute `(type(a), a)` when hashable, else uncached. Invalidate on every
-`register` (methods tuple rebuilt and published in one assignment — the
-`_polymorph._Registry` pattern) and when `abc.get_cache_token()` changes (as
-`singledispatch` does). Pairwise specificity precomputed at registration.
-`threading.Lock` on registration; lock-free reads (matters on the free-threaded
-3.13 build).
+Caching & thread-safety — **two levels**, because the order is per shape:
+1. A **shape plan** per `σ(C)`: for each method, its precomputed binding outcome
+   for that shape (slot assignment or "cannot bind") and the pairwise `⊑_σ`
+   matrix over the shape's arguments, plus which arguments are value-dependent
+   (any method's hint there is `Literal`/`type[...]`/TypedDict-shape). Bounded LRU
+   over shapes; rebuilt on `register`.
+2. Under each plan, a **call cache** keyed by `tuple(type(v_i)) + tuple((k,
+   type(w_k)) for k in sorted keywords)`, with `(type, value)` at value-dependent
+   arguments; an unhashable value at a value-dependent argument → uncached.
+   Positional and keyword spellings of "the same" call are different shapes and
+   therefore different keys (they can bind differently — required, not
+   incidental).
+
+Invalidate on every `register` (methods tuple rebuilt and published in one
+assignment — the `_polymorph._Registry` pattern) and when `abc.get_cache_token()`
+changes (as `singledispatch` does). `threading.Lock` on registration; lock-free
+reads (matters on the free-threaded 3.13 build).
+
+Errors render **named** signatures: `area(shape: !Circle, scale: float = 1.0) @
+shapes.py:12`, with `/` and `*` markers, `*args: H`/`**kwargs: H`; the `!` sits on
+the failing argument; a binding failure is rendered in words after the signature
+(`— no parameter 'scake'`, `— missing 'y'`, `— 'x' is positional-only`).
 
 ---
 
@@ -563,6 +643,23 @@ registry is clean. Their registration dicts stay the registration API.
 - `Exact` understood by `issubhint`/`ishintstance`;
 - `eq_safenan` numpy-free at the root.
 
+### 8.4 `_polymorph` reconciliation (why name-aware dispatch subsumes it)
+
+`bagof.magic._polymorph` already dispatches by **field name**:
+`discriminants` computes once per class where each constrained field arrives (a
+position for positional fields, its public name for keyword-able ones), `_read`
+binds one call to those names (never a keyword-only field from `args` nor a
+positional-only one from `kwargs`), `matches` is applicability with per-name value
+specs (a `Literal`-shaped hint per field), and `rank = (priority, len(specs),
+Σprecision, depth)` is a lexicographic stand-in for (priority, specificity over
+names, MRO depth). That is exactly this model's `bind` + name-aware specificity,
+restricted to the generated `__init__`'s parameter list. Migration sketch (a later
+phase): each `on={...}` becomes a `Method` whose `Signature` is the owner's
+`__init__` signature with the constrained names' hints replaced by the spec hints
+and every other name `Any`; `select` becomes `Function(dispatch_defaults=True)
+.dispatch(*args, **kwargs)`; `AmbiguousPolymorphError`/`NoPolymorphError` become
+subclasses of the dispatch errors. The model needs no positional-to-name adapter.
+
 ---
 
 ## 9. Corner-case checklist (each is a test)
@@ -595,12 +692,26 @@ promotion) · PEP 695 TypeVar without `__default__` → `getattr(..., NoDefault)
 `list[int]` on 3.9/3.10 not mistaken for a class · both-spelling `Unpack` on
 3.11 recognised.
 
-**Calls & parameters:** keyword args forwarded, not dispatched (v1 positional) ·
-defaults → arity range, shorter fixed arity wins on tightness · `*args: H` tail,
-fixed arity beats tail, `**kwargs` ignored · zero-arg call → zero-arity methods ·
-methods in classes via `__get__`; `self` = `Any` unless annotated · unhashable
-args uncached · lying `__class__` documented (`type(v)` for cache/MRO,
-`isinstance` for applicability) · errors never `repr` values.
+**Calls & parameters:** defaults → arity range, shorter fixed arity wins on
+tightness · `*args: H` tail, fixed arity beats tail · zero-arg call → zero-arity
+methods · methods in classes via `__get__`; `self`/`cls` = argument 0, `Any`
+unless annotated · unhashable args uncached · lying `__class__` documented
+(`type(v)` for cache/MRO, `isinstance` for applicability) · errors never `repr`
+values.
+
+**Name-aware binding:** same parameter positional in one call and keyword in
+another → same method chosen · a keyword accepted by some methods only → the
+others are unbindable, not ambiguous; a keyword accepted by none → `NoMethodError`
+naming it with a did-you-mean · positional-only (`/`) → bind positionally only ·
+keyword-only (`*`) → dispatched by name, never filled positionally · default-filled
+names → excluded from applicability/specificity unless `dispatch_defaults=True` ·
+`**kwargs: H` → extra keywords checked against `H` (unannotated → `Any`),
+`Unpack[TD]` treated as unannotated (v1) · same names/different order → not
+duplicates at registration; keyword calls ambiguous without priority · a shared
+TypeVar on `*args` and a named param → consistency over all bound arguments · the
+same value passed twice under two spellings (`f(1, x=1)`) → unbindable (Python
+semantics) · `f(1, 2)` and `f(1, y=2)` are different shapes/keys · reduce-to-
+positional theorem → property test against the reference positional engine.
 
 **Registration & lifecycle:** new registration → cache cleared, order extended,
 atomic publish · concurrent registration/call → never torn · same name in two
@@ -640,14 +751,30 @@ the siblings already do) before the core-magic shim PR merges.
 - **Phase 2 — `_lattice.py`.** `equivalent`, `is_instance`, `mro_index`, TypeVar
   solving, value-dependence classifier; preorder-law property tests over ~40
   hints incl. `Exact` and `Callable` pairs. Review recommended (lighter).
-- **Phase 3 — `_signature.py` + `_method.py`.** `from_callable`/`from_hints`,
-  arity/tail/kw-only, `NewType`, deferred strings, the 3.14 `annotationlib` path,
-  `*args: *Ts`/`P.args` tails; typevar table + consistency; `Method` repr/source.
-- **Phase 4 — `_function.py` + `_errors.py` + `_registry.py`.** Value dispatch
-  (§2.2), cache + abc token, `register` with replacement + ambiguity warnings,
-  both errors with exact text (incl. `!` marker), `Function.from_mapping`,
-  `resolve_hint` with exact-key fast path, parity suite ported from core-magic.
-  **Review recommended** (maximal set, MRO refinement, refinement ordering).
+- **Phase 3 — `_signature.py` + `_method.py`.** `Parameter`, the ordered
+  name→`Parameter` map, the precomputed per-method binder and `Binding`,
+  `from_callable`/`from_hints(*hints, **named)`, `NewType`, deferred strings, the
+  3.14 `annotationlib` path, `*args: *Ts`/`P.args` tails; typevar table +
+  consistency; `Method` repr/source. **Differential-test the binder against
+  `inspect.Signature.bind`** over generated signatures/shapes (success/failure and
+  slot assignment must agree exactly, incl. `/`, `*`, defaults, `*args`,
+  `**kwargs`, duplicate-value cases).
+- **Phase 4 — `_function.py` + `_errors.py` + `_registry.py`.** Name-aware value
+  dispatch (§2.2): shape plans, per-shape specificity, the two-level cache, abc
+  token, `dispatch_defaults`, `register` with replacement + ambiguity warnings,
+  both errors with named-signature rendering (`!` marker + binding-failure words),
+  `Function.from_mapping`, `resolve_hint` with exact-key fast path, parity suite
+  ported from core-magic. **[Fable Scope: Review Only] — MANDATORY** (the order is
+  now per shape, binding adds a second inapplicability source, and the cache has a
+  second level). Checklist: (a) reduce-to-positional theorem holds vs the
+  reference engine; (b) binder ≡ `inspect.Signature.bind`; (c) `⊑_σ` is
+  antisymmetric-up-to-`≡` and transitive per shape; (d) selection is independent
+  of registration order for every shape; (e) shape plans dropped on `register` and
+  `abc` token change; (f) no cross-shape key collision (`(1,2)` vs `(1,y=2)`);
+  (g) default-filled parameters never influence selection unless
+  `dispatch_defaults=True`; (h) `**kwargs: H` checked, missing annotation compares
+  as `Any`; (i) error rendering names the failing argument and never `repr`s
+  values; (j) `ambiguities()`'s heuristic shapes documented as such.
 - **Phase 5 — `_dispatcher.py`, `__init__.py`, docs.** Name grouping,
   `update_wrapper`; two doc pages (dispatch, hints); 3.8-safe `pycon`;
   `test_docstrings.py`, `test_module_surface.py` covering both name groups.
@@ -658,9 +785,10 @@ the siblings already do) before the core-magic shim PR merges.
   rule, constrained same-constraint, solved-`T` messages. **Review recommended**
   (least-precedented rule).
 - **Phase 8 (v2).** TypedDict shape matching in `_lattice.is_instance` (+ the
-  separate owner decision on `ishintstance`/validators); keyword-to-position
-  binding; full `TypeVarTuple`/`ParamSpec` solving & ordering; `Callable` deep
-  element check; `DeprecationWarning` `__getattr__` in core-magic.
+  separate owner decision on `ishintstance`/validators); full
+  `TypeVarTuple`/`ParamSpec` solving & ordering; per-keyword TypeVar solving
+  through `**kwargs: T`; `Callable` deep element check; `DeprecationWarning`
+  `__getattr__` in core-magic; the `_polymorph` → `Function` migration (§8.4).
 
 Non-goals (stated in the README): `invoke`/`next_method` fall-through,
 return-type dispatch, dispatch on keyword-only parameters, static overload
