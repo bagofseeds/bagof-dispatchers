@@ -1,5 +1,8 @@
 """Tests for the version-pinning and special-form recognition in `_compat`."""
 
+# stdlib
+import typing
+
 # dependencies
 import typing_extensions as tx
 
@@ -19,6 +22,10 @@ def test_generic_protocol_typeddict_markers_are_not_special_forms() -> None:
     assert is_special_form(tx.Generic) is False
     assert is_special_form(tx.Protocol) is False
     assert is_special_form(tx.TypedDict) is False
+    # `typing.TypedDict` is a real class on Python 3.8, so the marker guard is
+    # load-bearing there -- it must not be taken for a class-shaped special
+    # form. (`tx.TypedDict`, above, is a function on every version.)
+    assert is_special_form(typing.TypedDict) is False
 
 
 def test_a_generic_subclass_is_not_a_special_form() -> None:

@@ -116,10 +116,13 @@ def _is_typing_class_form(hint: tx.Any) -> bool:
         return False
     if any(hint is marker for marker in _PROTOCOL_MARKERS):
         return False
-    if is_typeddict_marker(hint):  # pragma: no cover  -- marker is not a type
-        # On every supported Python the `TypedDict` marker is a function, not
-        # a type, so the `isinstance(hint, type)` guard above already excludes
-        # it; kept defensively should a future spelling make it a class.
+    if is_typeddict_marker(hint):  # pragma: no cover  -- 3.8 only
+        # On Python 3.8 `typing.TypedDict` is a real class
+        # (`class TypedDict(dict, metaclass=_TypedDictMeta)`), so it reaches
+        # here through the `isinstance(hint, type)` guard above and must not be
+        # taken for a class-shaped special form. From 3.9 on (and on the
+        # single-version coverage job) the marker is a function, excluded by
+        # that guard, so this line is not reached there.
         return False
     # Real, checkable classes that merely live in `typing` -- a Protocol
     # (`SupportsInt`, `SupportsIndex`, ...), any `Generic` subclass
