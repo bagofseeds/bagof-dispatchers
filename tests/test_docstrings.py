@@ -70,6 +70,12 @@ def _run(
         checker=_Checker(), optionflags=_OPTIONFLAGS
     )
     globs = dict(seed)
+    # Give each source its own module name, so a `@dispatch def` in one
+    # source's examples keys by that module and never collides with a
+    # same-named one in another source's -- the module-level `dispatch` keys
+    # by (module, qualname), and every source would otherwise share the one
+    # bucket of definitions made with no module name.
+    globs["__name__"] = "doctest_" + re.sub(r"\W+", "_", name)
     for lineno, block in enumerate(blocks):
         test = parser.get_doctest(block, globs, name, None, lineno)
         runner.run(test, clear_globs=False)

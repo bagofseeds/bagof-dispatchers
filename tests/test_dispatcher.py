@@ -348,3 +348,175 @@ def test_synthetic_module_registration_is_isolated() -> None:
     fy = _named("fab_y", "op", "y", hint=str)
     assert shared(fx) is shared(fy)  # constructed: one function, two overloads
     assert dispatch(fx) is not dispatch(fy)  # module-level: two functions
+
+
+# --- key validation and the qualified (module, name) lookup -----------
+
+
+def test_functions_getitem_rejects_a_non_name() -> None:
+    """Item access takes a name or a (module, name) pair, nothing else."""
+    registry = Dispatcher()
+    with pytest.raises(TypeError):
+        _ = registry.functions[3]
+    with pytest.raises(TypeError):
+        _ = registry.functions[object()]
+    with pytest.raises(TypeError):
+        _ = registry.functions[("only-one",)]  # not a 2-tuple
+    with pytest.raises(TypeError):
+        _ = registry.functions[(1, 2)]  # not two strings
+    assert len(registry.functions) == 0  # a rejected key mints nothing
+
+
+def test_functions_qualified_lookup_reaches_a_cross_module_function() -> None:
+    """A (module, name) pair names the module-level function explicitly.
+
+    The qualified spelling bypasses frame resolution, so a function
+    registered under one module is reachable from another -- what a
+    cross-module re-export needs.
+    """
+    impl = _named("pkg.impl_qtest", "area", "an area", hint=int)
+    registered = dispatch(impl)
+    assert dispatch.functions["pkg.impl_qtest", "area"] is registered
+    assert ("pkg.impl_qtest", "area") in dispatch.functions
+    # A different module is a different key, so it does not reach it.
+    assert ("pkg.other_qtest", "area") not in dispatch.functions
+    # A bare non-pair is never a member.
+    assert 3 not in dispatch.functions
+
+
+def test_qualified_getitem_get_or_creates() -> None:
+    """A qualified pair for an unknown function mints it under that key."""
+    made = dispatch.functions["pkg.fresh_qtest", "brand_new"]
+    assert isinstance(made, Function)
+    assert dispatch.functions["pkg.fresh_qtest", "brand_new"] is made
+
+
+# --- repr counts every function, across modules -----------------------
+
+
+def test_module_dispatcher_repr_counts_all_modules() -> None:
+    """The module-level repr counts functions in every module, not `None`."""
+    registry = _ModuleDispatcher()
+    registry(_named("repr_m1", "a", 1))
+    registry(_named("repr_m2", "b", 2))
+    registry(_named("repr_m3", "c", 3))
+    assert "3 function(s)" in repr(registry)
+
+
+# --- eager overlay-arg validation -------------------------------------
+
+
+def test_bad_first_arg_string_is_rejected_eagerly() -> None:
+    """A bare string is neither hints nor a callable, so it is refused."""
+    registry = Dispatcher()
+    with pytest.raises(TypeError):
+        registry("area")
+    assert len(registry.functions) == 0
+
+
+def test_bad_first_arg_number_is_rejected_eagerly() -> None:
+    """A number cannot be an overload nor an overlay, so it is refused."""
+    registry = Dispatcher()
+    with pytest.raises(TypeError):
+        registry(5)
+    assert len(registry.functions) == 0
+
+
+# --- a failed registration leaves no orphan function ------------------
+
+
+def test_impl_extra_positional_leaves_no_orphan() -> None:
+    """A too-long implementation call rolls back the empty function."""
+    registry = Dispatcher()
+    with pytest.raises(TypeError):
+        registry(len, "extra")
+    assert "len" not in registry.functions
+    assert len(registry.functions) == 0
+
+
+def test_impl_unknown_option_leaves_no_orphan() -> None:
+    """A stray keyword rolls back the empty function."""
+    registry = Dispatcher()
+    with pytest.raises(TypeError):
+        registry(len, scale=float)
+    assert "len" not in registry.functions
+    assert len(registry.functions) == 0
+
+
+def test_overlay_bad_named_hint_leaves_no_orphan() -> None:
+    """A hint for a parameter the function lacks rolls back the function."""
+    registry = Dispatcher()
+    with pytest.raises(TypeError):
+
+        @registry((int,), {"nope": int})
+        def _(value: tx.Any) -> tx.Any:
+            return value
+
+    assert len(registry.functions) == 0
+
+
+# --- metadata adoption keeps an explicit name -------------------------
+
+
+def test_first_impl_metadata_is_adopted_with_an_explicit_name() -> None:
+    """A named function adopts its first impl's doc, module and wrapped.
+
+    A function reached by name (through the namespace) has an explicit name;
+    it still takes the rest of its metadata from the first implementation, so
+    it stands in for it to ``help`` and introspection.
+    """
+    reg = Function("render")
+
+    def impl(x: int) -> str:
+        """the render doc"""
+        return f"int:{x}"
+
+    _ = reg.register(impl)
+    assert reg.__name__ == "render"  # the explicit name is kept
+    assert reg.__doc__ == "the render doc"
+    assert reg.__module__ == impl.__module__
+    assert reg.__wrapped__ is impl
+
+
+def test_anonymous_impl_does_not_rename_a_named_function() -> None:
+    """`@items.register def _` keeps the function named `items`."""
+    items = Function("items")
+
+    @items.register
+    def _(x: int) -> str:
+        return "one item"
+
+    assert items.name == "items"
+    assert items.__name__ == "items"
+    assert items.__qualname__ == "items"
+
+
+def test_namespace_first_function_adopts_via_the_dispatcher() -> None:
+    """A name taken first, then registered, adopts the impl's metadata.
+
+    The README headline pattern: reach an empty function by name, then
+    register the real ``def`` -- the function ends up named and documented.
+    """
+    registry = Dispatcher()
+    render = registry.functions.render
+    impl = _named("shapes_meta", "render", "rendered", hint=int)
+    impl.__doc__ = "render an int"
+    result = registry(impl)
+    assert result is render
+    assert render.__name__ == "render"
+    assert render.__doc__ == "render an int"
+    assert render.__module__ == "shapes_meta"
+    assert render.__wrapped__ is impl
+
+
+# --- the empty-function hint names the cross-module case --------------
+
+
+def test_empty_function_hint_mentions_cross_module_reach() -> None:
+    """Calling an empty function points at both reasons it can be empty."""
+    empty = Function("area")
+    with pytest.raises(NoMethodError) as info:
+        empty(3)
+    message = str(info.value)
+    assert "has not been imported" in message
+    assert "different module" in message

@@ -77,6 +77,21 @@ def _caller_module() -> tx.Optional[str]:
     return frame.f_globals.get("__name__")
 
 
+def _is_qualified(key: tx.Any) -> bool:
+    """Whether `key` is a `#!python (module, name)` pair of two strings.
+
+    That pair is the qualified spelling accepted alongside a bare name: it
+    names the module explicitly instead of taking it from the calling frame,
+    which is what a cross-module re-export needs.
+    """
+    return (
+        isinstance(key, tuple)
+        and len(key) == 2
+        and isinstance(key[0], str)
+        and isinstance(key[1], str)
+    )
+
+
 class _Functions:
     """A protocol-only view onto a dispatcher's functions.
 
@@ -93,6 +108,11 @@ class _Functions:
     names beginning with `#!python _`, so a REPL or tool probing for dunders
     never mints an empty function; item access does not, so a function may
     still be named with a leading underscore through `#!python view["_x"]`.
+
+    Item access also takes a `#!python (module, name)` pair -- the qualified
+    spelling -- which names the module explicitly rather than reading it from
+    the calling frame; that is how the module-level registry's function is
+    reached from a different module than the one that registered it.
     """
 
     # A name-mangled slot, so even the reference back to the dispatcher is not
@@ -109,13 +129,24 @@ class _Functions:
             raise AttributeError(name)
         return self.__owner._function_by_name(name, _caller_module())
 
-    def __getitem__(self, name: str) -> Function:
-        return self.__owner._function_by_name(name, _caller_module())
+    def __getitem__(self, key: tx.Any) -> Function:
+        if isinstance(key, str):
+            return self.__owner._function_by_name(key, _caller_module())
+        if _is_qualified(key):
+            module, name = key
+            return self.__owner._function_by_name(name, module)
+        raise TypeError(
+            f"a function is named by a string, or by a (module, name) pair "
+            f"of strings for a cross-module lookup; got {key!r}."
+        )
 
-    def __contains__(self, name: object) -> bool:
-        if not isinstance(name, str):
-            return False
-        return self.__owner._has_function_name(name, _caller_module())
+    def __contains__(self, key: object) -> bool:
+        if isinstance(key, str):
+            return self.__owner._has_function_name(key, _caller_module())
+        if _is_qualified(key):
+            module, name = key
+            return self.__owner._has_function_name(name, module)
+        return False
 
     def __iter__(self) -> tx.Iterator[str]:
         return iter(self.__owner._function_names(_caller_module()))
@@ -181,6 +212,16 @@ class Dispatcher:
         `#!python "area"`, creating it empty if it does not exist yet, and the
         view carries no named methods of its own so no function name can
         collide with one.
+
+        **Attribute access ignores names beginning with `#!python _`**, so a
+        REPL or a tool probing for dunders never mints an empty function; item
+        access does not, so `#!python d.functions["_x"]` still names a function
+        whose name starts with an underscore. For that reason, do not register
+        an anonymous overload (`#!python @dispatch def _` or a `#!python
+        lambda`) on the module-level [`dispatch`][bagof.dispatchers.dispatch]:
+        every one keys the same `#!python "_"` or `#!python "<lambda>"` name
+        and collapses into a single function. Give each overload a real name,
+        or overlay hints onto a named `#!python def`.
         """
         return self._view
 
@@ -210,23 +251,70 @@ class Dispatcher:
         [`Function`][bagof.dispatchers.Function] the overload joined, so the
         decorated name binds to the dispatched function.
         """
+        self._reject_bad_first_arg(args)
         if args and _is_impl(args[0]):
             impl = args[0]
-            function = self._function_for(impl)
+            key = self._key_for_impl(impl)
+            function = self._get_or_create(key, None)
             # Let `Function.register` do the validation and adopt the name;
             # its return value (the callable) is dropped -- the name binds to
-            # the function, the dispatcher's convention.
-            function.register(*args, **options)
+            # the function, the dispatcher's convention. A registration that
+            # fails leaves no empty function behind.
+            try:
+                function.register(*args, **options)
+            except BaseException:
+                self._discard_orphan(key, function)
+                raise
             return function
 
         # Overlay form: the hints/options arrive now, the callable when the
         # returned decorator is applied.
         def decorator(fn: tx.Callable[..., tx.Any]) -> Function:
-            function = self._function_for(fn)
-            function.register(*args, **options)(fn)
+            key = self._key_for_impl(fn)
+            function = self._get_or_create(key, None)
+            try:
+                function.register(*args, **options)(fn)
+            except BaseException:
+                self._discard_orphan(key, function)
+                raise
             return function
 
         return decorator
+
+    @staticmethod
+    def _reject_bad_first_arg(args: tx.Tuple[tx.Any, ...]) -> None:
+        """Reject a first argument that is neither hints nor a callable.
+
+        An overload is registered on a callable, or on a tuple/dict overlay of
+        hints; anything else (a bare string, a number) can only fail later,
+        so it is refused now with a message that points at the right spelling.
+        """
+        if (
+            args
+            and not isinstance(args[0], (tuple, dict))
+            and not callable(args[0])
+        ):
+            raise TypeError(
+                f"an overload is registered on a callable -- a def, a class "
+                f"or a callable object -- optionally with a tuple of "
+                f"positional hints and/or a dict of named hints; "
+                f"got {args[0]!r}."
+            )
+
+    def _discard_orphan(self, key: tx.Any, function: Function) -> None:
+        """Drop a function made for a registration that then failed.
+
+        Registration creates the function before it is validated, so a
+        failure would otherwise leave an empty one reachable through the
+        namespace. Removed only when it is still the one just made and holds
+        no methods, so a later successful registration is never disturbed.
+        """
+        with self._lock:
+            if (
+                self._functions.get(key) is function
+                and not function.methods
+            ):
+                del self._functions[key]
 
     def clear_cache(self) -> None:
         """Drop every function's dispatch cache.
@@ -240,8 +328,7 @@ class Dispatcher:
                 function.clear_cache()
 
     def __repr__(self) -> str:
-        count = len(list(self._function_names(None)))
-        return f"{type(self).__name__}({count} function(s))"
+        return f"{type(self).__name__}({len(self._functions)} function(s))"
 
     # -- identity -------------------------------------------------------
     #
@@ -264,10 +351,6 @@ class Dispatcher:
         return self._key_for_name(name, module) in self._functions
 
     # -- shared get-or-create -------------------------------------------
-
-    def _function_for(self, fn: tx.Any) -> Function:
-        """The function `fn` registers into, created empty if new."""
-        return self._get_or_create(self._key_for_impl(fn), None)
 
     def _function_by_name(
         self, name: str, module: tx.Optional[str]
@@ -304,6 +387,37 @@ class _ModuleDispatcher(Dispatcher):
     Identical to a [`Dispatcher`][bagof.dispatchers.Dispatcher] except that a
     function is keyed by its **module and qualified name**, so the same name in
     two modules names two independent functions.
+
+    Decorate a `#!python def` to register an overload; each `#!python def` of
+    the same name in the same module adds one:
+
+    !!! example
+        ```pycon
+        >>> from bagof.dispatchers import dispatch
+        >>> @dispatch
+        ... def describe(x: int) -> str:
+        ...     return "an integer"
+        >>> @dispatch
+        ... def describe(x: str) -> str:
+        ...     return "a string"
+        >>> describe(7)
+        'an integer'
+        >>> describe("hi")
+        'a string'
+        ```
+
+    Lay explicit hints over a function's parameters with the overlay form --
+    positional hints as a tuple, named hints as a dict, `#!python priority` as
+    a keyword option:
+
+    !!! example
+        ```pycon
+        >>> @dispatch((int,), {"scale": int})
+        ... def scaled(value, scale):
+        ...     return value * scale
+        >>> scaled(3, scale=4)
+        12
+        ```
     """
 
     def _key_for_impl(self, fn: tx.Any) -> tx.Any:
