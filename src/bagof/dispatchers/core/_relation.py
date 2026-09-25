@@ -1,10 +1,15 @@
 """The hint-level subtype relation: `issubhint` and `ishintstance`."""
 
+# stdlib
+import warnings
+from collections import abc
+
 # dependencies
 import typing_extensions as tx
 
 # local
-from ._compat import UNION_TYPES
+from ._compat import UNION_TYPES, UnknownHintWarning, spellings
+from ._exact import exact_target, is_exact
 from ._introspect import (
     eq_safenan,
     get_args_uw,
@@ -15,6 +20,83 @@ from ._introspect import (
     safe_issubclass,
     unwrap,
 )
+
+# --- known non-class forms ---------------------------------------------
+
+# Bottom types: a value is never one, and only a bottom is a sub-hint of a
+# bottom.
+_NEVER_FORMS = spellings("Never") + spellings("NoReturn")
+
+# Forms that stand in, for dispatch, for an ordinary class.
+_LITERALSTRING_FORMS = spellings("LiteralString")
+_TYPEGUARD_FORMS = spellings("TypeGuard") + spellings("TypeIs")
+
+# `ParamSpec` shapes a `Callable` parameter list can carry that this
+# version handles only by degrading -- comparable to itself, nothing else.
+_CONCATENATE_FORMS = spellings("Concatenate")
+
+
+def _is_never(hint: tx.Any) -> bool:
+    """Whether `hint` is a bottom type (`Never`/`NoReturn`)."""
+    return any(hint is form for form in _NEVER_FORMS)
+
+
+def _known_form(hint: tx.Any) -> tx.Any:
+    """Map a known non-class form to the class it dispatches as.
+
+    `LiteralString` dispatches as [`str`][], and `TypeGuard[...]` /
+    `TypeIs[...]` as [`bool`][]. Every other hint is returned unchanged.
+    """
+    if any(hint is form for form in _LITERALSTRING_FORMS):
+        return str
+    if any(hint is form for form in _TYPEGUARD_FORMS):
+        return bool
+    origin = safe_get_origin(hint)
+    if any(origin is form for form in _TYPEGUARD_FORMS):
+        return bool
+    return hint
+
+
+def _typevar_upper(tv: tx.Any) -> tx.Any:
+    """The upper bound of a `TypeVar`, for dispatch.
+
+    Its bound, the union of its constraints, or [`Any`][typing.Any] -- and
+    **not** its PEP 696 default, which is a static-checker fallback that
+    dispatch ignores (so `#!python TypeVar("T", bound=float, default=int)`
+    dispatches as `float`).
+    """
+    constraints = getattr(tv, "__constraints__", ())
+    if constraints:
+        return tx.Union[constraints]
+    bound = getattr(tv, "__bound__", None)
+    if bound is not None:
+        return bound
+    return tx.Any
+
+
+def _equivalent(a: tx.Any, b: tx.Any) -> bool:
+    """Whether two hints accept exactly the same values."""
+    return issubhint(a, b) and issubhint(b, a)
+
+
+_WARNED_UNKNOWN = set()  # type: set
+
+
+def _warn_unknown(hint: tx.Any) -> None:
+    """Warn once that `hint` is unrecognised and treated as `Any`."""
+    try:
+        key = repr(hint)
+    except Exception:  # pragma: no cover  -- a hint whose repr raises
+        key = object.__repr__(hint)
+    if key in _WARNED_UNKNOWN:
+        return
+    _WARNED_UNKNOWN.add(key)
+    warnings.warn(
+        f"Type hint {key} is not recognised; treating it as `Any` for "
+        "dispatch.",
+        UnknownHintWarning,
+        stacklevel=3,
+    )
 
 
 def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
@@ -49,11 +131,22 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
         ```
     """
     hint = normalise_hint(hint)
+    # `Exact[C]` first, before the `Annotated` metadata is unwrapped: the
+    # value's type must be exactly `C`.
+    if is_exact(hint):
+        return type(obj) is normalise_hint(exact_target(hint))
+    hint = _known_form(hint)
+    if _is_never(hint):
+        # A bottom type describes no value.
+        return False
     if hint is tx.Any:
         return True
-    # Resolve typevars too, so a typevar behaves exactly like the hint it
-    # stands for.
-    hint = unwrap(hint, (tx.Annotated, tx.TypeVar))
+    # Resolve typevars to their bound/constraints (never their default), so
+    # a typevar behaves exactly like the hint it stands for.
+    hint = unwrap(hint, tx.Annotated)
+    while isinstance(hint, tx.TypeVar):
+        hint = unwrap(_typevar_upper(hint), tx.Annotated)
+    hint = _known_form(hint)
     if hint is tx.Any:
         return True
     origin_uw = get_origin_uw(hint)
@@ -141,6 +234,27 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     """
     hint, superhint = normalise_hint(hint), normalise_hint(superhint)
 
+    # `Exact` first, before any `Annotated` metadata is unwrapped.
+    if is_exact(superhint):
+        target = normalise_hint(exact_target(superhint))
+        if is_exact(hint):
+            # `Exact[D] <= Exact[C]` iff `D` and `C` are the same type.
+            return _equivalent(normalise_hint(exact_target(hint)), target)
+        # `q <= Exact[C]` iff `q` is equivalent to `C`.
+        return _equivalent(hint, target)
+    if is_exact(hint):
+        # `Exact[D] <= P` iff `D <= P` (`Exact[D]` is strictly below `D`).
+        return issubhint(normalise_hint(exact_target(hint)), superhint)
+
+    hint, superhint = _known_form(hint), _known_form(superhint)
+
+    # Bottom types: only a bottom is a sub-hint of a bottom; a bottom is a
+    # sub-hint of everything.
+    if _is_never(superhint):
+        return _is_never(hint)
+    if _is_never(hint):
+        return True
+
     # shortcircuits
     if superhint is tx.Any:
         return True
@@ -158,9 +272,9 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
         return _issubtypevar(hint, superhint)
 
     if isinstance(hint, tx.TypeVar):
-        # Unwrap typevar so that its bound can be checked against the
-        # superhint. We've already taken care of the case where the
-        # superhint is a typevar.
+        # Read the typevar's bound/constraints (never its default) so it is
+        # checked against the superhint exactly as the hint it stands for.
+        # The superhint-is-a-typevar case is already handled above.
 
         # For constraints, each constraint must be a subhint of the
         # superhint
@@ -170,14 +284,14 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
                 # Against a union, ask about the union the typevar
                 # stands for: each constraint on its own is not a union,
                 # but their combination is.
-                return issubhint(unwrap(hint, tx.TypeVar), superhint)
+                return issubhint(_typevar_upper(hint), superhint)
             return all(
                 issubhint(constraint, superhint)
                 for constraint in constraints
             )
 
         # For bounds, the bound must be a subhint of the superhint
-        return issubhint(unwrap(hint, tx.TypeVar), superhint)
+        return issubhint(_typevar_upper(hint), superhint)
 
     if origin_uw is not tx.Literal and get_origin_uw(hint) is tx.Literal:
         # The hint is a Literal and the superhint is not, so the class,
@@ -203,10 +317,16 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     if origin_uw is type:
         return _issubtype(hint, superhint)
 
+    if origin_uw is abc.Callable:
+        return _issubcallable(hint, superhint)
+
     if isinstance(origin_uw, type):
         return _issubclasshint(hint, superhint, origin_uw)
 
-    return False
+    # An unrecognised or future super-hint is opaque: treat it as `Any`, so
+    # a method annotated with it stays reachable, and say so once.
+    _warn_unknown(superhint)
+    return True
 
 
 def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
@@ -308,6 +428,18 @@ def _issubtypevar(hint: tx.Any, superhint: tx.Any) -> bool:
         for constraint in constraints:
             if issubhint(hint, constraint):
                 return True
+        # A constrained typevar is equivalent to the union of its
+        # constraints, so a union hint is a subhint when every member is a
+        # subhint of some constraint (`Union[C1, C2] <= TypeVar(_, C1, C2)`,
+        # the symmetric partner of `TypeVar(...) <= Union[...]`).
+        if get_origin_uw(hint) in UNION_TYPES:
+            members = get_args_uw(hint)
+            if members:
+                return all(
+                    any(issubhint(member, constraint)
+                        for constraint in constraints)
+                    for member in members
+                )
         # Else, if hint is a TypeVar, check that all its constraints are
         # subhints of one of the superhint's constraints
         if isinstance(hint_uw, tx.TypeVar):
@@ -398,3 +530,62 @@ def _issubtype(hint: tx.Any, superhint: tx.Any) -> bool:
     args = safe_get_args(hint_uw)
     superargs = safe_get_args(superhint_uw)
     return safe_issubclass(args[0], superargs[0])
+
+
+def _is_paramspec_like(params: tx.Any) -> bool:
+    """Whether a `Callable` parameter list is a `ParamSpec`/`Concatenate`."""
+    if isinstance(params, tx.ParamSpec):
+        return True
+    if isinstance(params, (tx.ParamSpecArgs, tx.ParamSpecKwargs)):
+        return True
+    return any(safe_get_origin(params) is form for form in _CONCATENATE_FORMS)
+
+
+def _issubcallable(hint: tx.Any, superhint: tx.Any) -> bool:
+    """Check that a hint is a sub-hint for a `Callable[...]`.
+
+    Parameters are compared contravariantly and the return type
+    covariantly. `#!python Callable[..., R]` accepts any parameter list. A
+    `ParamSpec`/`Concatenate` parameter list is compared only for equality
+    -- it degrades rather than raising.
+    """
+    hint_uw = unwrap(hint)
+    superhint_uw = unwrap(superhint)
+    if get_origin_uw(hint_uw) is not abc.Callable:
+        # Only a callable hint can stand in for a `Callable`.
+        return False
+    superargs = safe_get_args(superhint_uw)
+    if not superargs:
+        # A bare `Callable` constrains nothing further.
+        return True
+    args = safe_get_args(hint_uw)
+    if not args:
+        # A bare `callable` may accept anything: it cannot stand in for a
+        # parametrised `Callable[...]`.
+        return False
+    # `(params, return)`: `params` is a list, `...`, or a ParamSpec form.
+    sub_params, sub_ret = args[0], args[-1]
+    sup_params, sup_ret = superargs[0], superargs[-1]
+    # Return type is covariant.
+    if not issubhint(sub_ret, sup_ret):
+        return False
+    return _issubcallable_params(sub_params, sup_params)
+
+
+def _issubcallable_params(sub: tx.Any, sup: tx.Any) -> bool:
+    """Compare two `Callable` parameter lists, contravariantly."""
+    # `Callable[..., R]` on either side accepts any parameter list.
+    if sub is Ellipsis or sup is Ellipsis:
+        return True
+    # A ParamSpec / Concatenate list degrades to equality: comparable to an
+    # identical one, and to nothing else, rather than raising.
+    if _is_paramspec_like(sub) or _is_paramspec_like(sup):
+        return sub == sup
+    if not (isinstance(sub, (list, tuple)) and isinstance(sup, (list, tuple))):
+        return sub == sup
+    if len(sub) != len(sup):
+        return False
+    # Contravariant: each super-parameter must be a sub-hint of the matching
+    # sub-parameter (a function taking `int` can stand in for one taking
+    # `bool`, since it also accepts every `bool`).
+    return all(issubhint(sp, bp) for bp, sp in zip(sub, sup))

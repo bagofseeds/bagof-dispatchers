@@ -225,9 +225,21 @@ def test_annotated_any_superhint_accepts_everything() -> None:
     assert issubhint(int, tx.Annotated[tx.Any, "meta"]) is True
 
 
-def test_an_uncheckable_superhint_is_never_matched() -> None:
-    # `Self` has no origin that can be compared against a hint.
-    assert issubhint(int, tx.Self) is False
+def test_an_unrecognised_superhint_is_opaque() -> None:
+    # `Self` (as a free-function hint) has no origin to compare against, so
+    # it is treated as `Any`: accepted as a super-hint, and warned about
+    # once. This keeps a method annotated with it reachable.
+    import warnings
+
+    from bagof.dispatchers.core._compat import UnknownHintWarning
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UnknownHintWarning)
+        assert issubhint(int, tx.Self) is True
+    # It is a sub-hint only of itself and `Any`.
+    assert issubhint(tx.Self, int) is False
+    assert issubhint(tx.Self, tx.Any) is True
+    assert issubhint(tx.Self, tx.Self) is True
 
 
 # --- ellipsis arguments ------------------------------------------------

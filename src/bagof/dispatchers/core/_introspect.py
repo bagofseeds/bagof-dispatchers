@@ -25,6 +25,7 @@ from ._compat import (
     canonical_typeddict,
     is_special_form,
     is_typeddict_marker,
+    spellings,
 )
 from ._sentinels import UNSET
 
@@ -42,6 +43,17 @@ REAL_TYPES = (
     (numbers.Real, _np.floating) if _np is not None else (numbers.Real,)
 )
 """The real-number types [`eq_safenan`][] recognises."""
+
+
+def _looks_like_class(x: tx.Any) -> bool:
+    """Whether `x` is a real class, not a parametrised generic alias.
+
+    `#!python isinstance(list[int], type)` is `True` on Python 3.9 and
+    3.10, so a bare `isinstance(x, type)` mistakes `list[int]` for a class.
+    A real class has no typing origin, which tells the two apart on every
+    version.
+    """
+    return isinstance(x, type) and tx.get_origin(x) is None
 
 
 # --- origins and arguments ---------------------------------------------
@@ -157,18 +169,134 @@ def _unwrap_typevar(hint: tx.Any, __reentrant: tuple = ()) -> tx.Any:
 # --- normalisation -----------------------------------------------------
 
 
+# The transparent qualifiers that wrap a hint without changing which
+# values it accepts, so the relation looks straight through them.
+_QUALIFIER_FORMS = (
+    spellings("Required")
+    + spellings("NotRequired")
+    + spellings("ReadOnly")
+    + spellings("Final")
+    + spellings("ClassVar")
+)
+
+_TYPE_ALIAS_TYPES = spellings("TypeAliasType")
+
+# A generous cap: each pass either resolves one wrapper (strictly reducing
+# the hint) or leaves it untouched, so a handful of passes always settles.
+_MAX_NORMALISE_STEPS = 100
+
+
+def _is_type_alias_type(x: tx.Any) -> bool:
+    """Whether `x` is a PEP 695 `type X = ...` alias, in either spelling.
+
+    Duck-typed as well as instance-checked: a native 3.12 `type X = ...` is
+    not an instance of `typing_extensions.TypeAliasType`, but every alias
+    carries `__value__` and `__type_params__`.
+    """
+    for alias_type in _TYPE_ALIAS_TYPES:
+        try:
+            if isinstance(x, alias_type):
+                return True
+        except TypeError:  # pragma: no cover  -- not a class on this version
+            pass
+    return hasattr(x, "__value__") and hasattr(x, "__type_params__")
+
+
+def resolve_alias(hint: tx.Any) -> tx.Any:
+    """Resolve a PEP 695 `type X = ...` alias to the hint it stands for.
+
+    A bare alias becomes its value; a subscripted generic alias
+    (`#!python L[int]` for `#!python type L[T] = list[T]`) has its type
+    arguments substituted; an alias of an alias is followed to the end. A
+    reference cycle stops rather than recursing forever, and a hint that is
+    not an alias is returned unchanged.
+    """
+    return _resolve_alias(hint, ())
+
+
+def _resolve_alias(hint: tx.Any, seen: tx.Tuple[tx.Any, ...]) -> tx.Any:
+    # The subscripted case comes first: `L[int]` forwards `__value__` from
+    # its origin `L`, so it would otherwise be mistaken for a bare alias and
+    # its type arguments dropped.
+    origin = tx.get_origin(hint)
+    if _is_type_alias_type(origin):
+        alias = origin
+        sub_args = tx.get_args(hint)  # type: tx.Tuple[tx.Any, ...]
+    elif _is_type_alias_type(hint):
+        alias = hint
+        sub_args = ()
+    else:
+        return hint
+    if any(alias is each for each in seen):
+        # A recursive alias -- stop rather than loop, leaving the origin in
+        # place to be matched structurally.
+        return hint
+    value = alias.__value__
+    if sub_args:
+        # `type L[T] = list[T]`; `L[int]` fills `T` in through typing's own
+        # subscription: `(list[T])[int]` is `list[int]`.
+        key = sub_args if len(sub_args) > 1 else sub_args[0]
+        try:
+            value = value[key]
+        except Exception:  # pragma: no cover  -- a value that refuses args
+            return hint
+    return _resolve_alias(value, seen + (alias,))
+
+
+def _is_newtype(x: tx.Any) -> bool:
+    """Whether `x` is a `NewType`, in any of its runtime forms."""
+    return callable(x) and hasattr(x, "__supertype__")
+
+
+def resolve_newtype(hint: tx.Any) -> tx.Any:
+    """Resolve a [`NewType`][typing.NewType] to its supertype, recursively.
+
+    A `NewType` is a distinct name for an existing type; for dispatch it
+    behaves exactly as that type, so it is followed to the underlying hint.
+    A hint that is not a `NewType` is returned unchanged.
+    """
+    seen = ()  # type: tx.Tuple[tx.Any, ...]
+    while _is_newtype(hint):
+        if any(hint is each for each in seen):  # pragma: no cover
+            break
+        seen += (hint,)
+        hint = hint.__supertype__
+    return hint
+
+
+def _strip_qualifier(hint: tx.Any) -> tx.Any:
+    """Drop a transparent qualifier (`Required`/`Final`/`ClassVar`/...)."""
+    origin = tx.get_origin(hint)
+    if origin is not None and any(origin is q for q in _QUALIFIER_FORMS):
+        args = tx.get_args(hint)
+        if args:
+            return args[0]
+    return hint
+
+
 def normalise_hint(hint: tx.Any) -> tx.Any:
     """
     Put a hint in its canonical form.
 
-    A bare [`None`][] means [`NoneType`][types.NoneType] when it is used
-    as a type hint, so it is replaced by it. Every other hint is returned
+    * A bare [`None`][] means [`NoneType`][types.NoneType] as a hint, so it
+      is replaced by it.
+    * A PEP 695 `type X = ...` alias is resolved to the hint it stands for.
+    * A [`NewType`][typing.NewType] is resolved to its supertype.
+    * The transparent qualifiers [`Required`][typing.Required],
+      [`NotRequired`][typing.NotRequired], [`ReadOnly`][typing.ReadOnly],
+      [`Final`][typing.Final] and [`ClassVar`][typing.ClassVar] are
+      unwrapped to the hint they wrap.
+
+    These are applied until the hint settles, so an alias that expands to a
+    qualified `NewType` is fully resolved. Every other hint is returned
     unchanged.
 
     !!! note
         Only a bare `None` is replaced. A `None` *inside* a hint keeps its
         meaning: `#!python Literal[None]` is a literal `None` **value**,
-        not a type.
+        not a type. [`Annotated`][typing.Annotated] is **not** stripped
+        here -- its metadata can carry an exactness marker the relation
+        reads.
 
     !!! example
         ```pycon
@@ -178,7 +306,14 @@ def normalise_hint(hint: tx.Any) -> tx.Any:
         <class 'int'>
         ```
     """
-    return NoneType if hint is None else hint
+    for _ in range(_MAX_NORMALISE_STEPS):
+        if hint is None:
+            hint = NoneType
+        resolved = _strip_qualifier(resolve_newtype(resolve_alias(hint)))
+        if resolved is hint:
+            return hint
+        hint = resolved
+    return hint  # pragma: no cover  -- the cap is never reached in practice
 
 
 # --- TypedDict ---------------------------------------------------------
@@ -298,8 +433,13 @@ def safe_issubclass(subcls: tx.Any, cls: tx.Any) -> bool:
         # (`Any` from 3.11, `Union` from 3.14), so `issubclass` would
         # answer it - differently than on the versions before.
         return False
-    if isinstance(subcls, type) and isinstance(cls, type):
-        return issubclass(subcls, cls)
+    if _looks_like_class(subcls) and _looks_like_class(cls):
+        try:
+            return issubclass(subcls, cls)
+        except TypeError:
+            # A non-`runtime_checkable` Protocol refuses `issubclass`.
+            # Answer False rather than letting it raise out of the relation.
+            return False
     return False
 
 
@@ -356,7 +496,7 @@ def issubclassable(cls: tx.Any) -> bool:
         return False
     if is_typeddict_marker(cls):
         return True
-    return isinstance(cls, type)
+    return _looks_like_class(cls)
 
 
 def issubscriptable(x: tx.Any) -> bool:
@@ -366,9 +506,10 @@ def issubscriptable(x: tx.Any) -> bool:
     True if the object is a type and has `__class_getitem__`, or if it
     is an instance and has `__getitem__`. Otherwise, returns False.
     """
-    if isinstance(x, type) and hasattr(x, "__class_getitem__"):
+    is_class = _looks_like_class(x)
+    if is_class and hasattr(x, "__class_getitem__"):
         return True
-    if not isinstance(x, type) and hasattr(x, "__getitem__"):
+    if not is_class and hasattr(x, "__getitem__"):
         return True
     return False
 
