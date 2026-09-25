@@ -1,3 +1,11 @@
+# Measure coverage of the product package only -- `bagof.dispatchers`, matching
+# `pyproject.toml`'s `[tool.coverage.run] source`. Test files are excluded so
+# that version-gated (`skipif`) and thread-only test bodies, which never run on
+# a single coverage interpreter, do not count as "missing" lines against the
+# patch/project targets.
+ignore:
+  - "tests"
+  - "tests/**"
 coverage:
   status:
     project:

@@ -27,12 +27,14 @@ from ._introspect import (
     typeddict_required_keys,
     unwrap,
 )
+from ._registry import resolve_hint
 from ._relation import ishintstance, issubhint
 from ._sentinels import UNSET, Unset
 
 __all__ = [
     "issubhint",
     "ishintstance",
+    "resolve_hint",
     "safe_get_origin",
     "safe_get_args",
     "get_origin_uw",

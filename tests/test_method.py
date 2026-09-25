@@ -59,14 +59,18 @@ def test_method_repr_renders_named_signature() -> None:
 
 
 def test_method_repr_markers() -> None:
-    """The repr renders `/`, `*`, `*args` and `**kwargs` markers."""
+    """The repr renders `/`, `*`, `*args` and `**kwargs` markers.
+
+    The catch-alls keep their written names -- `*args` and `**kw` here, not a
+    generic `**kwargs`.
+    """
 
     def f(a: int, /, b: int, *args: str, c: int, **kw: float) -> None: ...
 
     text = repr(Method(f))
     body = text.split(" @ ")[0]
     assert body == (
-        "f(a: int, /, b: int, *args: str, c: int, **kwargs: float)"
+        "f(a: int, /, b: int, *args: str, c: int, **kw: float)"
     )
 
 
@@ -176,3 +180,30 @@ def test_method_repr_no_source(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     method = Method(f)
     assert method.filename == "<module>"
+
+
+def test_method_register_class_from_fileless_main(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A class whose `__main__` module has no source file still registers.
+
+    A class defined in the REPL, a Jupyter cell, `python -c`, or `exec` has
+    `__module__ == "__main__"` with no `__file__`; looking up its source raises
+    `OSError`, which registration must survive (M1).
+    """
+    import sys
+    import types
+
+    fake_main = types.ModuleType("__main__")  # no __file__
+    monkeypatch.setitem(sys.modules, "__main__", fake_main)
+    namespace = {"__name__": "__main__"}  # type: typing.Dict[str, typing.Any]
+    exec(  # noqa: S102 -- the point is a class defined outside any source file
+        "class C:\n    def __init__(self, x: int) -> None: ...",
+        namespace,
+    )
+    made = namespace["C"]
+    assert made.__module__ == "__main__"
+
+    method = Method(made)
+    assert method.filename == "<module>"
+    assert method.location == "<module>"

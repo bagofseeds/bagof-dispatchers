@@ -464,8 +464,15 @@ namespace**: `d.functions["area"]` (item) or the sugar `d.functions.area`
 in one module and registrations in another compose. `@dispatch` also *returns*
 the `Function`. Add methods with `@dispatch` on `def area(...)` (name from the
 def) or `@area.register` / `@area.dispatch` on any function (name ignored — the
-`def _` form). Explicit signatures: `@dispatch(int, scale=float, priority=0)` and
-`area.register(int, scale=float)(callable)`.
+`def _` form). Explicit signatures overlay hints onto the wrapped function:
+**positional hints are a tuple, named hints a dict, and keyword arguments are
+registration options (`priority`), never hints** — e.g.
+`area.register((int,), {"scale": float}, priority=0)(callable)`. A class passed
+as an implementation (`area.register(SomeClass)`) dispatches on its
+`__init__`/`__new__`. The def-less, hints-only form (`from_hints`,
+`from_mapping` with a tuple key) is **positional-only**; to spell `/`, `*`,
+`*args` or `**kwargs` without a function, pass a `Signature` object as the
+`from_mapping` key (the escape hatch).
 
 `d.functions` is a **protocol-only namespace**: it exposes the mapping protocol
 (`d.functions["area"]`, `d.functions.area`, `for name in d.functions`,

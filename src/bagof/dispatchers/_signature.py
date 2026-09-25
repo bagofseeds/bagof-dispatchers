@@ -74,6 +74,16 @@ class _CatchAll:
 _VARARGS = _CatchAll(_VAR_POSITIONAL)
 _VARKW = _CatchAll(_VAR_KEYWORD)
 
+# The fallback signature for a callable Python cannot introspect (a builtin
+# type such as `int`, a C function): a bare `(*args, **kwargs)` catch-all, so
+# it binds any call and dispatches on `Any`.
+_ANY_SIGNATURE = inspect.Signature(
+    [
+        inspect.Parameter("args", _VAR_POSITIONAL),
+        inspect.Parameter("kwargs", _VAR_KEYWORD),
+    ]
+)
+
 # The `*args` / `**kwargs` variadic forms that v1 reads as an unannotated
 # catch-all (RFC 0001 §2.2, §3, §11.1): an unpacked `TypeVarTuple` (`*Ts`), a
 # `ParamSpec`'s `.args` / `.kwargs`, and an `Unpack[TypedDict]`. Each spelling
@@ -327,7 +337,15 @@ class Signature:
         and resolves them the first time it is actually used for dispatch. If
         the name is still undefined then, a [`NameError`][] is raised.
         """
-        isig = inspect.signature(fn)
+        try:
+            isig = inspect.signature(fn)
+        except (ValueError, TypeError):
+            # A callable with no introspectable signature -- a builtin type
+            # such as `int`, or a C function -- still registers as an
+            # implementation: it takes a catch-all `(*args, **kwargs)`, so it
+            # binds any call and dispatches on `Any` (the widest fallback), and
+            # a more specific method still wins over it.
+            isig = _ANY_SIGNATURE
         source = _hint_source(fn)
         try:
             hints = _resolve_hints(source)
@@ -698,7 +716,12 @@ class Signature:
         The hint-level twin of
         [`applies_to_values`][bagof.dispatchers.Signature.applies_to_values]:
         the call must bind, and each query hint must be a sub-hint of the
-        hint it landed in, with the same repeated-`TypeVar` consistency.
+        hint it landed in, with the same repeated-`TypeVar` consistency. As a
+        lookup convenience (RFC 0001 §4, the same one
+        [`resolve_hint`][bagof.dispatchers.core.resolve_hint] grants), an
+        [`Exact`][bagof.dispatchers.Exact]`[C]` slot also accepts a query
+        equivalent to `#!python C`, though `#!python C` on its own is not a
+        sub-hint of `#!python Exact[C]`.
         """
         self._settle()
         binding = self.bind(hints, named_hints)
@@ -707,7 +730,7 @@ class Signature:
         groups = {}  # type: tx.Dict[int, tx.Tuple[tx.Any, tx.List[tx.Any]]]
         for key, hint, groupable in self._iter_arguments(binding):
             query = hints[key] if isinstance(key, int) else named_hints[key]
-            if not issubhint(query, hint):
+            if not _hint_query_accepts(query, hint):
                 return False
             if groupable and isinstance(hint, tx.TypeVar):
                 groups.setdefault(id(hint), (hint, []))[1].append(query)
@@ -840,6 +863,51 @@ class Signature:
             self._varargs, other._varargs
         ) and self._catch_all_eq(self._varkw, other._varkw)
 
+    def same_as(self, other: "Signature") -> bool:
+        """Whether two signatures are written the *same way*, structurally.
+
+        Stricter than [`==`][bagof.dispatchers.Signature.__eq__], which holds
+        whenever two signatures accept and order calls identically (so
+        `#!python (x: T, y: T)` and `#!python (x: T, y: U)` are *equal*, both
+        being `#!python (Any, Any)`, and `#!python Exact[int]` equals a
+        `#!python TypeVar` bound to `#!python int`). `same_as` instead asks
+        whether the two were spelled identically: same parameter names, kinds
+        and required-ness, and hints that match structurally --
+        [`TypeVar`][typing.TypeVar]s by identity, generic aliases by origin and
+        arguments, forward references by name.
+
+        This is what a registry uses to decide a *replacement*: only a method
+        registered with the very same spelling (a module reload, a doubled
+        decorator) replaces an existing one; two different methods that merely
+        happen to be equivalent are both kept.
+        """
+        self._settle_quietly()
+        other._settle_quietly()
+        if list(self._parameters) != list(other._parameters):
+            return False
+        for mine, theirs in zip(
+            self._parameters.values(), other._parameters.values()
+        ):
+            if (
+                mine.name != theirs.name
+                or mine.kind != theirs.kind
+                or mine.required != theirs.required
+                or not _structural_hint_eq(mine.hint, theirs.hint)
+            ):
+                return False
+        return self._catch_all_same(
+            self._varargs, other._varargs
+        ) and self._catch_all_same(self._varkw, other._varkw)
+
+    @staticmethod
+    def _catch_all_same(a: tx.Any, b: tx.Any) -> bool:
+        """Whether two `*args`/`**kwargs` hints are the same as written."""
+        if (a is None) != (b is None):
+            return False
+        if a is None:
+            return True
+        return _structural_hint_eq(a, b)
+
     def _settle_quietly(self) -> None:
         """Settle deferred hints for equality, swallowing an unresolved name.
 
@@ -971,6 +1039,85 @@ def _hint_eq(a: tx.Any, b: tx.Any) -> bool:
     return equivalent(a, b)
 
 
+def _hint_query_accepts(query: tx.Any, hint: tx.Any) -> bool:
+    """Whether a hint-level *query* is accepted by a landed slot `hint`.
+
+    Ordinarily `#!python issubhint(query, hint)`. An
+    [`Exact`][bagof.dispatchers.Exact]`[C]` slot is additionally reachable by
+    a query equivalent to `#!python C` -- the RFC 0001 §4 lookup convenience,
+    kept in step with
+    [`resolve_hint`][bagof.dispatchers.core.resolve_hint]. This only widens
+    applicability; it does not touch the sub-hint relation or the specificity
+    order, which compare `#!python Exact[C]` as the leaf it is.
+    """
+    if issubhint(query, hint):
+        return True
+    if is_exact(hint):
+        inner = normalise_hint(exact_target(hint))
+        return issubhint(query, inner) and issubhint(inner, query)
+    return False
+
+
+def _structural_hint_eq(a: tx.Any, b: tx.Any) -> bool:
+    """Whether two hints are the *same as written*, not merely equivalent.
+
+    This is the stricter twin of
+    [`_hint_eq`][bagof.dispatchers._signature._hint_eq]: it asks whether two
+    hints have the same structure, never whether they accept the same values.
+    So `#!python T` and `#!python U` (two distinct
+    [`TypeVar`][typing.TypeVar]s) are **not** equal here even though each is
+    equivalent to [`Any`][typing.Any], and a bound `#!python TypeVar` is not
+    equal to its bound. It is what tells a genuine re-registration (an
+    identical spelling, from a module reload or a doubled decorator) from two
+    different methods that merely happen to be equivalent under the sub-hint
+    relation.
+
+    The comparison is:
+
+    * a forward reference by its name (a raw string or a
+      [`ForwardRef`][typing.ForwardRef]);
+    * a `#!python TypeVar` by **identity**;
+    * a generic alias by its origin **and** its arguments, compared the same
+      way recursively (so `#!python List[int]` equals `#!python List[int]` but
+      not `#!python List[str]`, and `#!python Annotated`/`#!python Exact`
+      metadata is compared too);
+    * anything else by ordinary equality.
+    """
+    a, b = normalise_hint(a), normalise_hint(b)
+    a_name, b_name = _forward_name(a), _forward_name(b)
+    if a_name is not None or b_name is not None:
+        return a_name == b_name
+    if isinstance(a, tx.TypeVar) or isinstance(b, tx.TypeVar):
+        # A TypeVar is the same only as itself: two variables with identical
+        # bounds are still distinct positions in a signature.
+        return a is b
+    a_generic = tx.get_origin(a) is not None
+    b_generic = tx.get_origin(b) is not None
+    if a_generic != b_generic:
+        return False
+    if not a_generic:
+        # A plain, non-generic argument: a class, `Any`, `None`, an
+        # `Annotated` metadata object, or a `Literal` member value. The type
+        # check keeps `Literal` members apart where `==` alone would not
+        # (`1 == True` and `1 == 1.0` are both true, but the literals differ).
+        if type(a) is not type(b):
+            return False
+        try:
+            return bool(a == b)
+        except Exception:  # pragma: no cover  # noqa: BLE001
+            # Defensive: a metadata object or literal member whose `==` raises.
+            return a is b
+    if safe_get_origin(a) is not safe_get_origin(b):
+        return False
+    args_a = tx.get_args(a)
+    args_b = tx.get_args(b)
+    if len(args_a) != len(args_b):
+        return False
+    return all(
+        _structural_hint_eq(x, y) for x, y in zip(args_a, args_b)
+    )
+
+
 def _catch_all_or_any(hint: tx.Any) -> tx.Any:
     """A `*args`/`**kwargs` hint, with a v1-unsupported variadic form as `Any`.
 
@@ -992,24 +1139,44 @@ def _hint_source(fn: tx.Callable[..., tx.Any]) -> tx.Any:
     """The object whose annotations describe `fn`'s parameters.
 
     [`get_type_hints`][typing_extensions.get_type_hints] reads annotations off
-    a function, method, class or module, but not off a
-    [`functools.partial`][] or a callable instance. Those are unwrapped to the
-    underlying function or the class's `#!python __call__`, whose parameter
-    names still match the names
-    [`inspect.signature`][] reports for the original callable.
+    a function, method or module, but the parameters of a *class* live on its
+    constructor and those of a callable *instance* on its `#!python __call__`,
+    not on the object itself. Each is unwrapped to the member whose parameter
+    names match what [`inspect.signature`][] reports for the original callable:
+
+    * a class -> its `#!python __init__` (dropping `#!python self`), or
+      `#!python __new__` when `#!python __init__` is inherited from
+      `#!python object`, the same constructor `inspect.signature(cls)` reads;
+    * a callable instance -> its type's `#!python __call__`;
+    * a [`functools.partial`][] -> the callable it wraps.
     """
     if isinstance(fn, functools.partial):
         return _hint_source(fn.func)
-    if (
-        inspect.isfunction(fn)
-        or inspect.ismethod(fn)
-        or isinstance(fn, type)
-    ):
+    if isinstance(fn, type):
+        return _constructor_of(fn)
+    if inspect.isfunction(fn) or inspect.ismethod(fn):
         return fn
     # A callable instance: its parameter annotations live on the class's
     # `__call__`, which is what `get_type_hints` can read.
     call = getattr(type(fn), "__call__", None)  # noqa: B004
     return call if call is not None else fn
+
+
+def _constructor_of(cls: type) -> tx.Any:
+    """The member whose annotations describe a class's constructor.
+
+    Mirrors how [`inspect.signature`][] picks a class's signature: the
+    `#!python __init__` when the class defines one, else the `#!python __new__`
+    when it defines that, else the class itself (a plain
+    `#!python object`-constructed class takes no dispatched parameters).
+    """
+    init = getattr(cls, "__init__", None)
+    if init is not None and init is not object.__init__:
+        return init
+    new = getattr(cls, "__new__", None)
+    if new is not None and new is not object.__new__:
+        return new
+    return cls
 
 
 def _has_forward(raw: tx.Optional[tx.Dict[str, tx.Any]]) -> bool:
@@ -1087,13 +1254,23 @@ def _render_hint(hint: tx.Any) -> str:
     return text.replace("typing_extensions.", "").replace("typing.", "")
 
 
-def _render_parameters(sig: "Signature") -> str:
+def _render_parameters(
+    sig: "Signature",
+    highlight: tx.Optional[tx.Collection[tx.Any]] = None,
+) -> str:
     """Render a signature's parameters with `/`, `*`, `*args`, `**kwargs`.
 
     The markers land where Python puts them: a `/` after the positional-only
     group, a bare `*` (or `#!python *args: H`) before the keyword-only group,
     and `#!python **kwargs: H` last.
+
+    When `highlight` is given, each named slot it lists is marked with a
+    leading `#!python !` on its hint -- an offending argument in a dispatch
+    error (`#!python x: !int`). A slot is named by its parameter name, or by
+    `Parameter.VAR_POSITIONAL` / `Parameter.VAR_KEYWORD` for the
+    `#!python *args` / `#!python **kwargs` catch-alls.
     """
+    marked = frozenset(highlight) if highlight else frozenset()
     out = []  # type: tx.List[str]
     positional_only = [
         p for p in sig._parameters.values() if p.kind is _POSITIONAL_ONLY
@@ -1103,34 +1280,60 @@ def _render_parameters(sig: "Signature") -> str:
         for p in sig._parameters.values()
         if p.kind is _POSITIONAL_OR_KEYWORD
     ]
-    out.extend(_render_parameter(p) for p in positional_only)
+    out.extend(
+        _render_parameter(p, p.name in marked) for p in positional_only
+    )
     if positional_only:
         out.append("/")
-    out.extend(_render_parameter(p) for p in positional_or_keyword)
+    out.extend(
+        _render_parameter(p, p.name in marked)
+        for p in positional_or_keyword
+    )
     if sig._varargs is not None:
-        out.append(_render_varargs(sig._varargs))
+        out.append(
+            _render_varargs(
+                sig._varargs,
+                sig._varargs_name or "args",
+                _VAR_POSITIONAL in marked,
+            )
+        )
     elif sig._kwonly:
         out.append("*")
-    out.extend(_render_parameter(p) for p in sig._kwonly)
+    out.extend(
+        _render_parameter(p, p.name in marked) for p in sig._kwonly
+    )
     if sig._varkw is not None:
-        out.append(_render_varkw(sig._varkw))
+        out.append(
+            _render_varkw(
+                sig._varkw,
+                sig._varkw_name or "kwargs",
+                _VAR_KEYWORD in marked,
+            )
+        )
     return ", ".join(out)
 
 
-def _render_parameter(param: Parameter) -> str:
-    text = f"{param.name}: {_render_hint(param.hint)}"
+def _render_parameter(param: Parameter, mark: bool = False) -> str:
+    bang = "!" if mark else ""
+    text = f"{param.name}: {bang}{_render_hint(param.hint)}"
     if not param.required:
         text += f" = {param.default!r}"
     return text
 
 
-def _render_varargs(hint: tx.Any) -> str:
+def _render_varargs(
+    hint: tx.Any, name: str = "args", mark: bool = False
+) -> str:
+    bang = "!" if mark else ""
     if hint is tx.Any:
-        return "*args"
-    return f"*args: {_render_hint(hint)}"
+        return f"*{name}{': !Any' if mark else ''}"
+    return f"*{name}: {bang}{_render_hint(hint)}"
 
 
-def _render_varkw(hint: tx.Any) -> str:
+def _render_varkw(
+    hint: tx.Any, name: str = "kwargs", mark: bool = False
+) -> str:
+    bang = "!" if mark else ""
     if hint is tx.Any:
-        return "**kwargs"
-    return f"**kwargs: {_render_hint(hint)}"
+        return f"**{name}{': !Any' if mark else ''}"
+    return f"**{name}: {bang}{_render_hint(hint)}"

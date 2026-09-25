@@ -103,9 +103,23 @@ class Method:
             return base
         return f"{base}:{self.lineno}"
 
-    def __repr__(self) -> str:
-        body = _render_parameters(self.signature)
+    def describe(
+        self, highlight: tx.Optional[tx.Collection[tx.Any]] = None
+    ) -> str:
+        """The named signature and where it was defined, for an error.
+
+        The rendering matches [`repr`][repr], except that each slot named in
+        `highlight` is marked with a leading `#!python !` on its hint -- the
+        offending argument in a dispatch error. A slot is named by its
+        parameter name, or by `Parameter.VAR_POSITIONAL` /
+        `Parameter.VAR_KEYWORD` for the `#!python *args` / `#!python **kwargs`
+        catch-alls.
+        """
+        body = _render_parameters(self.signature, highlight)
         return f"{self.name}({body}) @ {self.location}"
+
+    def __repr__(self) -> str:
+        return self.describe()
 
     def __eq__(self, other: tx.Any) -> bool:
         if not isinstance(other, Method):
@@ -125,7 +139,11 @@ def _source_location(
     """The file and line a callable was defined at, best effort."""
     try:
         filename = inspect.getsourcefile(function) or "<module>"
-    except TypeError:
+    except (TypeError, OSError):
+        # `TypeError` -- a callable with no source module (a builtin, a C
+        # function). `OSError` -- a class or function whose module has no
+        # `__file__`, as in the REPL, a Jupyter cell, `python -c`, or code
+        # built with `exec`; there is no source file to name.
         filename = "<module>"
     code = getattr(function, "__code__", None)
     lineno = getattr(code, "co_firstlineno", None)
