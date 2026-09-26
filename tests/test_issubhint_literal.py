@@ -41,6 +41,10 @@ LITERAL_CASES = [
     (L[1], L[True], False),
     (L[1], L[1.0], False),
     (L[1.0], L[1], False),
+    (L[0], L[False], False),
+    (L[False], L[0], False),
+    (L["a"], L[b"a"], False),
+    (L[b"a"], L["a"], False),
     # ... while same-type values still match.
     (L[True], L[True, False], True),
     (L[1], L[1, 2], True),
@@ -107,9 +111,11 @@ def test_issubhint_literal_as_hint(
 
 def test_a_nan_literal_is_a_subhint_of_itself() -> None:
     # `eq_safenan` keeps a NaN literal equal to itself even though
-    # `nan == nan` is False, so the type-aware compare must still hold.
-    nan = float("nan")
-    assert issubhint(L[nan], L[nan]) is True
+    # `nan == nan` is False, so the type-aware compare must still hold --
+    # including across two distinct NaN objects, which exercises
+    # `eq_safenan` rather than object identity.
+    n1, n2 = float("nan"), float("nan")
+    assert issubhint(L[n1], L[n2]) is True
 
 
 def test_literal_hint_against_typevar_uses_the_typevar_branch() -> None:
