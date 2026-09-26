@@ -171,6 +171,34 @@ def test_typeddict_field_hints_of_the_bare_marker_is_empty() -> None:
     assert typeddict_field_hints(tx.TypedDict) == {}
 
 
+def test_typeddict_field_hints_resolves_string_siblings_per_field() -> None:
+    # Under `from __future__ import annotations` every field is unresolved at
+    # class creation, and one unresolvable field makes `get_type_hints` raise
+    # for the whole class. The per-field fallback must still resolve the
+    # readable siblings (here `year`) rather than dropping every field.
+    from _future_annotations_td import FutureTD
+
+    hints = typeddict_field_hints(FutureTD)
+    assert hints["year"] is int  # the readable sibling was resolved
+    # The undefined name is kept unresolved (a string or a ForwardRef) so the
+    # caller can skip just that field.
+    assert isinstance(hints["missing"], (str, tx.ForwardRef))
+
+
+def test_resolve_one_annotation_evaluates_or_keeps_a_string() -> None:
+    # stdlib
+    from bagof.dispatchers.core._introspect import _resolve_one_annotation
+
+    # A resolvable string is evaluated against the given globals (builtins are
+    # always available); an undefined name is kept as its raw string.
+    assert _resolve_one_annotation("int", {}) is int
+    assert _resolve_one_annotation("_NameNotDefinedHere", {}) == (
+        "_NameNotDefinedHere"
+    )
+    # A hint that is already an object is returned unchanged.
+    assert _resolve_one_annotation(int, {}) is int
+
+
 # --- Any is never type-like -------------------------------------------
 
 

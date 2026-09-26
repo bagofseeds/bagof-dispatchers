@@ -174,7 +174,7 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
     * If `hint` is a [`Union`][tx.Union], checks `obj` against each of
       its members.
     * If `hint` is a [`TypedDict`][tx.TypedDict], checks the *shape* of
-      `obj`: it must be a mapping that holds every required key, and each
+      `obj`: it must be a [`dict`][] that holds every required key, and each
       declared key it holds must carry a value of that field's type. Extra
       keys are allowed, and a nested `TypedDict` or container field is read
       recursively.
@@ -286,23 +286,36 @@ def _ishintstance_type(obj: tx.Any, hint: tx.Any) -> bool:
 def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
     """Check that a value has the shape a `TypedDict` describes.
 
-    A value matches when it is a mapping, holds every **required** key, and
+    A value matches when it is a [`dict`][], holds every **required** key, and
     every declared key it *does* hold carries a value that satisfies that
     field's hint (checked through `ishintstance`, so a nested `TypedDict` or a
     container field is read the same way as any other value). `Required` /
     `NotRequired` and the class's `total=` are honoured through
     `typeddict_required_keys`.
 
-    **Extra keys are allowed**: a mapping with keys beyond the declared ones
-    still matches, so long as the declared keys check out. This is the width
-    subtyping the hint level already encodes -- `TypedDict <= dict` and
-    `TypedDict <= Mapping` -- read at the value level, and it matches
-    `pydantic`'s `TypeAdapter` (a `TypedDict` names a minimum shape, not a
-    closed one). `typeguard` instead rejects extra keys; the permissive
-    reading is chosen here because rejecting them would contradict the
-    hint-level ordering, under which a `dict` with more keys is still a `dict`.
+    Only a `dict` is accepted, not any [`Mapping`][collections.abc.Mapping].
+    This keeps the value level in step with the hint level, where
+    `TypedDict <= dict`: since every `TypedDict`-shaped value must also be a
+    valid `dict`, a non-`dict` mapping that matched the shape but is not a
+    `dict` would break `v in S and S <= T => v in T`.
+
+    **Extra keys are allowed**: a `dict` with keys beyond the declared ones
+    still matches, so long as the declared keys check out. The reason is the
+    nominal subtyping the hint level already encodes: `Sub <= Base` holds for
+    a `TypedDict` `Sub` that inherits from `Base`, so every `Sub`-shaped value
+    must also satisfy `Base`. Were extra keys rejected, a `Sub` value carrying
+    `Sub`'s own extra keys would fail `Base`, breaking
+    `v in Sub and Sub <= Base => v in Base`. This matches `pydantic`'s
+    `TypeAdapter` (a `TypedDict` names a minimum shape, not a closed one);
+    `typeguard` is stricter, and the permissive reading is chosen here to keep
+    the value level sound against the hint-level ordering.
+
+    Two *unrelated* `TypedDict`s that happen to share a satisfiable shape are
+    not ordered by this check, so a value matching both dispatches to neither
+    on its own: selection raises `AmbiguousMethodError`, the same outcome two
+    equally-matched `Protocol`s give (RFC 0001 §5).
     """
-    if not isinstance(obj, abc.Mapping):
+    if not isinstance(obj, dict):
         return False
     for key in typeddict_required_keys(td):
         if key not in obj:
@@ -311,12 +324,13 @@ def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
         if key not in obj:
             continue
         if isinstance(field_hint, (str, tx.ForwardRef)):
-            # An unresolved forward reference -- a bare string on some
-            # versions, a `ForwardRef` on others -- cannot be read here, so
-            # accept the present value rather than raise. Skipping it quietly
-            # (rather than letting it reach the opaque-hint path) keeps the
-            # shape check from warning about a name it simply could not look
-            # up.
+            # A forward reference that could not be resolved -- a bare string
+            # on some versions, a `ForwardRef` on others. Its value type
+            # cannot be read here, so the present value is accepted rather
+            # than raised on; but the field is reported, the same way an
+            # unrecognised hint is reported elsewhere, so a shape that silently
+            # skips a check is not mistaken for one that passed it.
+            _warn_unknown(field_hint)
             continue
         if not ishintstance(obj[key], field_hint):
             return False

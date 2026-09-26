@@ -582,8 +582,9 @@ Caching & thread-safety — **two levels**, because the order is per shape:
    for that shape (slot assignment or "cannot bind") and the pairwise `⊑_σ`
    matrix over the shape's arguments, plus which arguments are value-dependent
    (any method's hint there is `Literal`/`type[...]`, or a `Union`/`TypeVar`
-   whose members or upper bound include one — TypedDict is type-only in v1 and
-   joins this set when the v2 shape check lands). Bounded LRU over shapes;
+   whose members or upper bound include one — a concrete TypedDict is now in
+   this set too, since its value-level shape check reads the mapping's keys and
+   value types, not the argument's type alone). Bounded LRU over shapes;
    rebuilt on `register`.
 2. Under each plan, a **call cache** keyed by `tuple(type(v_i)) + tuple((k,
    type(w_k)) for k in sorted keywords)`, with `(type, value)` at value-dependent
@@ -785,7 +786,7 @@ subclasses of the dispatch errors. The model needs no positional-to-name adapter
 `Tuple[()]` ok · `Callable` parametrisations ordered (post-fix contravariance);
 `Callable[P,R] ≡ Callable[...,R]` · `type[X]` value-dependent; `type[bool] <
 type[int] < type` · `Annotated` (non-`Exact`) `≡ X`; `Exact` of a non-class →
-`TypeError` · TypedDict hint-level fine; value-level v1 warns, v2 shape-checks ·
+`TypeError` · TypedDict hint-level fine; value-level shape-checks the mapping ·
 Protocols: runtime structural, two satisfied → ambiguous unless comparable,
 non-runtime → registration `TypeError` · ABCs via `issubclass`; late `register()`
 → cache-token invalidation · diamond `D(B,C)` → `B`; B vs satisfied-ABC →
