@@ -954,7 +954,9 @@ def test_variadic_typevartuple_is_any() -> None:
         sig = Signature.from_callable(f)
         assert sig.varargs == tx.Unpack[Ts]
         assert sig.applies_to_values((1, "x", object()), {})
-    assert repr(sig) == "Signature(*args: Unpack[Ts])"
+    # Python 3.10 renders the TypeVarTuple with its sigil (``Unpack[~Ts]``)
+    # while 3.8 and 3.11+ render ``Unpack[Ts]``; normalise before comparing.
+    assert repr(sig).replace("~", "") == "Signature(*args: Unpack[Ts])"
 
 
 def test_variadic_paramspec_is_any() -> None:
