@@ -939,7 +939,12 @@ def test_from_callable_forward_ref_still_defers() -> None:
 
 
 def test_variadic_typevartuple_is_any() -> None:
-    """`*args: *Ts` reads as an unannotated catch-all, with no warning."""
+    """`*args: *Ts` keeps the `Unpack[Ts]` alias, behaving like `Any`.
+
+    The tail is no longer flattened to `Any`: the same `Ts` may appear at a
+    `Tuple[..., *Ts]` slot and be solved jointly (RFC 0001 §3), so the alias
+    must survive. On its own it still accepts any positionals, with no warning.
+    """
     Ts = tx.TypeVarTuple("Ts")
 
     def f(*args: tx.Unpack[Ts]) -> None: ...
@@ -947,9 +952,9 @@ def test_variadic_typevartuple_is_any() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # any warning fails the test
         sig = Signature.from_callable(f)
-        assert sig.varargs is tx.Any
+        assert sig.varargs == tx.Unpack[Ts]
         assert sig.applies_to_values((1, "x", object()), {})
-    assert repr(sig) == "Signature(*args)"
+    assert repr(sig) == "Signature(*args: Unpack[Ts])"
 
 
 def test_variadic_paramspec_is_any() -> None:

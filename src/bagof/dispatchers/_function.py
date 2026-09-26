@@ -44,6 +44,7 @@ from ._signature import (
     Parameter,
     Signature,
     _catch_all_or_any,
+    _is_plain_typevar,
     _reject_variadic_param,
     _render_hint,
 )
@@ -1119,14 +1120,22 @@ def _typevar_partition(
     and a `#!python **kwargs: T` method is more specific than one with an
     untyped `#!python **kwargs`. Applicability solves `T` across those same
     captured keywords too, exactly as it does for `#!python *args: T`.
+
+    A `#!python *args: *Ts` slot does **not** group: its landed hint is an
+    unpacked [`TypeVarTuple`][typing.TypeVarTuple], not a
+    [`TypeVar`][typing.TypeVar], so it stays solo and never wins this tie-break
+    -- the deliberate opposite of `#!python *args: T` (RFC 0001 §3). Its
+    joint solving lives in applicability, not here.
     """
     labels = {}  # type: tx.Dict[tx.Any, tx.Any]
     for key, hint in signature._iter_arguments(binding):
-        if isinstance(hint, tx.TypeVar):
+        if _is_plain_typevar(hint):
             # Identity, not the variable itself: two distinct `TypeVar`s that
             # happen to be equal must land in different blocks. The
             # `**kwargs`-absorbed keys land the signature's `**kwargs`
-            # variable, so they all share its block.
+            # variable, so they all share its block. A `*args: *Ts` tail is
+            # *not* a plain `TypeVar` (though 3.8 mis-reports it as one), so it
+            # stays solo and never wins this tie-break.
             labels[key] = id(hint)
         else:
             labels[key] = ("solo", key)
