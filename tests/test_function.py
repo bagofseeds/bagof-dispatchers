@@ -133,6 +133,30 @@ def test_no_methods_yet_message() -> None:
         f(1)
 
 
+def test_typeddict_method_chosen_by_shape_else_no_method() -> None:
+    """A TypedDict method fires for a matching dict; a non-matching one does
+    not (Phase 8 value-level shape check)."""
+    import typing_extensions as tx
+
+    class Point(tx.TypedDict):
+        x: int
+        y: int
+
+    f = Function("f")
+
+    def on_point(p: Point) -> str:
+        return "point"
+
+    f.register(on_point)
+    assert f({"x": 1, "y": 2}) == "point"
+    # A dict missing a required key matches no method's shape.
+    with pytest.raises(NoMethodError):
+        f({"x": 1})
+    # A wrongly-typed value likewise.
+    with pytest.raises(NoMethodError):
+        f({"x": 1, "y": "two"})
+
+
 def test_ambiguous_raises() -> None:
     """Two incomparable equally specific methods raise the ambiguity error."""
     f = Function("g")

@@ -21,10 +21,12 @@ and one the cache asks:
   ([`is_value_dependent`][bagof.dispatchers._lattice.is_value_dependent])?
 
 The value check itself stays in the relation: the engine calls
-[`ishintstance`][bagof.dispatchers.core.ishintstance] directly. The v2
-`TypedDict`-shape value check (RFC 0001 §9/§10, Phase 8) will be introduced
-then under an explicit, accurate name, and `is_value_dependent` flips
-`TypedDict` to value-dependent to match.
+[`ishintstance`][bagof.dispatchers.core.ishintstance] directly. Its
+`TypedDict`-shape value check (RFC 0001 §9, Phase 8) lives there under the
+name `_ishintstance_typeddict`, and
+[`is_value_dependent`][bagof.dispatchers._lattice.is_value_dependent] marks a
+concrete `TypedDict` value-dependent to match -- so the call cache keys on the
+mapping's shape at a `TypedDict`-typed argument.
 """
 
 # dependencies
@@ -39,9 +41,9 @@ from .core import (
     normalise_hint,
     unwrap,
 )
-from .core._compat import UNION_TYPES
+from .core._compat import UNION_TYPES, is_typeddict_marker
 from .core._exact import exact_target, is_exact
-from .core._introspect import _looks_like_class
+from .core._introspect import _looks_like_class, is_typeddict
 from .core._relation import _is_literal, _typevar_upper
 
 # --- equivalence -------------------------------------------------------
@@ -279,12 +281,14 @@ def is_value_dependent(hint: tx.Any) -> bool:
       the value, and so does a `#!python TypeVar` bounded by a
       `#!python Literal`.
 
-    Two hints are *not* value-dependent, though they might look it:
+    A concrete `#!python TypedDict` is also value-dependent: it dispatches on
+    the *shape* of a mapping -- its keys and their value types -- so two
+    dicts of the same type can match different methods.
 
-    * an [`Exact`][bagof.dispatchers.Exact]`[C]` hint checks
-      `#!python type(value) is C`, which the type alone answers;
-    * a `#!python TypedDict`, in v1: its value-level check is type-only, so
-      the value adds nothing. This flips once the v2 shape check lands.
+    An [`Exact`][bagof.dispatchers.Exact]`[C]` hint is *not* value-dependent,
+    though it might look it: it checks `#!python type(value) is C`, which the
+    type alone answers. Nor is the bare `#!python TypedDict` marker, which
+    names no fields and so is decided by the value's type alone.
 
     !!! example
         ```pycon
@@ -319,8 +323,13 @@ def is_value_dependent(hint: tx.Any) -> bool:
         # exactly when that bound is: `TypeVar(bound=Literal[1, 2])` and a
         # constrained `TypeVar` over literals both key on the value.
         return is_value_dependent(_typevar_upper(hint))
-    # A `TypedDict` is *not* value-dependent in v1: its value-level check is
-    # type-only (a plain `dict` is not a `TypedDict`), so keying on the value
-    # would only disable caching for no correctness gain. This flips to
-    # `True` when the v2 `TypedDict`-shape check lands (RFC 0001 §6/§9).
+    if is_typeddict(hint) and not is_typeddict_marker(hint):
+        # A concrete `TypedDict` dispatches on the *shape* of the value -- its
+        # keys and their value types -- not on the argument's type alone (a
+        # plain `dict` at a `TypedDict`-typed argument matches or not by what
+        # it holds). So the call cache must carry the value there; an
+        # unhashable `dict` value falls through to "uncached" via the shared
+        # unhashable-at-value-dependent path. The bare `TypedDict` marker is
+        # excluded: it names no fields, so its value-level check is type-only.
+        return True
     return False

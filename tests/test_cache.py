@@ -7,6 +7,7 @@ import typing
 
 # dependencies
 import pytest
+import typing_extensions as tx
 
 # locals
 from bagof.dispatchers._function import Function, _call_key, _KeyValue, _Plan
@@ -129,6 +130,65 @@ def test_non_value_dependent_call_key_uses_types() -> None:
     plan = f._build_plan(shape, cache)
     key = _call_key((1, "a"), {}, plan)
     assert key == (2, int, str)
+
+
+# --- TypedDict value-level dispatch (Phase 8) --------------------------
+
+
+class _TDA(tx.TypedDict):
+    a: int
+
+
+class _TDB(tx.TypedDict):
+    b: int
+
+
+def test_typeddict_shape_selects_the_matching_method() -> None:
+    """Two TypedDict methods dispatch by the dict's shape at the value."""
+    f = Function("f")
+
+    def fa(x: _TDA) -> str:
+        return "a"
+
+    def fb(x: _TDB) -> str:
+        return "b"
+
+    f.register(fa)
+    f.register(fb)
+    # Same argument type (dict) for both, but different shapes select
+    # different methods.
+    assert f({"a": 1}) == "a"
+    assert f({"b": 2}) == "b"
+
+
+def test_typeddict_dict_argument_is_uncached_but_dispatches() -> None:
+    """A dict at a TypedDict-typed argument is unhashable, so uncached.
+
+    It must still dispatch, and repeatedly -- both the cache read and the
+    write fall back to resolving without caching (the shared
+    unhashable-at-value-dependent-position path).
+    """
+    f = Function("f")
+
+    def fa(x: _TDA) -> str:
+        return "a"
+
+    def fb(x: _TDB) -> str:
+        return "b"
+
+    f.register(fa)
+    f.register(fb)
+    assert f({"a": 1}) == "a"  # plans the shape; the dict key is unhashable
+    assert f({"b": 2}) == "b"  # hot-path read falls back, resolves correctly
+    assert f({"a": 3}) == "a"  # and again, still correct
+    # The value-dependent position is recorded on the plan, and the dict value
+    # is genuinely unhashable there, so nothing was cached under it.
+    cache = f._refresh()
+    shape = (1, ())
+    plan = f._build_plan(shape, cache)
+    assert 0 in plan.value_dependent
+    with pytest.raises(TypeError):
+        hash(_call_key(({"a": 1},), {}, plan))
 
 
 # --- abc.register() invalidation ---------------------------------------
