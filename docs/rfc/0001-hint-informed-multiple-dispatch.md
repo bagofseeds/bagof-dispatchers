@@ -152,6 +152,9 @@ changes it, and the change is called out.
 | `list ≤ List`, `List ≤ list`, `List[int] ≤ list`, `list ≤ List[int]` | T/T/T/F | a **preorder** with equivalence classes; `List[int] < list ≡ List` |
 | `List[bool] ≤ List[int]`, `Dict[str,int] ≤ Dict[str,object]` | True | diverges from PEP 483 invariance of mutable containers — deliberate for value dispatch (§2.3) |
 | `Tuple[int] < Tuple[int, ...] < tuple`, `Tuple[int,...] ≤ Tuple[Any,...]` | True chain | covariant `Tuple` |
+| `Tuple[int,str] ≤ Tuple[int,*Ts]`, `Tuple[int] ≤ Tuple[int,*Ts]`, `Tuple[int,*Ts] ≤ Tuple[*Ts]`, `Tuple[int,*Ts,str] ≤ Tuple[int,*Ts]` | True | `*Ts` is an open run of 0+ `Any`: a fixed prefix captures the rest, a longer fixed prefix/suffix is stricter (Phase-8(b), #28) |
+| `Tuple[int,*Ts]` vs `Tuple[*Ts,int]`, `Tuple[int,*Ts]` vs `Tuple[int,...]` | incomparable | a prefix run and a suffix run, or a `*Ts` run and a `...` run, do not order either way |
+| `Tuple[*Ts] ≡ Tuple[Any,...] ≡ Tuple[*Us]`, `Tuple[int,...] ≤ Tuple[*Ts]`, `Tuple[*Ts] ≤ tuple` | True | a lone `*Ts` run is the widest tuple, below only bare `tuple` |
 | `Literal[True] < bool`, `Literal[1] < Literal[1,2]` | True | literals are the bottom |
 | `int ≤ Optional[int]`, `None ≤ Optional[int]`, `Optional[int] ≤ Union[int,str,None]` | True | union rules |
 | `type[bool] < type[int] < type` | True | `Type[C]` covariant |
@@ -352,17 +355,36 @@ for 2+ captured keywords and ties for 0 or 1.
 
 **Hint-level `resolve` with TypeVars in the query** uses `issubhint` unchanged.
 
-**Variadic kinds.** `*args: *Ts` / `*args: P.args` → an `Any` tail; a bare
-`Ts`/`P` (or a `Concatenate[...]`) as a *parameter* annotation is an invalid
-hint → registration `TypeError`. **`ParamSpec` is solved at the hint level**:
-a `ParamSpec` named at several top-level `Callable` slots must capture a
-consistent parameter list at each (the analogue of a repeated `TypeVar`), the
-group consistent iff the captured lists have a *greatest element* under the
-parameter-list order. Only a top-level landed `Callable` joins the group; a
-`ParamSpec` nested in another hint, or in a return type, is not solved.
-**Value-level `P` solving is deferred (#33)** — a callable value's own
-signature is never inspected. Full `TypeVarTuple` solving is deferred (§11,
-v2).
+**Variadic kinds.** `*args: *Ts` / `*args: P.args` → an `Any` tail for a lone
+element; a bare `Ts`/`P` (or a `Concatenate[...]`), or a top-level `Unpack[Ts]`,
+as a *parameter* annotation is an invalid hint → registration `TypeError`
+(a bare `Ts` on `*args` too, pointing at `*args: Unpack[Ts]`). Two open runs in
+one tuple / parameter list — `Tuple[*Ts, *Us]` — are refused at registration
+(PEP 646's single-unpack rule, which `typing` does not enforce at runtime).
+**`ParamSpec` is solved at the hint level**: a `ParamSpec` named at several
+top-level `Callable` slots must capture a consistent parameter list at each (the
+analogue of a repeated `TypeVar`), the group consistent iff the captured lists
+have a *greatest element* under the parameter-list order.
+
+**`TypeVarTuple` is solved at the hint level too** (Phase-8(b), #28): a `*Ts`
+named at several top-level `Tuple` slots must capture a consistent *run* at each
+— the covariant tuple analogue — the group consistent iff the captured runs have
+a greatest element under the tuple-shape order (`(int,)` & `(bool,)` → `(int,)`;
+`(int,)` & `(str,)`, or runs of different arity, are inconsistent; a closed run
+and an open run solve to the open one). A `*args: *Ts` absorbs its positionals
+into one run of the same `Ts`, solved jointly with every `Tuple[..., *Ts]` slot,
+so `(t: Tuple[*Ts], *args: *Ts)` applies to `resolve(Tuple[int, str], int, str)`
+but not to `resolve(Tuple[int])` (the empty `*args` run disagrees with `(int,)`).
+A `Callable[[int, *Ts], R]` list rides the `ParamSpec` open-tail path, its `*Ts`
+tail solved by the same parameter-list machinery, keyed separately from any
+tuple run of the same `Ts`. Only a top-level landed `Tuple`/`Callable` joins a
+group; a `*Ts` nested in another hint, or a `*Ts` in the middle of a `Callable`
+list with a fixed suffix (`Callable[[int, *Ts, str], R]`, which degrades to an
+open `Concatenate[int, P]`-shape), is not jointly solved. `*Ts` never enters the
+§3 repeated-grouping specificity tie-break — it is not a `TypeVar`, the
+deliberate opposite of `*args: T`, so `*args: *Ts` vs `*args` stays ambiguous for
+any positional count. **Value-level `P`/`Ts` solving is deferred (#33/#35)** — a
+callable or tuple value is matched shallowly, its shape never inspected.
 
 ---
 
@@ -820,10 +842,17 @@ ambiguous · preorder laws property-tested.
 **Modern forms (§11):** `type X = …` alias → its value; two aliases of one value
 → duplicate replace + warning; recursive alias → stops at origin · `L[int]` for
 `type L[T] = list[T]` → `List[int]` · `NewType` → supertype · `Tuple[int, *Ts]`
-chain; `Ts` twice → applicability only · `Callable[P,R]` chain, `...`/`P` the
+chain (a `*Ts` run captures the rest; longer fixed prefix/suffix stricter;
+`Tuple[int,*Ts]` vs `Tuple[*Ts,int]` and vs `Tuple[int,...]` incomparable;
+`Tuple[*Ts] ≡ Tuple[Any,...]`); a repeated `*Ts` at top-level `Tuple` slots
+solved jointly by greatest element (hint level, #35 for values), `*args: *Ts`
+sharing that run; two open runs in one list → registration `TypeError`;
+`Tuple[int,*Tuple[str,int]]` flattens · `Callable[P,R]` chain, `...`/`P` the
 top; `Concatenate[int,P]` contravariant prefix, longer prefix more specific; a
-repeated `P` solved by greatest element (hint level, #33 for values) ·
-`*args: P.args`/`*args: *Ts` → `Any` tail; `**kwargs` ignored · `Never` param →
+repeated `P` solved by greatest element (hint level, #33 for values);
+`Callable[[int,*Ts],R]` rides the open-tail path · `*args: P.args`/`*args: *Ts`
+→ `Any` tail (a bare `Ts`/top-level `Unpack[Ts]` param → registration
+`TypeError`); `**kwargs` ignored · `Never` param →
 never applicable · `Required`/
 `ReadOnly`/`Final`/`ClassVar` → as inner · unknown/future special form → opaque
 ≈ `Any` + one `UnknownHintWarning`, never raises · `TypeVar(bound=float,
@@ -938,8 +967,8 @@ the siblings already do) before the core-magic shim PR merges.
   rule).
 - **Phase 8 (v2).** TypedDict shape matching, introduced in `_lattice.py`
   under an explicit, accurate name, and flipping TypedDict to value-dependent
-  (+ the separate owner decision on `ishintstance`/validators); full
-  `TypeVarTuple`/`ParamSpec` solving & ordering; joint TypeVar solving
+  (+ the separate owner decision on `ishintstance`/validators); joint TypeVar
+  solving
   through `**kwargs: T` (**landed**, Phase 8d: the captured keywords group for
   the §3 grouping tie-break, so `**kwargs: T` beats an untyped `**kwargs`, and
   applicability solves `T` jointly over those keywords with every other slot
@@ -949,23 +978,36 @@ the siblings already do) before the core-magic shim PR merges.
   transitivity, #32 — and a repeated `ParamSpec` is solved jointly by greatest
   element at the hint level, covered by `tests/test_paramspec_dispatch.py`,
   `tests/test_relation_callable.py` and `tests/test_lattice.py`);
+  `TypeVarTuple`/`Unpack`/`*Ts` solving & ordering (**landed**, Phase 8b, #28:
+  a `*Ts` is an open run of 0+ `Any` in a tuple, ordered through a tuple-shape
+  classifier/matcher in `_issubargs`; a repeated `*Ts` at top-level `Tuple`
+  slots — and a `Callable[[int,*Ts],R]` tail via the `ParamSpec` open-tail path
+  — is solved jointly by greatest element at the hint level, with `*args: *Ts`
+  sharing that run; covered by `tests/test_relation_tuple_variadic.py`,
+  `tests/test_typevartuple_dispatch.py` and `tests/test_lattice.py`);
   `Callable` deep element check;
   `DeprecationWarning` `__getattr__` in core-magic; the `_polymorph` →
   `Function` migration (§8.4).
 
-Deferred to a later phase (tracked in **#33**), out of scope here:
+Deferred to a later phase (tracked in **#33** for `ParamSpec`, **#35** for
+`TypeVarTuple`), out of scope here:
 
-- **Value-level `ParamSpec` solving.** A callable *value*'s own signature is
-  never inspected, so `P` is not solved from values — `print` matches
-  `Callable[[int],str]` and every other `Callable[...]` slot at the value
-  level. Only the hint level (`resolve`, and hint-level applicability) solves
-  `P`.
+- **Value-level `ParamSpec`/`TypeVarTuple` solving (#33/#35).** A callable or
+  tuple *value* is matched shallowly — its signature / element shape is never
+  inspected — so `P`/`Ts` are not solved from values (`print` matches every
+  `Callable[...]` slot, `(1, "a")` matches every `Tuple[...]` slot). Only the
+  hint level (`resolve`, and hint-level applicability) solves them.
 - The Phase-7 repeated-grouping tie-break is **not** extended to a repeated
-  `ParamSpec`: two incomparable open prefixes stay ambiguous.
+  `ParamSpec` or `TypeVarTuple`: two incomparable open prefixes / runs stay
+  ambiguous, and `*args: *Ts` never beats `*args`.
 - `P.args` / `P.kwargs` as first-class components (they remain an `Any` tail),
   `ParamSpec(bound=)` and PEP 696 `ParamSpec` defaults, and the consistency of
   the same `P` at *nested* positions of one hint (only a top-level landed
   `Callable` joins the group) are all out of scope.
+- More than one unpack per list, `Unpack[Ts]` on `**kwargs`, PEP 696
+  `TypeVarTuple` defaults, `Ts` bounds (which do not exist), and `*Ts` in the
+  middle of a `Callable` list with a fixed suffix (which degrades to an open
+  shape) are all out of scope for `TypeVarTuple` (#35).
 
 Non-goals (stated in the README): `invoke`/`next_method` fall-through,
 return-type dispatch, dispatch on keyword-only parameters, static overload
@@ -999,7 +1041,7 @@ is uniform across spellings and forward-tolerant. Two measured facts shape this:
 | **PEP 695 `type X = …` (`TypeAliasType`)** | 3.12 | 4.6+ | `resolve_alias(hint)` in `_introspect`: detect by duck type (`__value__` + `__type_params__`) or either spelling; return `__value__`; substitute args for a subscripted `G[int]` via typing's own `__getitem__`; recursive with cycle guard; called at top of `issubhint`/`ishintstance` and from `normalise_hint` (not `unwrap`). **Support** |
 | **PEP 613 `TypeAlias`** | 3.10 | 4.x | the bound value is an ordinary hint; the bare marker falls under the unknown-form rule. **Support (trivial)** |
 | **PEP 696 defaults** | 3.13 | 4.4+ | read bound/constraints only via `_typevar_upper`; default ignored. **Support** |
-| **PEP 646 `TypeVarTuple`/`Unpack`/`*Ts`** | 3.11 | 4.1+ | degrade: `*args: *Ts` → `Any` tail; `Unpack[Ts]` in `Tuple[...]` → "zero+ `Any`" slot (prefix/suffix split in `_issubargs`); repeated `Ts` not solved. **Degrade v1**, full ordering deferred |
+| **PEP 646 `TypeVarTuple`/`Unpack`/`*Ts`** | 3.11 | 4.1+ | `Unpack[Ts]` in `Tuple[...]` is an open run of 0+ `Any` (prefix/suffix split through the tuple-shape classifier in `_issubargs`); a fixed prefix/suffix captures the rest, a longer one is stricter, `Tuple[*Ts] ≡ Tuple[Any,...]`; a repeated `*Ts` at top-level `Tuple` slots (and `Callable[[int,*Ts],R]` via the open-tail path) solved jointly by greatest element at the hint level; `*args: *Ts` → `Any` tail sharing that run; bare `Ts`/top-level `Unpack[Ts]` param, `*args: Ts` without unpack, and two open runs in one list → registration `TypeError`. Value-level `Ts` solving deferred (#35); `*Ts` mid-list with a suffix degrades to an open shape; `Unpack[Ts]` on `**kwargs` and PEP 696 `TypeVarTuple` defaults are out. **Support (hint-level)** |
 | **PEP 612 `ParamSpec`/`Concatenate`** | 3.10 | 4.x | `Callable[[int],R] < Callable[Concatenate[int,P],R] < Callable[P,R] ≡ Callable[...,R]` (`...`/`P` top the lists — row-flip, #32; restores transitivity); `Concatenate` a contravariant prefix, longer prefix more specific; a repeated `P` solved jointly by greatest element at the hint level; `*args: P.args` → `Any` tail; bare `P`/`Concatenate` as a param → registration `TypeError`. Value-level `P` solving deferred (#33). **Support (hint-level)** |
 | **`NewType`** | 3.5/3.10 | typing_extensions class 3.8/3.9 | `resolve_newtype` → `__supertype__`, recursive, in `normalise_hint`. **Support** |
 | **`Never`/`NoReturn`** | 3.11/3.6 | 4.1+ | bottom type; a `Never` param makes a method never applicable (explicit "forbid this combination"). **Support** |
@@ -1048,6 +1090,13 @@ in `safe_issubclass`, no future form can raise out of the relation.
 - **3.11** — `Any` becomes a class (pinned); `Never`/`Self`/`LiteralString`/
   `TypeVarTuple`/`Unpack`/`Required` native; `GenericAlias` trap fixed;
   typing_extensions still owns `Unpack`/`TypeVarTuple`/`TypeVar` — both spellings.
+  Measured: `tx.Unpack is not typing.Unpack`, and the star syntax
+  `Tuple[int, *Ts]` yields `typing.Unpack[Ts]` while `tx.Unpack[Ts]` yields the
+  `typing_extensions` one (not `==`), so `_UNPACK_FORMS = spellings("Unpack")`
+  (identity over both) is mandatory; `tx.TypeVarTuple is not typing.TypeVarTuple`
+  too, so a `TypeVarTuple` is recognised only by `isinstance`, never by class
+  identity. Re-registration switching `*Ts` ↔ `Unpack[Ts]` reads as a new method
+  (structural-eq compares the origin by `is`), which is acceptable.
 - **3.12** — PEP 695 syntax + native `TypeAliasType` (duck-type it); native PEP
   695 TypeVars lack `__default__` (`getattr(..., NoDefault)`); `Annotated` still
   a class.

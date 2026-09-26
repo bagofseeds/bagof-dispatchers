@@ -175,6 +175,49 @@ def test_no_callable_form_is_value_dependent(hint: tx.Any) -> None:
     assert is_value_dependent(hint) is False
 
 
+# --- variadic tuple caching (§4) ---------------------------------------
+
+
+_Ts = tx.TypeVarTuple("_Ts")
+
+
+@pytest.mark.parametrize(
+    "hint",
+    [
+        tx.Tuple[int, tx.Unpack[_Ts]],
+        tx.Tuple[tx.Unpack[_Ts]],
+        tx.Tuple[int, tx.Unpack[_Ts], str],
+        tx.Unpack[_Ts],
+        tx.Callable[[int, tx.Unpack[_Ts]], int],
+    ],
+)
+def test_no_variadic_tuple_form_is_value_dependent(hint: tx.Any) -> None:
+    """A `*Ts` / `Tuple[..., *Ts]` / `Callable[[..., *Ts], R]` slot dispatches
+    on the value's *type* alone (its items are never inspected), so it is not
+    value-dependent and the cache keys on the type."""
+    from bagof.dispatchers._lattice import is_value_dependent
+
+    assert is_value_dependent(hint) is False
+
+
+def test_variadic_tuple_slot_keys_on_type_only() -> None:
+    """A `Tuple[int, *Ts]` slot is not value-dependent, so two tuples of the
+    same type but different values share one cache entry (§4)."""
+    f = Function("f")
+
+    def m(x: tx.Tuple[int, tx.Unpack[_Ts]]) -> str:
+        return "m"
+
+    f.register(m)
+    cache = f._refresh()
+    shape = (1, ())
+    plan = f._build_plan(shape, cache)
+    assert plan.value_dependent == frozenset()
+    # Two different tuple *values* of the same type map to the same key.
+    assert _call_key(((1, 2, 3),), {}, plan) == _call_key(((4, 5),), {}, plan)
+    assert _call_key(((1, 2, 3),), {}, plan) == (1, tuple)
+
+
 # --- TypedDict value-level dispatch (Phase 8) --------------------------
 
 

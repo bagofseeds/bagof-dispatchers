@@ -272,14 +272,19 @@ def test_unknown_form_is_opaque_and_warns_once() -> None:
 
 
 def test_unknown_form_warns_once_per_form_not_per_repr() -> None:
-    # Two hints built from one unknown form (`Unpack[Ts]`, `Unpack[Us]`) have
-    # different reprs but share an origin, so the warning fires once, not
-    # twice.
+    # Two hints built from one unknown form share an origin but have different
+    # reprs, so the warning fires once, not twice. `Unpack[TypedDict]` is the
+    # form used, because `Unpack[TypeVarTuple]` (`*Ts`) is now recognised and
+    # never warns -- only a non-`TypeVarTuple` unpack stays unknown.
     from bagof.dispatchers.core import _relation
 
-    Ts = tx.TypeVarTuple("Ts")
-    Us = tx.TypeVarTuple("Us")
-    a, b = tx.Unpack[Ts], tx.Unpack[Us]
+    class _TDa(tx.TypedDict):
+        a: int
+
+    class _TDb(tx.TypedDict):
+        b: int
+
+    a, b = tx.Unpack[_TDa], tx.Unpack[_TDb]
     _relation._WARNED_UNKNOWN.discard(_relation._warn_key(a))
     _relation._WARNED_UNKNOWN.discard(_relation._warn_key(b))
     with warnings.catch_warnings(record=True) as caught:

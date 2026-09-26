@@ -51,8 +51,12 @@ from .core._relation import (
     _callable_param_shape,
     _is_literal,
     _issubparams,
+    _issubtupleshape,
     _match_params,
+    _match_tuple,
     _ParamShape,
+    _tuple_shape,
+    _TupleShape,
     _typevar_upper,
 )
 
@@ -304,9 +308,13 @@ def paramspec_captures(
     if not query_args or not hint_args:
         return
     hint_shape = _callable_param_shape(hint, hint_args[0])
-    if not isinstance(hint_shape.tail, tx.ParamSpec):
-        # Only a slot whose list ends in a `ParamSpec` captures anything; a
-        # `...` tail or a fixed list joins no group.
+    if not isinstance(hint_shape.tail, (tx.ParamSpec, tx.TypeVarTuple)):
+        # Only a slot whose list ends in a `ParamSpec` or an unpacked
+        # `TypeVarTuple` (`Callable[[int, *Ts], R]`) captures anything; a `...`
+        # tail or a fixed list joins no group. Either tail is captured as a
+        # `_ParamShape` and solved by `solve_paramspec` -- so a `Ts` shared
+        # with a `Tuple` capture is solved per kind, keyed by `id(Ts)` in its
+        # own group.
         return
     query_shape = _callable_param_shape(query, query_args[0])
     captured = _match_params(query_shape, hint_shape)
@@ -349,6 +357,86 @@ def paramspec_consistent(tails: tx.Iterable[_ParamShape]) -> bool:
     when the captured tails have a greatest element, `False` when they do not.
     """
     return solve_paramspec(tails) is not UNSET
+
+
+# --- repeated TypeVarTuple solving -------------------------------------
+
+
+def typevartuple_captures(
+    query: tx.Any, hint: tx.Any
+) -> tx.Iterator[tx.Tuple[tx.Any, _TupleShape]]:
+    """Yield `(TypeVarTuple, captured run)` for a top-level `Tuple` slot.
+
+    When a landed slot `hint` is a `#!python Tuple[...]` whose elements hold an
+    unpacked [`TypeVarTuple`][typing.TypeVarTuple] `Ts` (`#!python Tuple[int,
+    *Ts]`), and the `query` that reached it is a `#!python Tuple[...]` whose
+    shape matches, `Ts` captures the run of the query's elements beyond the
+    slot's fixed prefix and suffix. A signature that names one `TypeVarTuple`
+    at several slots must capture a consistent run at each -- the covariant
+    tuple analogue of the [`ParamSpec`][typing.ParamSpec] rule
+    ([`paramspec_captures`][bagof.dispatchers._lattice.paramspec_captures]) and
+    of repeated [`TypeVar`][typing.TypeVar] solving (RFC 0001 §3).
+
+    Only a **top-level** `Tuple` is read: a `TypeVarTuple` nested inside
+    another hint (`#!python Optional[Tuple[int, *Ts]]`) is not jointly solved.
+    """
+    query = unwrap(normalise_hint(query), tx.Annotated)
+    hint = unwrap(normalise_hint(hint), tx.Annotated)
+    if get_origin_uw(query) is not tuple:
+        return
+    if get_origin_uw(hint) is not tuple:
+        return
+    query_args = get_args_uw(query)
+    hint_args = get_args_uw(hint)
+    if not query_args or not hint_args:
+        return
+    hint_shape = _tuple_shape(hint_args)
+    if hint_shape.var is None:
+        # Only a slot with an unpacked `TypeVarTuple` run captures anything; a
+        # closed tuple or a `Tuple[X, ...]` joins no group.
+        return
+    captured = _match_tuple(_tuple_shape(query_args), hint_shape)
+    if captured is None:
+        # The shapes do not match; applicability has already rejected the call,
+        # so there is nothing to capture.
+        return
+    yield hint_shape.var, captured
+
+
+def solve_typevartuple(shapes: tx.Iterable[_TupleShape]) -> tx.Any:
+    """Solve one `TypeVarTuple` against the runs captured at its slots.
+
+    The `TypeVarTuple` analogue of
+    [`solve_typevar`][bagof.dispatchers._lattice.solve_typevar]: the captured
+    runs must have a **greatest element** under the tuple-shape order (one run
+    every other is a sub-run of), and that run is the solution. `#!python
+    ((int,))` and `#!python ((bool,))` solve to `#!python ((int,))`
+    (covariant: `bool` is under `int`); `#!python ((int,))` and `#!python
+    ((str,))` have no greatest element and are unsolvable, as do runs of
+    different arity; a closed run and an open run solve to the open one.
+
+    Returns the solved run shape, or [`UNSET`][bagof.dispatchers.core.UNSET]
+    when the runs do not agree. No slots means the variable is unconstrained,
+    which stands for a run of zero-or-more `#!python Any` elements.
+    """
+    shapes = tuple(shapes)
+    if not shapes:
+        return _TupleShape((), tx.Any, (), None)
+    for candidate in shapes:
+        if all(_issubtupleshape(other, candidate) for other in shapes):
+            return candidate
+    return UNSET
+
+
+def typevartuple_consistent(shapes: tx.Iterable[_TupleShape]) -> bool:
+    """Whether the runs captured at one `TypeVarTuple`'s slots agree (§3).
+
+    The boolean face of
+    [`solve_typevartuple`][bagof.dispatchers._lattice.solve_typevartuple]:
+    `True` when the captured runs have a greatest element, `False` when they do
+    not.
+    """
+    return solve_typevartuple(shapes) is not UNSET
 
 
 # --- value dependence --------------------------------------------------

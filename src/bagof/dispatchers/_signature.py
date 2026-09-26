@@ -34,6 +34,8 @@ from ._lattice import (
     paramspec_captures,
     paramspec_consistent,
     typevar_consistent,
+    typevartuple_captures,
+    typevartuple_consistent,
 )
 from .core import (
     ishintstance,
@@ -41,8 +43,9 @@ from .core import (
     normalise_hint,
     safe_get_origin,
 )
-from .core._compat import spellings
+from .core._compat import _UNPACK_FORMS, spellings
 from .core._exact import exact_target, is_exact
+from .core._relation import _is_unpacked_typevartuple, _TupleShape
 
 __all__ = ["Parameter", "Signature", "Binding"]
 
@@ -89,12 +92,6 @@ _ANY_SIGNATURE = inspect.Signature(
     ]
 )
 
-# The `*args` / `**kwargs` variadic forms that v1 reads as an unannotated
-# catch-all (RFC 0001 §2.2, §3, §11.1): an unpacked `TypeVarTuple` (`*Ts`), a
-# `ParamSpec`'s `.args` / `.kwargs`, and an `Unpack[TypedDict]`. Each spelling
-# only exists on newer Pythons or through `typing_extensions`, so every lookup
-# is guarded.
-_UNPACK_FORMS = spellings("Unpack")
 # Every spelling of `Literal`, to recognise it by origin without evaluating
 # its members: on 3.8-3.10 `typing_extensions` ships its own, distinct from
 # `typing`'s, so a single-object check misses the other.
@@ -439,6 +436,7 @@ class Signature:
             if param.kind is _VAR_POSITIONAL:
                 varargs_name = name
                 varargs = _catch_all_or_any(hint)
+                _reject_variadic_param(name, varargs, fn, catch_all=True)
             elif param.kind is _VAR_KEYWORD:
                 varkw_name = name
                 varkw = _catch_all_or_any(hint)
@@ -506,6 +504,9 @@ class Signature:
         if self._varargs_name is not None:
             self._varargs = _catch_all_or_any(
                 normalise_hint(hints.get(self._varargs_name, tx.Any))
+            )
+            _reject_variadic_param(
+                self._varargs_name, self._varargs, self._fn, catch_all=True
             )
         if self._varkw_name is not None:
             self._varkw = _catch_all_or_any(
@@ -713,10 +714,13 @@ class Signature:
             value = args[key] if isinstance(key, int) else kwargs[key]
             # A `Callable` value is matched shallowly -- its own signature is
             # never inspected -- so a `ParamSpec` in the slot is not solved
-            # from values here, only from hints in `applies_to_hints`.
+            # from values here, only from hints in `applies_to_hints`. A
+            # `*Ts` / `Tuple[..., *Ts]` slot is shallow the same way: a value
+            # binds a `Tuple[int, *Ts]` by `isinstance(v, tuple)` alone, and a
+            # `TypeVarTuple` is solved only at the hint level.
             if not ishintstance(value, hint):
                 return False
-            if isinstance(hint, tx.TypeVar):
+            if _is_plain_typevar(hint):
                 groups.setdefault(id(hint), (hint, []))[1].append(type(value))
         for hint, classes in groups.values():
             if not typevar_consistent(classes, hint):
@@ -746,22 +750,43 @@ class Signature:
             return False
         groups = {}  # type: tx.Dict[int, tx.Tuple[tx.Any, tx.List[tx.Any]]]
         pgroups = {}  # type: tx.Dict[int, tx.List[tx.Any]]
+        tgroups = {}  # type: tx.Dict[int, tx.List[_TupleShape]]
         for key, hint in self._iter_arguments(binding):
             query = hints[key] if isinstance(key, int) else named_hints[key]
             if not _hint_query_accepts(query, hint):
                 return False
-            if isinstance(hint, tx.TypeVar):
+            if _is_plain_typevar(hint):
                 groups.setdefault(id(hint), (hint, []))[1].append(query)
             # A `ParamSpec` named at several `Callable` slots must capture the
             # same parameter list at each, just as a repeated `TypeVar` must
             # agree on a class.
             for pspec, tail in paramspec_captures(query, hint):
                 pgroups.setdefault(id(pspec), []).append(tail)
+            # A `TypeVarTuple` named at several `Tuple` slots must capture the
+            # same run at each -- the covariant tuple analogue.
+            for tvt, run in typevartuple_captures(query, hint):
+                tgroups.setdefault(id(tvt), []).append(run)
+        # A `*args: *Ts` absorbs zero or more positionals into one run of the
+        # same `Ts`, solved jointly with every `Tuple[..., *Ts]` slot. The run
+        # is captured even when empty, so a `Ts` bound to `(int, str)` at a
+        # `Tuple[int, str]` slot is inconsistent with the empty `*args` run.
+        if _is_unpacked_typevartuple(self._varargs):
+            tvt = tx.get_args(self._varargs)[0]
+            run = _TupleShape(
+                tuple(hints[i] for i in binding.extra_positional),
+                None,
+                (),
+                None,
+            )
+            tgroups.setdefault(id(tvt), []).append(run)
         for hint, classes in groups.values():
             if not typevar_consistent(classes, hint):
                 return False
         for tails in pgroups.values():
             if not paramspec_consistent(tails):
+                return False
+        for runs in tgroups.values():
+            if not typevartuple_consistent(runs):
                 return False
         return True
 
@@ -1149,15 +1174,38 @@ def _structural_hint_eq(a: tx.Any, b: tx.Any) -> bool:
     )
 
 
+def _is_plain_typevar(hint: tx.Any) -> bool:
+    """Whether `hint` is a plain `TypeVar`, not a `TypeVarTuple`/`Unpack[Ts]`.
+
+    Below 3.11 `typing_extensions` makes `#!python isinstance(Unpack[Ts],
+    tx.TypeVar)` (and even `#!python isinstance(Ts, tx.TypeVar)`) return
+    `#!python True`, so a bare `#!python isinstance(hint, tx.TypeVar)` would
+    fold a `#!python *args: *Ts` tail into the repeated-`TypeVar` solve and
+    reject a call of differing types. A `TypeVarTuple` is solved separately, so
+    it is excluded here.
+    """
+    return (
+        isinstance(hint, tx.TypeVar)
+        and not isinstance(hint, tx.TypeVarTuple)
+        and not _is_unpacked_typevartuple(hint)
+    )
+
+
 def _catch_all_or_any(hint: tx.Any) -> tx.Any:
     """A `*args`/`**kwargs` hint, with a v1-unsupported variadic form as `Any`.
 
-    `*args: *Ts` (an unpacked `TypeVarTuple`), `*args: P.args`,
-    `**kwargs: P.kwargs` and `**kwargs: Unpack[TypedDict]` all read as an
-    unannotated catch-all in v1 (RFC 0001 §2.2, §3, §11.1): the tail takes
-    anything, so the hint is [`Any`][typing.Any]. Every other hint is left
-    unchanged.
+    `*args: P.args`, `**kwargs: P.kwargs` and `**kwargs: Unpack[TypedDict]`
+    read as an unannotated catch-all in v1 (RFC 0001 §2.2, §3, §11.1): the tail
+    takes anything, so the hint is [`Any`][typing.Any].
+
+    An unpacked `TypeVarTuple` (`*args: *Ts`) is kept **verbatim**: on its own
+    it behaves like [`Any`][typing.Any] for a single element, but the same `Ts`
+    may appear at a `#!python Tuple[..., *Ts]` slot, and the two are then
+    solved jointly (RFC 0001 §3), so the tail must stay identifiable. Every
+    other hint is left unchanged.
     """
+    if _is_unpacked_typevartuple(hint):
+        return hint
     if _PARAMSPEC_ARGKW and isinstance(hint, _PARAMSPEC_ARGKW):
         return tx.Any
     origin = safe_get_origin(hint)
@@ -1166,18 +1214,37 @@ def _catch_all_or_any(hint: tx.Any) -> tx.Any:
     return hint
 
 
-def _reject_variadic_param(name: str, hint: tx.Any, fn: tx.Any) -> None:
-    """Refuse a `ParamSpec`/`Concatenate` used as a declared parameter hint.
+def _reject_variadic_param(
+    name: str, hint: tx.Any, fn: tx.Any, catch_all: bool = False
+) -> None:
+    """Refuse a variadic-only hint used where a value hint belongs.
 
-    A [`ParamSpec`][typing.ParamSpec] or `#!python Concatenate[...]` only
-    describes a `#!python Callable`'s parameter list -- written as a plain
-    parameter's annotation it describes no value, so it is refused at
-    registration with a message that names the parameter. The `#!python *args:
-    P.args` / `#!python **kwargs: P.kwargs` forms are not rejected here: they
-    are read as an `#!python Any` tail by
-    [`_catch_all_or_any`][bagof.dispatchers._signature._catch_all_or_any]
-    before ever reaching a declared parameter.
+    A [`ParamSpec`][typing.ParamSpec], `#!python Concatenate[...]` or
+    [`TypeVarTuple`][typing.TypeVarTuple] describes a `#!python Callable`'s
+    parameter list or a `#!python Tuple` run, not a value -- written as a plain
+    parameter's annotation it describes nothing, so it is refused at
+    registration with a message that names the parameter.
+
+    The `#!python *args: P.args` / `#!python **kwargs: P.kwargs` /
+    `#!python *args: Unpack[Ts]` forms are read as a catch-all before they
+    reach a declared parameter, so they are accepted; only a **bare**
+    `#!python TypeVarTuple` on `#!python *args` is refused here (`catch_all`),
+    pointing at the `#!python *args: Unpack[Ts]` spelling.
+
+    A single unpacked `#!python TypeVarTuple` per tuple / parameter list is
+    allowed (PEP 646); a second open run is refused, since `typing` does not
+    reject it at runtime.
     """
+    if catch_all:
+        # A `*args` slot: `*args: Unpack[Ts]` (a run) and `*args: P.args` (an
+        # `Any` tail) are already accepted; a bare `TypeVarTuple` is not a
+        # valid annotation on its own.
+        if isinstance(hint, tx.TypeVarTuple):
+            raise TypeError(
+                f"*{name} of {fn}: a bare TypeVarTuple is not a valid "
+                f"annotation; write *{name}: Unpack[Ts]"
+            )
+        return
     bad = isinstance(hint, tx.ParamSpec) or (
         bool(_PARAMSPEC_ARGKW) and isinstance(hint, _PARAMSPEC_ARGKW)
     )
@@ -1189,6 +1256,41 @@ def _reject_variadic_param(name: str, hint: tx.Any, fn: tx.Any) -> None:
             f"{name!r} of {fn}: a ParamSpec/Concatenate is only valid inside "
             "Callable[...] (or as *args: P.args / **kwargs: P.kwargs)"
         )
+    if isinstance(hint, tx.TypeVarTuple) or _is_unpacked_typevartuple(hint):
+        raise TypeError(
+            f"{name!r} of {fn}: a TypeVarTuple is only valid unpacked inside "
+            "Tuple[...] or Callable[[...], ...], or as *args: Unpack[Ts]"
+        )
+    if _has_two_open_runs(hint):
+        raise TypeError(
+            f"{name!r} of {fn}: a Tuple or parameter list may hold at most "
+            "one unpacked TypeVarTuple (Unpack[Ts])"
+        )
+
+
+def _has_two_open_runs(hint: tx.Any) -> bool:
+    """Whether any tuple / parameter list in `hint` holds 2+ unpacked runs.
+
+    PEP 646 permits a single unpacked [`TypeVarTuple`][typing.TypeVarTuple]
+    per list; `typing` does not enforce this at runtime, so a nested
+    `#!python Tuple[*Ts, *Us]` -- at any depth, and inside a `#!python
+    Callable` parameter list too -- is caught by walking the arguments.
+    """
+    args = tx.get_args(hint)
+    if not args:
+        return False
+    if sum(1 for arg in args if _is_unpacked_typevartuple(arg)) >= 2:
+        return True
+    for arg in args:
+        if isinstance(arg, list):
+            # A `Callable` parameter list is a plain list of its parameters.
+            if sum(1 for e in arg if _is_unpacked_typevartuple(e)) >= 2:
+                return True
+            if any(_has_two_open_runs(e) for e in arg):
+                return True
+        elif _has_two_open_runs(arg):
+            return True
+    return False
 
 
 def _hint_source(fn: tx.Callable[..., tx.Any]) -> tx.Any:

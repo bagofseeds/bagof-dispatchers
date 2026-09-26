@@ -41,6 +41,11 @@ _T = tx.TypeVar("_T")
 _TBOUND = tx.TypeVar("_TBOUND", bound=int)
 _TCONSTR = tx.TypeVar("_TCONSTR", int, str)
 _P = tx.ParamSpec("_P")
+_Ts = tx.TypeVarTuple("_Ts")
+
+
+class _Arr(tx.Generic[tx.Unpack[_Ts]]):
+    """A user class parametrised by a `TypeVarTuple`, for the corpus laws."""
 
 # ~40 hints spanning classes, ABCs, unions, optionals, literals, the tuple /
 # list / dict families, `Callable` pairs, `TypeVar`s and `Exact`. It
@@ -84,6 +89,18 @@ CORPUS = [
     tx.Tuple[int, str],
     tx.Tuple[int, ...],
     tuple,
+    # variadic tuples (PEP 646): a `*Ts` run, its prefix/suffix variants, and
+    # `Tuple[Any, ...]` which is equivalent to `Tuple[*Ts]`. The preorder /
+    # equivalence laws over these are the transitivity regression for the
+    # tuple-shape matcher.
+    tx.Tuple[int, tx.Unpack[_Ts]],
+    tx.Tuple[tx.Unpack[_Ts], int],
+    tx.Tuple[tx.Unpack[_Ts]],
+    tx.Tuple[int, tx.Unpack[_Ts], str],
+    tx.Tuple[tx.Any, ...],
+    # a user `Generic[*Ts]` pair, ordered through the same tuple-shape path
+    _Arr[int, str],
+    _Arr[int, tx.Unpack[_Ts]],
     # Callable pairs (contravariant params, covariant return). `...` and a
     # bare `ParamSpec` are the top of parameter lists, and a `Concatenate`
     # prefix sits between the fixed lists and that top -- all part of the
@@ -97,6 +114,7 @@ CORPUS = [
     tx.Callable[tx.Concatenate[int, _P], str],
     tx.Callable[tx.Concatenate[bool, _P], str],
     tx.Callable[tx.Concatenate[int, str, _P], str],
+    tx.Callable[[int, tx.Unpack[_Ts]], str],
     # TypeVars
     _T,
     _TBOUND,
@@ -395,6 +413,12 @@ def test_the_typing_literal_spelling_is_value_dependent() -> None:
         tx.Callable[..., str],
         tx.Callable[_P, str],
         tx.Callable[tx.Concatenate[int, _P], str],
+        # A variadic tuple / callable dispatches on the value's *type* alone
+        # (its items are never inspected), so none is value-dependent.
+        tx.Tuple[int, tx.Unpack[_Ts]],
+        tx.Tuple[tx.Unpack[_Ts]],
+        tx.Unpack[_Ts],
+        tx.Callable[[int, tx.Unpack[_Ts]], str],
     ],
 )
 def test_type_dependent_hints(hint: tx.Any) -> None:
@@ -523,3 +547,133 @@ def test_paramspec_captures_with_a_concatenate_slot() -> None:
         )
     )
     assert captures[id(P)] == _shape(str)
+
+
+# --- repeated TypeVarTuple solving -------------------------------------
+
+
+def _run(*prefix: tx.Any) -> tx.Any:
+    """A closed run shape (a fixed sequence of elements), for the solver."""
+    from bagof.dispatchers.core._relation import _TupleShape
+
+    return _TupleShape(tuple(prefix), None, (), None)
+
+
+def _open_run(*prefix: tx.Any) -> tx.Any:
+    """An open run shape (a `*Ts`-style run), for the solver."""
+    from bagof.dispatchers.core._relation import _TupleShape
+
+    return _TupleShape(tuple(prefix), tx.Any, (), None)
+
+
+def test_solve_typevartuple_greatest_element() -> None:
+    from bagof.dispatchers._lattice import (
+        solve_typevartuple,
+        typevartuple_consistent,
+    )
+
+    # `(int,)` and `(bool,)` -> `(int,)` (covariant: bool <: int, so the
+    # int-run is the greater).
+    assert solve_typevartuple([_run(int), _run(bool)]) == _run(int)
+    assert typevartuple_consistent([_run(int), _run(bool)]) is True
+    # Order does not matter.
+    assert solve_typevartuple([_run(bool), _run(int)]) == _run(int)
+
+
+def test_solve_typevartuple_incomparable_is_unset() -> None:
+    from bagof.dispatchers._lattice import (
+        solve_typevartuple,
+        typevartuple_consistent,
+    )
+
+    assert solve_typevartuple([_run(int), _run(str)]) is UNSET
+    assert typevartuple_consistent([_run(int), _run(str)]) is False
+
+
+def test_solve_typevartuple_different_arities_is_unset() -> None:
+    from bagof.dispatchers._lattice import solve_typevartuple
+
+    assert solve_typevartuple([_run(int), _run(int, int)]) is UNSET
+
+
+def test_solve_typevartuple_closed_and_open_solve_to_open() -> None:
+    from bagof.dispatchers._lattice import solve_typevartuple
+
+    # A closed run is a sub-run of an open one with a matching prefix.
+    assert solve_typevartuple([_run(int), _open_run(int)]) == _open_run(int)
+
+
+def test_solve_typevartuple_no_slots_is_the_open_run() -> None:
+    from bagof.dispatchers._lattice import (
+        solve_typevartuple,
+        typevartuple_consistent,
+    )
+
+    assert solve_typevartuple([]) == _open_run()
+    assert typevartuple_consistent([]) is True
+
+
+def test_solve_typevartuple_single_run_always_solves() -> None:
+    from bagof.dispatchers._lattice import solve_typevartuple
+
+    assert solve_typevartuple([_run(int, str)]) == _run(int, str)
+
+
+def test_typevartuple_captures_reads_a_top_level_tuple() -> None:
+    from bagof.dispatchers._lattice import typevartuple_captures
+
+    Ts = tx.TypeVarTuple("Ts")
+    # Query `Tuple[int, str, bytes]` at slot `Tuple[int, *Ts]`: `Ts` captures
+    # the leftover run `(str, bytes)`.
+    captures = dict(
+        (id(t), run)
+        for t, run in typevartuple_captures(
+            tx.Tuple[int, str, bytes], tx.Tuple[int, tx.Unpack[Ts]]
+        )
+    )
+    assert captures[id(Ts)] == _run(str, bytes)
+    # A closed slot (no `*Ts` run) captures nothing.
+    assert list(
+        typevartuple_captures(tx.Tuple[int], tx.Tuple[int])
+    ) == []
+    # A `Tuple[X, ...]` slot has no `TypeVarTuple`, so it captures nothing.
+    assert list(
+        typevartuple_captures(tx.Tuple[int], tx.Tuple[int, ...])
+    ) == []
+    # A nested (non-top-level) tuple is not read.
+    assert list(
+        typevartuple_captures(
+            tx.Optional[tx.Tuple[int, str]],
+            tx.Optional[tx.Tuple[int, tx.Unpack[Ts]]],
+        )
+    ) == []
+    # A query whose shape does not match the slot captures nothing.
+    assert list(
+        typevartuple_captures(
+            tx.Tuple[str], tx.Tuple[int, tx.Unpack[Ts]]
+        )
+    ) == []
+    # A bare `tuple` query (no arguments) captures nothing.
+    assert list(
+        typevartuple_captures(tuple, tx.Tuple[int, tx.Unpack[Ts]])
+    ) == []
+    # A non-tuple query captures nothing.
+    assert list(
+        typevartuple_captures(int, tx.Tuple[int, tx.Unpack[Ts]])
+    ) == []
+
+
+def test_typevartuple_captures_with_a_suffix_slot() -> None:
+    from bagof.dispatchers._lattice import typevartuple_captures
+
+    Ts = tx.TypeVarTuple("Ts")
+    # Slot `Tuple[int, *Ts, bytes]`, query `Tuple[int, str, str, bytes]`: `Ts`
+    # captures the middle `(str, str)`.
+    captures = dict(
+        (id(t), run)
+        for t, run in typevartuple_captures(
+            tx.Tuple[int, str, str, bytes],
+            tx.Tuple[int, tx.Unpack[Ts], bytes],
+        )
+    )
+    assert captures[id(Ts)] == _run(str, str)
