@@ -1107,19 +1107,25 @@ def _typevar_partition(
 ) -> tx.Dict[tx.Any, tx.Any]:
     """Group each bound argument by the repeated `TypeVar` it landed in.
 
-    Returns a label per argument key, built from the same grouping
-    applicability solves over (`_iter_arguments`, so a
-    `#!python **kwargs`-absorbed argument does not group in v1). Two keys share
-    a label only when they landed in the *same* groupable
-    [`TypeVar`][typing.TypeVar]; a non-`TypeVar` argument gets a label unique
-    to its key, so it forms a block of its own. The labels are only ever
-    compared for equality, which is all the group tie-break needs.
+    Returns a label per argument key. Two keys share a label only when they
+    landed in the *same* [`TypeVar`][typing.TypeVar]; an argument on any other
+    hint gets a label unique to its key, so it forms a block of its own. The
+    labels are only ever compared for equality, which is all the group
+    tie-break needs.
+
+    A `#!python **kwargs: T` slot groups here: every keyword it captures lands
+    the same variable, so the tie-break reads them as one consistent-`T` block
+    and a `#!python **kwargs: T` method is more specific than one with an
+    untyped `#!python **kwargs`. Applicability solves `T` across those same
+    captured keywords too, exactly as it does for `#!python *args: T`.
     """
     labels = {}  # type: tx.Dict[tx.Any, tx.Any]
-    for key, hint, groupable in signature._iter_arguments(binding):
-        if groupable and isinstance(hint, tx.TypeVar):
+    for key, hint in signature._iter_arguments(binding):
+        if isinstance(hint, tx.TypeVar):
             # Identity, not the variable itself: two distinct `TypeVar`s that
-            # happen to be equal must land in different blocks.
+            # happen to be equal must land in different blocks. The
+            # `**kwargs`-absorbed keys land the signature's `**kwargs`
+            # variable, so they all share its block.
             labels[key] = id(hint)
         else:
             labels[key] = ("solo", key)
