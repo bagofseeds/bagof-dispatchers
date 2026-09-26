@@ -9,16 +9,21 @@ expected winner (or error), and the real
 [`Function`][bagof.dispatchers._function.Function] is asserted to agree -- and
 to agree regardless of the order the methods were registered in.
 
-The reference engine implements the §2.2 selection directly and positionally:
-per-argument applicability with ``ishintstance``; the specificity order with
-per-position ``issubhint``; then the documented tie-breaks (priority, then
-argument MRO -- with no cross-argument conflict allowed to be broken by MRO --
-then tightness, which is trivial here since every method has the same fixed
-arity). Incomparable maxima are ambiguous; no applicable method is a no-match.
+The reference engine implements the §2.2/§3 selection directly and
+positionally: per-argument applicability with ``ishintstance`` *and*
+repeated-``TypeVar`` consistency; the specificity order with per-position
+``issubhint``; then the documented tie-breaks (priority, then argument MRO --
+with no cross-argument conflict allowed to be broken by MRO -- then tightness,
+which is trivial here since every method has the same fixed arity, then the
+step that drops any method whose repeated-``TypeVar`` grouping is strictly
+refined by another's -- RFC 0001 §3). Incomparable
+maxima are ambiguous; no applicable method is a no-match.
 
 This catches the B2 cross-argument-conflict bug (an ``Exact[int]/object`` vs
 ``int/int`` pair that must stay ambiguous): on the pre-fix engine the harness
-fails, on the fixed engine it passes.
+fails, on the fixed engine it passes. It also exercises the Phase 7 group
+tie-break: the generated sweep includes repeated-``TypeVar`` signatures, and
+the oracle re-derives their grouping independently.
 """
 
 # stdlib
@@ -49,6 +54,42 @@ _ALPHABET = [
     Exact[int],
     tx.Literal[1],
 ]
+
+# Shared `TypeVar`s for the Phase 7 sweep. Reused by identity across positions,
+# so a variable named twice in a signature forms a repeated group -- the whole
+# point of the tie-break under test. `_TB` is bound to make sure a bounded
+# repeated variable is exercised too.
+_T = tx.TypeVar("_T")
+_U = tx.TypeVar("_U")
+_V = tx.TypeVar("_V")
+_TB = tx.TypeVar("_TB", bound=int)
+# Two more `int`-bound variables, distinct in identity from `_TB` and each
+# other. A pair of them forms an *independent* grouping whose per-position
+# hints are still `≡ int` -- so `(_TB, _TB)` can strictly refine `(_TB2, _TB3)`
+# with nothing but the grouping to separate them.
+_TB2 = tx.TypeVar("_TB2", bound=int)
+_TB3 = tx.TypeVar("_TB3", bound=int)
+
+# A second alphabet that mixes those `TypeVar`s with concrete classes, for the
+# repeated-`TypeVar` sweep. Kept small and class-only (no `Literal`/`Exact`) so
+# the grouping, not value-dependence, is what varies.
+_TYPEVAR_ALPHABET = [_T, _U, _V, _TB, object, int, bool]
+
+# A third alphabet, made only of `TypeVar`s and weighted to *repeated and
+# independent* ones, for a dedicated all-`TypeVar` family generator. `_T`/`_U`
+# recur across positions to build repeated groups, `_V` supplies a singleton,
+# and `_TB` a bound variable -- so many generated pairs land per-position-
+# equivalent hints (every unbound `TypeVar` reads `≡ Any`) that differ only in
+# their grouping, which is exactly the shape the §3 tie-break decides. Concrete
+# classes are left out: a concrete position would pin a hint and make the pair
+# separable by the sub-hint order instead, before the group step is reached.
+_TYPEVAR_FAMILY = [_T, _T, _U, _U, _V, _TB]
+
+# Calls for the family sweep. Mostly same-`int` values so a repeated `TypeVar`
+# stays consistent (and hence applicable) often enough for the grouping
+# refinement to fire, with a single non-`int` (`"x"`) so some calls instead
+# exclude a repeated `TypeVar` by inconsistency -- exercising both branches.
+_FAMILY_VALUES = [0, 1, True, 2, 3, "x"]
 
 # Concrete values to call with: enough to exercise every hint, including the
 # value-dependent ones (`Exact[int]` fires for `1`/`0` but not `True`;
@@ -105,15 +146,90 @@ def _equivalent(a: typing.Any, b: typing.Any) -> bool:
     return issubhint(a, b) and issubhint(b, a)
 
 
-def _reference_select(
-    specs: typing.List[_Spec], call: typing.Tuple[typing.Any, ...]
-) -> _Outcome:
-    """The §2.2 positional selection: ('method', tag) or a marker."""
-    applicable = [
-        spec
-        for spec in specs
-        if all(ishintstance(v, h) for v, h in zip(call, spec.hints))
+def _ref_solve(
+    classes: typing.List[typing.Any], typevar: typing.Any
+) -> typing.Any:
+    """Independently solve one repeated `TypeVar`, or return `None`.
+
+    Greatest-element for an unbound/bound variable, same-constraint for a
+    constrained one -- the RFC 0001 §3 rule, re-derived here rather than reused
+    from `_lattice`, so the oracle stays an independent check.
+    """
+    constraints = getattr(typevar, "__constraints__", ())
+    if constraints:
+        for constraint in constraints:
+            if all(issubhint(cls, constraint) for cls in classes):
+                return constraint
+        return None
+    for candidate in classes:
+        if all(issubhint(other, candidate) for other in classes):
+            return candidate
+    return None
+
+
+def _ref_applies(
+    spec: _Spec, call: typing.Tuple[typing.Any, ...]
+) -> bool:
+    """Applicability: each argument an instance, repeated `TypeVar`s solved."""
+    if not all(ishintstance(v, h) for v, h in zip(call, spec.hints)):
+        return False
+    groups = {}  # type: typing.Dict[int, typing.Tuple[typing.Any, list]]
+    for pos, hint in enumerate(spec.hints):
+        if isinstance(hint, tx.TypeVar):
+            groups.setdefault(id(hint), (hint, []))[1].append(type(call[pos]))
+    for typevar, classes in groups.values():
+        if _ref_solve(classes, typevar) is None:
+            return False
+    return True
+
+
+def _ref_labels(spec: _Spec) -> typing.List[typing.Any]:
+    """A per-position label: the `TypeVar` identity, or a unique marker."""
+    return [
+        id(hint) if isinstance(hint, tx.TypeVar) else ("solo", pos)
+        for pos, hint in enumerate(spec.hints)
     ]
+
+
+def _ref_group_refines(
+    more: _Spec, less: _Spec, call: typing.Tuple[typing.Any, ...]
+) -> bool:
+    """Whether `more`'s repeated `TypeVar`s strictly refine `less`'s (§3).
+
+    Position-wise equivalence, then a strictly coarser grouping: every pair
+    `less` ties `more` ties too, and `more` ties at least one pair `less`
+    leaves independent.
+    """
+    for hm, hl in zip(more.hints, less.hints):
+        if not _equivalent(hm, hl):
+            return False
+    lm, ll = _ref_labels(more), _ref_labels(less)
+    strict = False
+    for i in range(len(call)):
+        for j in range(i + 1, len(call)):
+            more_same = lm[i] == lm[j]
+            less_same = ll[i] == ll[j]
+            if less_same and not more_same:
+                return False
+            if more_same and not less_same:
+                strict = True
+    return strict
+
+
+def _reference_select(
+    specs: typing.List[_Spec],
+    call: typing.Tuple[typing.Any, ...],
+    group_step: bool = True,
+) -> _Outcome:
+    """The §2.2/§3 positional selection: ('method', tag) or a marker.
+
+    With `group_step` false the final repeated-`TypeVar` grouping-refinement
+    step of RFC 0001 §3 is left out -- a *group-blind* oracle. Comparing the
+    two answers tells whether a scenario was decided by that step: a scenario
+    the group-aware oracle resolves to a method but the group-blind oracle
+    calls ambiguous is one the §3 tie-break, and nothing earlier, settled.
+    """
+    applicable = [spec for spec in specs if _ref_applies(spec, call)]
     if not applicable:
         return ("none", None)
 
@@ -162,8 +278,23 @@ def _reference_select(
     ]
     if len(survivors) == 1:
         return ("method", survivors[0].tag)
+    if not group_step:
+        # The group-blind oracle stops here: without the §3 refinement, a tie
+        # this deep is ambiguous.
+        return ("ambiguous", None)
     # Tightness is trivial here (every method is the same fixed arity with no
-    # catch-alls or defaults), so nothing separates the survivors.
+    # catch-alls or defaults). The last tie-break is the repeated-`TypeVar`
+    # grouping refinement (RFC 0001 §3): drop any survivor whose `TypeVar`
+    # grouping is strictly refined by another's.
+    refined = [
+        a
+        for a in survivors
+        if not any(
+            b is not a and _ref_group_refines(b, a, call) for b in survivors
+        )
+    ]
+    if len(refined) == 1:
+        return ("method", refined[0].tag)
     return ("ambiguous", None)
 
 
@@ -206,9 +337,12 @@ def _real_outcome(
 
 
 def _scenarios(
-    count: int, seed: int
+    count: int,
+    seed: int,
+    alphabet: typing.Optional[typing.List[typing.Any]] = None,
 ) -> typing.Iterator[_Scenario]:
     """Deterministically generate `(specs, call)` scenarios."""
+    alphabet = _ALPHABET if alphabet is None else alphabet
     rng = random.Random(seed)
     made = 0
     while made < count:
@@ -217,7 +351,7 @@ def _scenarios(
         specs = []  # type: typing.List[_Spec]
         seen = set()  # dedupe identical spellings (which would replace)
         for _ in range(n_methods):
-            hints = tuple(rng.choice(_ALPHABET) for _ in range(arity))
+            hints = tuple(rng.choice(alphabet) for _ in range(arity))
             if hints in seen:
                 continue
             seen.add(hints)
@@ -225,6 +359,43 @@ def _scenarios(
         if len(specs) < 2:
             continue
         call = tuple(rng.choice(_VALUES) for _ in range(arity))
+        made += 1
+        yield specs, call
+
+
+def _typevar_family_scenarios(
+    count: int, seed: int
+) -> typing.Iterator[_Scenario]:
+    """Generate all-`TypeVar` `(specs, call)` scenarios biased to the §3 step.
+
+    Like [`_scenarios`][tests.test_reference_engine._scenarios] but drawing
+    hints from `_TYPEVAR_FAMILY` (weighted to repeated and independent
+    `TypeVar`s) and calls from `_FAMILY_VALUES` (biased to same-`int` values),
+    at arity 2-3. Many generated pairs therefore land per-position-equivalent
+    hints that differ only in their grouping -- the shape the §3 refinement
+    decides -- so the sweep exercises that step often, not incidentally.
+
+    Every method is given priority `0`: priority is the *first* tie-break, so a
+    difference there would settle a pair before the group step and this family
+    is here to reach the group step. Priority ordering is covered by the main
+    `_scenarios` sweep (which does vary it) and by dedicated tests.
+    """
+    rng = random.Random(seed)
+    made = 0
+    while made < count:
+        arity = rng.randint(2, 3)
+        n_methods = rng.randint(2, 4)
+        specs = []  # type: typing.List[_Spec]
+        seen = set()  # dedupe identical spellings (which would replace)
+        for _ in range(n_methods):
+            hints = tuple(rng.choice(_TYPEVAR_FAMILY) for _ in range(arity))
+            if hints in seen:
+                continue
+            seen.add(hints)
+            specs.append(_Spec(hints, 0, len(specs)))
+        if len(specs) < 2:
+            continue
+        call = tuple(rng.choice(_FAMILY_VALUES) for _ in range(arity))
         made += 1
         yield specs, call
 
@@ -316,3 +487,89 @@ def test_reference_engine_small_smoke(seed: int) -> None:
     """A quick independent smoke run at other seeds."""
     for specs, call in itertools.islice(_scenarios(120, seed), 120):
         assert _real_outcome(specs, call) == _reference_select(specs, call)
+
+
+# --- Phase 7: the repeated-TypeVar sweep -------------------------------
+
+
+def _typevar_adversarial_scenarios() -> typing.List[_Scenario]:
+    """Hand-picked repeated-`TypeVar` shapes the tie-break must get right."""
+    return [
+        # (T, T) beats (T, U) for a same-type call.
+        ([_Spec((_T, _T), 0, 0), _Spec((_T, _U), 0, 1)], (1, 2)),
+        # ...but a mixed call excludes (T, T) by consistency.
+        ([_Spec((_T, _T), 0, 0), _Spec((_T, _U), 0, 1)], (1, "x")),
+        # (T, U) vs (U, T): identical grouping, genuinely ambiguous.
+        ([_Spec((_T, _U), 0, 0), _Spec((_U, _T), 0, 1)], (1, 2)),
+        # Two groups beat three independents.
+        ([_Spec((_T, _T, _U), 0, 0), _Spec((_T, _U, _V), 0, 1)], (1, 2, 3)),
+        # Partial refinement: {0,1} vs {1,2}, incomparable, ambiguous.
+        ([_Spec((_T, _T, _U), 0, 0), _Spec((_T, _U, _U), 0, 1)], (1, 1, 1)),
+        # A repeated bound TypeVar against an *independent* pair of the same
+        # bound. Both positions read `≡ int`, so `_maximal` cannot separate
+        # them (the earlier `(_TB, _TB)`/`(_TB, _U)` shape was in fact decided
+        # there, `_TB ≡ int` being strictly below `_U ≡ Any` at position 1);
+        # here only the grouping differs, so the §3 tie-break is what decides.
+        ([_Spec((_TB, _TB), 0, 0), _Spec((_TB2, _TB3), 0, 1)], (1, 2)),
+        # (T, T) strictly refines two *independent* unbound TypeVars, which are
+        # the genuinely unannotated `(Any, Any)` (`object ≢ Any`, so a literal
+        # `(object, object)` would instead win at the sub-hint order and never
+        # reach this step). The group step decides.
+        ([_Spec((_T, _T), 0, 0), _Spec((_U, _V), 0, 1)], (1, 2)),
+    ]
+
+
+def test_reference_engine_typevar_sweep() -> None:
+    """The real engine matches the oracle over repeated-`TypeVar` shapes.
+
+    The oracle re-derives grouping, consistency and the §3 tie-break
+    independently, so agreement over the generated sweep (plus hand-picked
+    shapes) is a genuine cross-check of the Phase 7 selection, order-invariant.
+
+    A group-blind copy of the oracle (the §3 refinement left out) runs beside
+    the real one, and a scenario the group-aware oracle resolves to a method
+    while the group-blind one calls ambiguous is counted as *group-decided* --
+    settled by the §3 tie-break and nothing earlier. The dedicated all-
+    `TypeVar` family generator makes that the common case, and the test asserts
+    a floor on the count: the harness must be shown to actually exercise the
+    rule, not just the pre-existing steps. Engine and (group-aware) oracle must
+    still agree on every scenario, group-decided or not, and under every
+    registration order.
+    """
+    checked = 0
+    caught_ambiguous = 0
+    group_decided = 0
+    scenarios = itertools.chain(
+        _typevar_adversarial_scenarios(),
+        _scenarios(count=700, seed=20240720, alphabet=_TYPEVAR_ALPHABET),
+        _typevar_family_scenarios(count=700, seed=20240720),
+    )
+    for specs, call in scenarios:
+        expected = _reference_select(specs, call)
+        blind = _reference_select(specs, call, group_step=False)
+        if expected[0] == "ambiguous":
+            caught_ambiguous += 1
+        # Group-decided: the §3 step turned an otherwise-ambiguous tie into a
+        # single winner. The real engine must agree with the group-aware
+        # answer, so a wrongly-`group_step`ped engine fails here.
+        if expected[0] == "method" and blind[0] == "ambiguous":
+            group_decided += 1
+        assert _real_outcome(specs, call) == expected, (
+            [s.hints for s in specs],
+            call,
+            expected,
+        )
+        for permuted in _order_permutations(specs):
+            assert _real_outcome(permuted, call) == expected, (
+                [s.hints for s in permuted],
+                call,
+            )
+        checked += 1
+    assert checked >= 800
+    # Independent groupings (`(T, U)`/`(U, T)`) and partial refinements keep
+    # some scenarios genuinely ambiguous even with the tie-break in place.
+    assert caught_ambiguous > 0
+    # The §3 tie-break must be what decides a meaningful number of scenarios --
+    # otherwise the sweep would pass with the group step removed, and would not
+    # be a check of it at all.
+    assert group_decided >= 20

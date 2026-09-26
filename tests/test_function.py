@@ -741,6 +741,32 @@ def test_resolve_by_hint() -> None:
     assert f.resolve(str).name == "an_object"
 
 
+def test_resolve_applies_repeated_typevar_tiebreak() -> None:
+    """The repeated-`TypeVar` tie-break (§3) applies to `resolve` too.
+
+    It is a selection step, so it settles a hint-level `resolve` the same way
+    it settles a value call -- not only value dispatch. With the independent
+    `(T, U)` registered *before* the repeated `(T, T)`, a query of two equal
+    hints resolves to the strictly more specific `(T, T)`; a query of two
+    different hints, which `(T, T)` cannot solve, falls to `(T, U)`.
+    """
+    T, U = _typevar_pair()
+    f = Function("f")
+
+    def free(x: T, y: U) -> str:
+        return "free"
+
+    def same(x: T, y: T) -> str:
+        return "same"
+
+    f.register(free)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # the tie-break -> no ambiguity warning
+        f.register(same)
+    assert f.resolve(int, int).name == "same"
+    assert f.resolve(int, str).name == "free"
+
+
 def test_resolve_default_when_no_match() -> None:
     """`resolve(default=...)` returns the default rather than raising."""
     f = Function("f")
@@ -1107,9 +1133,10 @@ def test_distinct_typevars_are_both_kept() -> None:
     Both are equivalent to `(Any, Any)`, so `Signature.__eq__` (semantic
     equivalence) reports them equal; registration must instead compare the
     signatures *as written*, so the two coexist rather than one silently
-    replacing the other. Being equivalent yet distinct, they are also
-    guaranteed ambiguous, so registering the second warns about the ambiguity
-    (never about a replacement).
+    replacing the other. They are *not* ambiguous: the repeated-`TypeVar`
+    tie-break (RFC 0001 §3) makes `(T, T)` -- which ties both arguments to one
+    type -- strictly more specific than the independent `(T, U)`, so
+    registering the second warns about nothing.
     """
     T, U = _typevar_pair()
     f = Function("f")
@@ -1121,10 +1148,15 @@ def test_distinct_typevars_are_both_kept() -> None:
         return "free"
 
     f.register(same)
-    with pytest.warns(RuntimeWarning, match="ambiguous") as caught:
-        f.register(free)  # warns about ambiguity, not replacement
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # neither ambiguity nor replacement
+        f.register(free)
     assert len(f.methods) == 2  # both kept -- neither replaced the other
-    assert not any("replacing" in str(w.message) for w in caught)
+    assert f.ambiguities() == []
+    # The tie-break resolves the equal-argument call to the more specific `(T,
+    # T)`, and leaves the mixed-type call to the only method that applies.
+    assert f(1, 2) == "same"
+    assert f(1, "a") == "free"
 
 
 def test_bound_typevar_and_plain_are_both_kept() -> None:
@@ -1156,8 +1188,11 @@ def test_typevar_and_unannotated_are_both_kept() -> None:
     """`(x: T, y: T)` and an unannotated `(x, y)` are distinct spellings.
 
     Both reduce to `(Any, Any)`, so they are equivalent yet spelled
-    differently: both kept, and guaranteed ambiguous (a warning, never a
-    replacement).
+    differently: both kept, neither replacing the other. They are not
+    ambiguous either -- the repeated-`TypeVar` tie-break (RFC 0001 §3) makes
+    `(T, T)`, which ties both arguments to one type, strictly more specific
+    than the unconstrained pair, so registering the second warns about
+    nothing.
     """
     T, _ = _typevar_pair()
     f = Function("f")
@@ -1169,10 +1204,15 @@ def test_typevar_and_unannotated_are_both_kept() -> None:
         return "bare"
 
     f.register(repeated)
-    with pytest.warns(RuntimeWarning, match="ambiguous") as caught:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # neither ambiguity nor replacement
         f.register(bare)
     assert len(f.methods) == 2
-    assert not any("replacing" in str(w.message) for w in caught)
+    assert f.ambiguities() == []
+    # The equal-argument call goes to the more specific repeated `TypeVar`;
+    # a mixed-type call, which `(T, T)` rejects, falls to the bare method.
+    assert f(1, 2) == "repeated"
+    assert f(1, "a") == "bare"
 
 
 def test_identical_spelling_replaces_with_warning() -> None:
@@ -1205,9 +1245,9 @@ def test_distinct_typevar_spellings_are_order_independent() -> None:
     forwards = Function("f")
     backwards = Function("f")
     with warnings.catch_warnings():
-        # The equivalent-yet-distinct pair is ambiguous either way round; the
-        # point here is that both are kept regardless of order, so the
-        # ambiguity warning is not what is under test.
+        # The point here is only that both are kept regardless of order; any
+        # warning (there is none now the tie-break separates them) is not what
+        # is under test.
         warnings.simplefilter("ignore", RuntimeWarning)
         forwards.register(same)
         forwards.register(free)
@@ -1381,3 +1421,242 @@ def test_resolve_exact_still_prefers_exact_over_plain() -> None:
     _quiet_register(f, exact, plain)
     # Both applicable to an `int` query; Exact[int] is the leaf, so it wins.
     assert f.resolve(int).name == "exact"
+
+
+# --- Phase 7: repeated-TypeVar specificity tie-break (RFC 0001 §3) ------
+
+
+def test_repeated_typevar_beats_independent() -> None:
+    """`(T, T)` is more specific than `(T, U)`: a same-type call picks it.
+
+    The canonical Phase 7 case. `(T, T)` constrains both arguments to one
+    type; `(T, U)` leaves them independent. For a call whose arguments share a
+    type both apply, and the tie-break (RFC 0001 §3) resolves the otherwise
+    ambiguous pair to the more constrained `(T, T)`.
+    """
+    T = typing.TypeVar("T")
+    U = typing.TypeVar("U")
+    f = Function("f")
+
+    @f.register((T, T))
+    def same(x, y):  # noqa: ANN001, ANN202
+        return "same"
+
+    @f.register((T, U))
+    def indep(x, y):  # noqa: ANN001, ANN202
+        return "indep"
+
+    assert f(1, 2) == "same"  # same type -> the more specific (T, T)
+    assert f(1, "a") == "indep"  # mixed -> only (T, U) applies at all
+
+
+def test_repeated_typevar_registration_is_silent() -> None:
+    """Registering `(T, T)` then `(T, U)` warns about nothing.
+
+    The pair is separated by the tie-break, so it is neither guaranteed
+    ambiguous (no `RuntimeWarning`) nor listed by `ambiguities()`.
+    """
+    T = typing.TypeVar("T")
+    U = typing.TypeVar("U")
+    f = Function("f")
+
+    @f.register((T, T))
+    def same(x, y):  # noqa: ANN001, ANN202
+        return "same"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+
+        @f.register((T, U))
+        def indep(x, y):  # noqa: ANN001, ANN202
+            return "indep"
+
+    assert f.ambiguities() == []
+
+
+def test_mixed_type_call_excludes_repeated_typevar() -> None:
+    """`(T, T)` is inapplicable to a mixed call, so it never wins there.
+
+    The tie-break only ever chooses between *applicable* methods; consistency
+    removes `(T, T)` before selection when the arguments disagree.
+    """
+    T = typing.TypeVar("T")
+    U = typing.TypeVar("U")
+    f = Function("f")
+
+    @f.register((T, T))
+    def same(x, y):  # noqa: ANN001, ANN202
+        return "same"
+
+    @f.register((T, U))
+    def indep(x, y):  # noqa: ANN001, ANN202
+        return "indep"
+
+    assert f.dispatch(1, "a").name == "indep"
+
+
+def test_bound_repeated_typevar_beats_independent() -> None:
+    """A repeated bound `TypeVar` beats an independent one, all else equal.
+
+    Two `TypeVar(bound=int)` variables: `(T, T)` ties the arguments together,
+    `(T, U)` does not. Both read as `int` position-wise, so nothing but the
+    grouping separates them, and the tie-break picks the grouped one.
+    """
+    T = typing.TypeVar("T", bound=int)
+    U = typing.TypeVar("U", bound=int)
+    f = Function("f")
+
+    @f.register((T, T))
+    def same(x, y):  # noqa: ANN001, ANN202
+        return "same"
+
+    @f.register((T, U))
+    def indep(x, y):  # noqa: ANN001, ANN202
+        return "indep"
+
+    assert f(1, 2) == "same"
+    assert f.ambiguities() == []
+
+
+def test_repeated_typevar_beats_unannotated() -> None:
+    """`(T, T)` is more specific than a fully unannotated `(x, y)`.
+
+    An unannotated pair is `(Any, Any)` -- equivalent to `(T, U)` with two
+    distinct variables -- so it carries no grouping and `(T, T)` wins the
+    same-type call. (RFC 0001 §3 underspecifies this corner; the least
+    surprising reading, taken here, is that any repeated `TypeVar` group beats
+    a signature with none, since it constrains strictly more.)
+    """
+    T = typing.TypeVar("T")
+    f = Function("f")
+
+    @f.register((T, T))
+    def same(x, y):  # noqa: ANN001, ANN202
+        return "same"
+
+    def bare(x, y):  # noqa: ANN001, ANN202 -- unannotated -> (Any, Any)
+        return "bare"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        f.register(bare)
+
+    assert f(1, 2) == "same"
+    assert f.ambiguities() == []
+
+
+def test_two_groups_beat_three_independent() -> None:
+    """`(T, T, U)` (two groups) beats `(T, U, V)` (three independent).
+
+    Grouping two of the three arguments to one type is strictly more
+    constraint than grouping none, so the two-group signature wins.
+    """
+    T = typing.TypeVar("T")
+    U = typing.TypeVar("U")
+    V = typing.TypeVar("V")
+    f = Function("f")
+
+    @f.register((T, T, U))
+    def two(x, y, z):  # noqa: ANN001, ANN202
+        return "two"
+
+    @f.register((T, U, V))
+    def three(x, y, z):  # noqa: ANN001, ANN202
+        return "three"
+
+    assert f(1, 2, 3) == "two"
+    assert f.ambiguities() == []
+
+
+def test_swapped_independent_typevars_stay_ambiguous() -> None:
+    """`(T, U)` vs `(U, T)` is a genuine tie the tie-break must not resolve.
+
+    Both partitions are two singletons -- identical grouping -- so neither
+    refines the other. The pair stays ambiguous, warns at registration, and is
+    listed by `ambiguities()`.
+    """
+    T = typing.TypeVar("T")
+    U = typing.TypeVar("U")
+    f = Function("f")
+
+    @f.register((T, U))
+    def tu(x, y):  # noqa: ANN001, ANN202
+        return "tu"
+
+    with pytest.warns(RuntimeWarning, match="ambiguous"):
+
+        @f.register((U, T))
+        def ut(x, y):  # noqa: ANN001, ANN202
+            return "ut"
+
+    assert len(f.ambiguities()) == 1
+    with pytest.raises(AmbiguousMethodError):
+        f(1, 2)
+
+
+def test_partial_refinement_stays_ambiguous() -> None:
+    """`(T, T, U)` vs `(T, U, U)` is incomparable: neither grouping refines.
+
+    Each groups a pair the other leaves independent (`{0,1}` versus `{1,2}`),
+    so neither is a strict refinement and the pair stays ambiguous.
+    """
+    T = typing.TypeVar("T")
+    U = typing.TypeVar("U")
+    f = Function("f")
+
+    @f.register((T, T, U))
+    def left(x, y, z):  # noqa: ANN001, ANN202
+        return "left"
+
+    with pytest.warns(RuntimeWarning, match="ambiguous"):
+
+        @f.register((T, U, U))
+        def right(x, y, z):  # noqa: ANN001, ANN202
+            return "right"
+
+    assert len(f.ambiguities()) == 1
+    with pytest.raises(AmbiguousMethodError):
+        f(1, 1, 1)
+
+
+def test_repeated_typevar_does_not_override_strict_specificity() -> None:
+    """A repeated `TypeVar` never beats a strictly more specific method.
+
+    `(int, int)` is strictly more specific than `(T, T)` at both arguments, so
+    it wins outright -- the tie-break is reached only for an otherwise-tied
+    pair and never overturns a real specificity win.
+    """
+    T = typing.TypeVar("T")
+    f = Function("f")
+
+    @f.register((T, T))
+    def same(x, y):  # noqa: ANN001, ANN202
+        return "same"
+
+    @f.register((int, int))
+    def concrete(x, y):  # noqa: ANN001, ANN202
+        return "concrete"
+
+    assert f(1, 2) == "concrete"
+
+
+def test_repeated_typevar_tie_break_by_keyword() -> None:
+    """The tie-break holds when the same arguments arrive by keyword.
+
+    Grouping is over the arguments a repeated `TypeVar` lands, regardless of
+    positional or keyword spelling, so `(T, T)` wins the keyword call too.
+    """
+    T = typing.TypeVar("T")
+    U = typing.TypeVar("U")
+    f = Function("f")
+
+    @f.register((), {"x": T, "y": T})
+    def same(x, y):  # noqa: ANN001, ANN202
+        return "same"
+
+    @f.register((), {"x": T, "y": U})
+    def indep(x, y):  # noqa: ANN001, ANN202
+        return "indep"
+
+    assert f(x=1, y=2) == "same"
+    assert f(x=1, y="a") == "indep"
