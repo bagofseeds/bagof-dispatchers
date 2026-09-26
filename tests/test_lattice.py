@@ -88,6 +88,7 @@ CORPUS = [
     tx.Tuple[int],
     tx.Tuple[int, str],
     tx.Tuple[int, ...],
+    tx.Tuple[()],
     tuple,
     # variadic tuples (PEP 646): a `*Ts` run, its prefix/suffix variants, and
     # `Tuple[Any, ...]` which is equivalent to `Tuple[*Ts]`. The preorder /

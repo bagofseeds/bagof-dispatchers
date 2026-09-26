@@ -305,6 +305,48 @@ def test_empty_tuple_phantom_orders_below_a_run() -> None:
     assert issubhint(T[()], T[int, U[Ts]]) is False  # needs one element
 
 
+# --- Tuple[()] vs bare tuple, every interpreter (#36) -------------------
+
+# `Tuple[()]` is the empty-tuple type. Its arguments read as the phantom
+# `((),)` on 3.8-3.10 and as genuinely empty `()` on 3.11+; the empty form
+# used to be mistaken for a bare, unparametrised `Tuple`/`tuple`, so every
+# tuple hint was wrongly judged a sub-hint of `Tuple[()]`. These rows must
+# hold on every interpreter.
+EMPTY_TUPLE_TABLE = [
+    (T[int], T[()], False),        # a 1-tuple is not the empty tuple
+    (T[()], T[()], True),          # reflexive
+    (T[()], tuple, True),          # the empty tuple is a tuple
+    (T[()], T, True),              # ... and a sub-hint of bare `Tuple`
+    (tuple, T[()], False),         # a bare tuple may hold anything
+    (T, T[()], False),
+    (T[()], T[int], False),        # the empty tuple has no first element
+    (T[()], T[U[Ts]], True),       # a valid zero-length run
+    (T[()], T[int, ...], True),    # zero ints
+    (T[()], T[int, U[Ts]], False),  # needs one element
+]
+
+
+@pytest.mark.parametrize(
+    "hint,superhint,expected",
+    EMPTY_TUPLE_TABLE,
+    ids=[f"{h}<:{s}" for h, s, _ in EMPTY_TUPLE_TABLE],
+)
+def test_empty_tuple_relation(
+    hint: tx.Any, superhint: tx.Any, expected: bool
+) -> None:
+    assert issubhint(hint, superhint) is expected
+
+
+def test_bare_tuple_still_accepts_any_parametrisation() -> None:
+    # The fix must not disturb a bare `Tuple`/`tuple` superhint: it constrains
+    # nothing, so any tuple parametrisation is a sub-hint of it.
+    assert issubhint(T[int], T) is True
+    assert issubhint(T[int], tuple) is True
+    assert issubhint(T[int, str], tuple) is True
+    assert issubhint(T[int, ...], T) is True
+    assert issubhint(T[U[Ts]], tuple) is True
+
+
 # --- 3.11+ star syntax parity ------------------------------------------
 
 

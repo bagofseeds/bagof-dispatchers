@@ -179,6 +179,24 @@ def test_tuple_slot_and_star_args_solved_together() -> None:
     assert f.resolve(T[int, str, bytes], int, str, bytes).name == "m"
 
 
+def test_empty_tuple_slot_captures_the_empty_run() -> None:
+    # `Tuple[()]` at a `Tuple[*Ts]` slot must capture the *empty* run, not be
+    # skipped (issue #36): its empty arguments on 3.11+ once tripped the
+    # capture's early return, so `Ts` was left unconstrained there.
+    f = Function("f")
+
+    def m(t: T[U[Ts]], *args: U[Ts]) -> str:
+        return "m"
+
+    f.register(m)
+    # The tuple captures the empty run; one extra positional captures (int,) ->
+    # the runs disagree, so the call is rejected.
+    assert f.resolve(T[()], int, default=None) is None
+    # The tuple captures the empty run and there are no extras -> both empty ->
+    # consistent.
+    assert f.resolve(T[()]).name == "m"
+
+
 def test_star_args_ts_alone_accepts_any_positionals() -> None:
     f = Function("f")
 
