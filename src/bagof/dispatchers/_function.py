@@ -1116,20 +1116,16 @@ def _typevar_partition(
     A `#!python **kwargs: T` slot groups here: every keyword it captures lands
     the same variable, so the tie-break reads them as one consistent-`T` block
     and a `#!python **kwargs: T` method is more specific than one with an
-    untyped `#!python **kwargs`. This is grouping for *specificity* only --
-    applicability does not solve `T` across the captured keywords (each is
-    checked against the variable on its own), so a call whose keyword values
-    disagree still binds an unbound `#!python **kwargs: T`.
+    untyped `#!python **kwargs`. Applicability solves `T` across those same
+    captured keywords too, exactly as it does for `#!python *args: T`.
     """
     labels = {}  # type: tx.Dict[tx.Any, tx.Any]
-    for key, hint, _groupable in signature._iter_arguments(binding):
+    for key, hint in signature._iter_arguments(binding):
         if isinstance(hint, tx.TypeVar):
             # Identity, not the variable itself: two distinct `TypeVar`s that
             # happen to be equal must land in different blocks. The
             # `**kwargs`-absorbed keys land the signature's `**kwargs`
-            # variable, so they all share its block -- grouped for the
-            # tie-break even though applicability leaves them ungrouped
-            # (`_iter_arguments` marks them not groupable for that purpose).
+            # variable, so they all share its block.
             labels[key] = id(hint)
         else:
             labels[key] = ("solo", key)

@@ -214,8 +214,10 @@ compares the hints of the slots the *same argument* landed in — comparing
   `Any`). A `**kwargs: T` groups every keyword it captures into one block for
   the §3 grouping tie-break (**Implemented**, Phase 8d), so a `**kwargs: T`
   method is more specific than one with an untyped `**kwargs`; applicability
-  does not solve `T` across those keywords (each is checked against `T` on its
-  own), so an unbound `**kwargs: T` still binds keywords whose values disagree.
+  solves `T` *jointly* over those keywords together with every other slot
+  carrying `T`, exactly as `*args: T` does over the positionals it absorbs.
+  The greatest-element rule applies, so `f(a=1, b=True)` matches with `T = int`
+  while `f(a=1, b="x")` has no consistent `T` and does not.
   `Unpack[TD]` on `**kwargs` is treated as unannotated (§11).
 
 **Selection.** `Max` = applicable methods with no strictly more specific one
@@ -314,11 +316,11 @@ classes must have a **greatest element** under `⊑` (`(int, bool)` solves
 `T = int`; `(int, str)` is not applicable — a join to `object` would collapse
 `(T, T)` to `(bound, bound)`). Constrained `T`: all solve to the *same*
 constraint. A default-filled parameter annotated `T` contributes nothing (it is
-not an argument). A `**kwargs: T` does not solve `T` for *applicability* — each
-captured keyword is checked against `T` on its own, never jointly — but its
-captured keywords do form one group for the specificity tie-break below
-(Phase 8d). This is the Pythonic middle between Julia's strict diagonal and
-mypy's join.
+not an argument). A `**kwargs: T` solves `T` for *applicability* jointly, over
+its captured keywords together with every other slot carrying `T` — the same
+greatest-element solve `*args: T` gets — and those keywords also form one group
+for the specificity tie-break below (Phase 8d). This is the Pythonic middle
+between Julia's strict diagonal and mypy's join.
 
 **Specificity with TypeVars.** Position-wise a TypeVar is replaced by its table
 entry, so `(int, int) < (T, T) ≡ (Any, Any)`. One tie-break inside `≡`: when
@@ -921,11 +923,12 @@ the siblings already do) before the core-magic shim PR merges.
 - **Phase 8 (v2).** TypedDict shape matching, introduced in `_lattice.py`
   under an explicit, accurate name, and flipping TypedDict to value-dependent
   (+ the separate owner decision on `ishintstance`/validators); full
-  `TypeVarTuple`/`ParamSpec` solving & ordering; per-keyword TypeVar solving
+  `TypeVarTuple`/`ParamSpec` solving & ordering; joint TypeVar solving
   through `**kwargs: T` (**landed**, Phase 8d: the captured keywords group for
-  the §3 grouping tie-break, so `**kwargs: T` beats an untyped `**kwargs`;
-  applicability is unchanged — each keyword is still checked against `T` alone,
-  covered by `tests/test_function.py`); `Callable` deep element check;
+  the §3 grouping tie-break, so `**kwargs: T` beats an untyped `**kwargs`, and
+  applicability solves `T` jointly over those keywords with every other slot
+  carrying `T`, mirroring `*args: T`, covered by `tests/test_function.py`);
+  `Callable` deep element check;
   `DeprecationWarning` `__getattr__` in core-magic; the `_polymorph` →
   `Function` migration (§8.4).
 

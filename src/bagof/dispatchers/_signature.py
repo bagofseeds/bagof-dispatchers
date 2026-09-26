@@ -696,11 +696,11 @@ class Signature:
         if binding is None:
             return False
         groups = {}  # type: tx.Dict[int, tx.Tuple[tx.Any, tx.List[tx.Any]]]
-        for key, hint, groupable in self._iter_arguments(binding):
+        for key, hint in self._iter_arguments(binding):
             value = args[key] if isinstance(key, int) else kwargs[key]
             if not ishintstance(value, hint):
                 return False
-            if groupable and isinstance(hint, tx.TypeVar):
+            if isinstance(hint, tx.TypeVar):
                 groups.setdefault(id(hint), (hint, []))[1].append(type(value))
         for hint, classes in groups.values():
             if not typevar_consistent(classes, hint):
@@ -729,11 +729,11 @@ class Signature:
         if binding is None:
             return False
         groups = {}  # type: tx.Dict[int, tx.Tuple[tx.Any, tx.List[tx.Any]]]
-        for key, hint, groupable in self._iter_arguments(binding):
+        for key, hint in self._iter_arguments(binding):
             query = hints[key] if isinstance(key, int) else named_hints[key]
             if not _hint_query_accepts(query, hint):
                 return False
-            if groupable and isinstance(hint, tx.TypeVar):
+            if isinstance(hint, tx.TypeVar):
                 groups.setdefault(id(hint), (hint, []))[1].append(query)
         for hint, classes in groups.values():
             if not typevar_consistent(classes, hint):
@@ -742,19 +742,20 @@ class Signature:
 
     def _iter_arguments(
         self, binding: Binding
-    ) -> tx.Iterator[tx.Tuple[tx.Any, tx.Any, bool]]:
-        """Yield `(key, landed hint, groupable)` for each bound argument.
+    ) -> tx.Iterator[tx.Tuple[tx.Any, tx.Any]]:
+        """Yield `(key, landed hint)` for each bound argument.
 
-        `groupable` is false for an argument absorbed by `#!python **kwargs`,
-        which does not take part in repeated-`TypeVar` solving in v1.
+        Every keyword captured by a `#!python **kwargs: T` lands the one
+        variable, so all of them take part in the same repeated-`TypeVar`
+        solve as `#!python *args: T` and the named slots.
         """
         for key, landed in binding.slots.items():
             if landed is _VAR_POSITIONAL:
-                yield key, self._catch_all_hint(self._varargs), True
+                yield key, self._catch_all_hint(self._varargs)
             elif landed is _VAR_KEYWORD:
-                yield key, self._catch_all_hint(self._varkw), False
+                yield key, self._catch_all_hint(self._varkw)
             else:
-                yield key, self._parameters[landed].hint, True
+                yield key, self._parameters[landed].hint
 
     @staticmethod
     def _catch_all_hint(hint: tx.Any) -> tx.Any:
