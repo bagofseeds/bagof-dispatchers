@@ -345,6 +345,18 @@ def test_overlay_star_args_unpack_is_accepted() -> None:
     assert f.methods[0].signature.varargs == U[Ts]
 
 
+def test_overlay_bare_typevartuple_on_star_args_is_rejected() -> None:
+    # A bare TypeVarTuple on `*args` (no unpack) is refused on the overlay
+    # path too, matching the decorator/deferred paths.
+    f = Function("f")
+
+    def impl(*args) -> str:  # noqa: ANN002
+        return "impl"
+
+    with pytest.raises(TypeError):
+        f.register({"args": Ts})(impl)
+
+
 def test_deferred_typevartuple_parameter_is_rejected() -> None:
     # A forward reference that only resolves to a `TypeVarTuple` on first use
     # is refused there, the same as one written outright.

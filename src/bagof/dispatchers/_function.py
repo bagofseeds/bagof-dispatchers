@@ -1456,6 +1456,10 @@ def _overlay(
         allow_variadic = name in (varargs_name, varkw_name)
         checked = _overlay_hint(fn, name, hint, allow_variadic)
         if name == varargs_name:
+            # A bare TypeVarTuple on `*args` describes nothing on its own;
+            # refuse it here as the decorator path does, pointing at
+            # `*args: Unpack[Ts]`.
+            _reject_variadic_param(name, checked, fn, catch_all=True)
             varargs_hint = _catch_all_or_any(checked)
         elif name == varkw_name:
             varkw_hint = _catch_all_or_any(checked)
