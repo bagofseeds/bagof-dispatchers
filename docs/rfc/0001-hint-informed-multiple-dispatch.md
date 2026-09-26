@@ -211,8 +211,12 @@ compares the hints of the slots the *same argument* landed in — comparing
 - **Extra keywords / `**kwargs: T`**: a keyword naming no declared parameter
   binds to `**kwargs` (or makes the method inapplicable); it is checked against
   `h_**` when annotated and enters specificity through `hint_S(a)` (= `h_**` or
-  `Any`). No per-keyword TypeVar solving through `**kwargs: T` in v1; `Unpack[TD]`
-  on `**kwargs` is treated as unannotated (§11).
+  `Any`). A `**kwargs: T` groups every keyword it captures into one block for
+  the §3 grouping tie-break (**Implemented**, Phase 8d), so a `**kwargs: T`
+  method is more specific than one with an untyped `**kwargs`; applicability
+  does not solve `T` across those keywords (each is checked against `T` on its
+  own), so an unbound `**kwargs: T` still binds keywords whose values disagree.
+  `Unpack[TD]` on `**kwargs` is treated as unannotated (§11).
 
 **Selection.** `Max` = applicable methods with no strictly more specific one
 under `⊑_C`. Then, in order, drop members strictly dominated under:
@@ -310,8 +314,11 @@ classes must have a **greatest element** under `⊑` (`(int, bool)` solves
 `T = int`; `(int, str)` is not applicable — a join to `object` would collapse
 `(T, T)` to `(bound, bound)`). Constrained `T`: all solve to the *same*
 constraint. A default-filled parameter annotated `T` contributes nothing (it is
-not an argument); `**kwargs: T` does not solve `T` in v1. This is the Pythonic
-middle between Julia's strict diagonal and mypy's join.
+not an argument). A `**kwargs: T` does not solve `T` for *applicability* — each
+captured keyword is checked against `T` on its own, never jointly — but its
+captured keywords do form one group for the specificity tie-break below
+(Phase 8d). This is the Pythonic middle between Julia's strict diagonal and
+mypy's join.
 
 **Specificity with TypeVars.** Position-wise a TypeVar is replaced by its table
 entry, so `(int, int) < (T, T) ≡ (Any, Any)`. One tie-break inside `≡`: when
@@ -334,7 +341,9 @@ constraint = more specific" where §3 was otherwise silent. A group of one
 constrains nothing, so refinement needs a `TypeVar` bound at **two or more**
 positions of the call: `*args: T` vs `*args` refines (and so resolves) for a
 call of 2+ arguments, but ties into a single-element group — and is therefore
-ambiguous — for 0 or 1 argument.
+ambiguous — for 0 or 1 argument. `**kwargs: T` vs `**kwargs` behaves the same
+way over the keywords a call spills into the catch-all (Phase 8d): it refines
+for 2+ captured keywords and ties for 0 or 1.
 
 **Hint-level `resolve` with TypeVars in the query** uses `issubhint` unchanged.
 
@@ -913,8 +922,12 @@ the siblings already do) before the core-magic shim PR merges.
   under an explicit, accurate name, and flipping TypedDict to value-dependent
   (+ the separate owner decision on `ishintstance`/validators); full
   `TypeVarTuple`/`ParamSpec` solving & ordering; per-keyword TypeVar solving
-  through `**kwargs: T`; `Callable` deep element check; `DeprecationWarning`
-  `__getattr__` in core-magic; the `_polymorph` → `Function` migration (§8.4).
+  through `**kwargs: T` (**landed**, Phase 8d: the captured keywords group for
+  the §3 grouping tie-break, so `**kwargs: T` beats an untyped `**kwargs`;
+  applicability is unchanged — each keyword is still checked against `T` alone,
+  covered by `tests/test_function.py`); `Callable` deep element check;
+  `DeprecationWarning` `__getattr__` in core-magic; the `_polymorph` →
+  `Function` migration (§8.4).
 
 Non-goals (stated in the README): `invoke`/`next_method` fall-through,
 return-type dispatch, dispatch on keyword-only parameters, static overload

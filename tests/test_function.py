@@ -1684,3 +1684,170 @@ def test_repeated_typevar_tie_break_by_keyword() -> None:
 
     assert f(x=1, y=2) == "same"
     assert f(x=1, y="a") == "indep"
+
+
+# --- Phase 8 (d): per-keyword TypeVar solving through **kwargs: T ------
+
+
+def test_kwargs_typevar_groups_beat_untyped() -> None:
+    """`**kwargs: T` beats an untyped `**kwargs` for a multi-keyword call.
+
+    Every keyword a `**kwargs: T` captures lands the one variable, so the
+    grouping tie-break (RFC 0001 §3) reads them as a single consistent-`T`
+    block -- more constrained than the untyped `**kwargs`, whose captured
+    keywords each stand alone. For a call with two surplus keywords the two
+    are otherwise equally specific, so the tie-break picks the typed one.
+    """
+    T = typing.TypeVar("T")
+    f = Function("f")
+
+    def typed(**rest):  # noqa: ANN003, ANN202
+        return "typed"
+
+    def plain(**rest):  # noqa: ANN003, ANN202
+        return "plain"
+
+    with warnings.catch_warnings():
+        # The two are genuinely ambiguous for a no-keyword call (nothing is
+        # captured to group), so registration warns; that is not what is under
+        # test here.
+        warnings.simplefilter("ignore", RuntimeWarning)
+        f.register({"rest": T})(typed)
+        f.register(plain)
+
+    assert f(a=1, b=2) == "typed"
+
+
+def test_kwargs_typevar_single_keyword_stays_ambiguous() -> None:
+    """One captured keyword makes a group of one, which refines nothing.
+
+    A single keyword lands a block of one, so `**kwargs: T` groups no more
+    than an untyped `**kwargs` and the pair stays ambiguous -- the same rule
+    that leaves `*args: T` ambiguous for a one-argument call (RFC 0001 §3).
+    """
+    T = typing.TypeVar("T")
+    f = Function("f")
+
+    def typed(**rest):  # noqa: ANN003, ANN202
+        return "typed"
+
+    def plain(**rest):  # noqa: ANN003, ANN202
+        return "plain"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        f.register({"rest": T})(typed)
+        f.register(plain)
+
+    with pytest.raises(AmbiguousMethodError):
+        f(a=1)
+
+
+def test_kwargs_unbound_typevar_binds_mixed_values() -> None:
+    """An unbound `**kwargs: T` still binds keywords of disagreeing types.
+
+    Grouping through `**kwargs: T` is for specificity only; applicability does
+    not solve `T` across the captured keywords. An unbound variable accepts
+    any value, so a call whose keyword values disagree still matches.
+    """
+    T = typing.TypeVar("T")
+    f = Function("f")
+
+    def only(**rest):  # noqa: ANN003, ANN202
+        return "only"
+
+    f.register({"rest": T})(only)
+
+    assert f(a=1, b="x") == "only"
+
+
+def test_kwargs_bound_typevar_checks_each_value() -> None:
+    """A bounded `**kwargs: T` requires every captured keyword to fit.
+
+    Each keyword is checked against the variable on its own, so a value
+    outside the bound makes the method inapplicable -- no consistency solve is
+    needed for that.
+    """
+    T = typing.TypeVar("T", bound=int)
+    f = Function("f")
+
+    def only(**rest):  # noqa: ANN003, ANN202
+        return "only"
+
+    f.register({"rest": T})(only)
+
+    assert f(a=1, b=2) == "only"
+    with pytest.raises(NoMethodError):
+        f(a=1, b="x")
+
+
+def test_kwargs_typevar_grouping_not_flagged_ambiguous() -> None:
+    """A multi-keyword call resolves, so dispatch picks the typed method.
+
+    The tie-break separates `**kwargs: T` from an untyped `**kwargs` wherever
+    two or more keywords are captured, matching the positional repeated-
+    `TypeVar` behaviour.
+    """
+    T = typing.TypeVar("T")
+    f = Function("f")
+
+    def typed(x, **rest):  # noqa: ANN001, ANN003, ANN202
+        return "typed"
+
+    def plain(x, **rest):  # noqa: ANN001, ANN003, ANN202
+        return "plain"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        f.register({"rest": T})(typed)
+        f.register(plain)
+
+    assert f.dispatch(1, a=2, b=3).name == "typed"
+
+
+def test_kwargs_typevar_groups_in_resolve() -> None:
+    """The hint-level `resolve` groups `**kwargs: T` the same way.
+
+    Selection by hint uses the identical grouping, so a query with two surplus
+    keywords resolves to the `**kwargs: T` method.
+    """
+    T = typing.TypeVar("T")
+    f = Function("f")
+
+    def typed(**rest):  # noqa: ANN003, ANN202
+        return "typed"
+
+    def plain(**rest):  # noqa: ANN003, ANN202
+        return "plain"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        f.register({"rest": T})(typed)
+        f.register(plain)
+
+    assert f.resolve(a=int, b=str).name == "typed"
+
+
+def test_kwargs_typevar_does_not_override_strict_specificity() -> None:
+    """A concrete `**kwargs: int` beats a grouped `**kwargs: T`.
+
+    The grouping tie-break is reached only when the landed hints are
+    equivalent. `**kwargs: int` is strictly more specific than an unbound
+    `**kwargs: T`, so it wins outright and the grouping never overturns it --
+    the `**kwargs` twin of the positional `(int, int)` over `(T, T)`.
+    """
+    T = typing.TypeVar("T")
+    f = Function("f")
+
+    def grouped(**rest):  # noqa: ANN003, ANN202
+        return "grouped"
+
+    def concrete(**rest):  # noqa: ANN003, ANN202
+        return "concrete"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        f.register({"rest": T})(grouped)
+        f.register({"rest": int})(concrete)
+
+    assert f(a=1, b=2) == "concrete"
