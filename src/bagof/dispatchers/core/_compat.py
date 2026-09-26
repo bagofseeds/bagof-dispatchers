@@ -75,6 +75,12 @@ _LITERAL_FORMS = spellings("Literal")
 _ANNOTATED_FORMS = spellings("Annotated")
 _OPTIONAL_FORMS = spellings("Optional")
 
+# Every spelling of `Unpack`. On 3.11 `typing.Unpack is not tx.Unpack`, and the
+# star syntax `Tuple[int, *Ts]` yields `typing.Unpack[Ts]` while the
+# `tx.Unpack[Ts]` spelling yields the `typing_extensions` one, so an identity
+# check must accept both.
+_UNPACK_FORMS = spellings("Unpack")
+
 _SPECIAL_FORMS = (
     _ANY_FORMS
     + _OPTIONAL_FORMS

@@ -9,6 +9,7 @@ import typing_extensions as tx
 
 # local
 from ._compat import (
+    _UNPACK_FORMS,
     UNION_TYPES,
     UnknownHintWarning,
     is_plausible_hint,
@@ -67,11 +68,32 @@ def _is_never(hint: tx.Any) -> bool:
     return any(hint is form for form in _NEVER_FORMS)
 
 
+def _is_unpack(hint: tx.Any) -> bool:
+    """Whether `hint` is an `Unpack[...]`, in any spelling.
+
+    On 3.11 `typing.Unpack is not typing_extensions.Unpack`, and the star
+    syntax `Tuple[int, *Ts]` and `tx.Unpack[Ts]` produce the two different
+    spellings -- so the origin is tested against both.
+    """
+    return any(safe_get_origin(hint) is form for form in _UNPACK_FORMS)
+
+
+def _is_unpacked_typevartuple(hint: tx.Any) -> bool:
+    """Whether `hint` is `Unpack[Ts]` for a `TypeVarTuple` `Ts`."""
+    if not _is_unpack(hint):
+        return False
+    args = tx.get_args(hint)
+    return bool(args) and isinstance(args[0], tx.TypeVarTuple)
+
+
 def _known_form(hint: tx.Any) -> tx.Any:
     """Map a known non-class form to the class it dispatches as.
 
     `LiteralString` dispatches as [`str`][], and `TypeGuard[...]` /
-    `TypeIs[...]` as [`bool`][]. Every other hint is returned unchanged.
+    `TypeIs[...]` as [`bool`][]. An unpacked `TypeVarTuple` (`*Ts`) is an open
+    run of `Any` elements, so on its own -- an `*args: *Ts` tail read as a
+    single slot -- it dispatches as [`Any`][typing.Any]. Every other hint is
+    returned unchanged.
     """
     if any(hint is form for form in _LITERALSTRING_FORMS):
         return str
@@ -80,6 +102,8 @@ def _known_form(hint: tx.Any) -> tx.Any:
     origin = safe_get_origin(hint)
     if any(origin is form for form in _TYPEGUARD_FORMS):
         return bool
+    if _is_unpacked_typevartuple(hint):
+        return tx.Any
     return hint
 
 
@@ -557,27 +581,15 @@ def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
 def _issubargs(
     args: tx.Tuple[tx.Any, ...], superargs: tx.Tuple[tx.Any, ...]
 ) -> bool:
-    """Check a hint's arguments against a superhint's, covariantly."""
-    # A trailing ellipsis (`Tuple[int, ...]`, `Callable[..., int]`) means
-    # "any number of these", so it does not line up positionally.
-    if Ellipsis in superargs or Ellipsis in args:
-        if Ellipsis not in superargs:
-            return False
-        if Ellipsis not in args:
-            # Every argument must satisfy the repeated one.
-            head = tuple(a for a in superargs if a is not Ellipsis)
-            return len(head) == 1 and all(
-                issubhint(arg, head[0]) for arg in args
-            )
-        args = tuple(a for a in args if a is not Ellipsis)
-        superargs = tuple(a for a in superargs if a is not Ellipsis)
+    """Check a hint's arguments against a superhint's, covariantly.
 
-    if len(args) != len(superargs):
-        return False
-
-    return all(
-        issubhint(arg, superarg) for arg, superarg in zip(args, superargs)
-    )
+    The arguments are read as tuple *shapes* (a fixed prefix, an optional open
+    run, a fixed suffix) so a trailing ellipsis (`Tuple[int, ...]`) and an
+    unpacked `TypeVarTuple` (`Tuple[int, *Ts]`) are ordered the same way. A
+    plain, fully fixed argument list (`List[int]`, `Dict[str, int]`) is a
+    closed shape, so it is compared element by element as before.
+    """
+    return _issubtupleshape(_tuple_shape(args), _tuple_shape(superargs))
 
 
 def _issubnone(hint: tx.Any, superhint: tx.Any) -> bool:
@@ -884,3 +896,169 @@ def _match_params(
 def _issubparams(sub: _ParamShape, sup: _ParamShape) -> bool:
     """Whether one parameter-list shape stands in for another (RFC 11.1)."""
     return _match_params(sub, sup) is not None
+
+
+class _TupleShape(tx.NamedTuple):
+    """A tuple's arguments as a shape (RFC 0001 §11.1, PEP 646).
+
+    A tuple is a fixed, front-aligned `prefix`, an optional open middle run,
+    and a fixed, back-aligned `suffix`. The middle run is:
+
+    * `#!python None` in `rep` -- a **closed** (fixed-arity) tuple, e.g.
+      `Tuple[int, str]`;
+    * otherwise `rep` is the element upper bound of the run -- an **open**
+      tuple, `Tuple[int, ...]` (bound `int`) or `Tuple[int, *Ts]` (bound
+      `Any`).
+
+    `var` is the `TypeVarTuple` an `*Ts` run stands for, or `#!python None`.
+    All fixed positions are covariant; an open run tops the tuples of its
+    shape, as `Tuple[int, ...]` tops the fixed-length tuples beginning `int`.
+    """
+
+    prefix: tx.Tuple[tx.Any, ...]
+    rep: tx.Any
+    suffix: tx.Tuple[tx.Any, ...]
+    var: tx.Any
+
+
+# The sentinel `_match_tuple` returns when a closed super matches: nothing is
+# captured, but the result must be non-`None` to signal the match.
+_CLOSED_TUPLE_MATCH = _TupleShape((), None, (), None)
+
+
+def _tuple_shape(args: tx.Tuple[tx.Any, ...]) -> _TupleShape:
+    """Classify a tuple's arguments into a `_TupleShape`.
+
+    `Tuple[()]` on 3.8-3.10 reports its arguments as the phantom `#!python
+    ((),)`; it is normalised here to no elements (the empty-tuple bug #36 is
+    tracked separately and untouched). A second open run in one tuple is
+    refused (PEP 646 allows a single unpack; `typing` does not enforce it at
+    runtime, so the relation does).
+    """
+    if args == ((),):
+        # The 3.8-3.10 `Tuple[()]` phantom: a single empty-tuple element that
+        # means "no elements", not a one-element tuple whose element is `()`.
+        args = ()
+    prefix = []  # type: tx.List[tx.Any]
+    suffix = []  # type: tx.List[tx.Any]
+    rep = None  # type: tx.Any
+    var = None  # type: tx.Any
+    open_seen = False
+    index = 0
+    while index < len(args):
+        element = args[index]
+        if element is Ellipsis:
+            # `Tuple[X, ...]`: the preceding single element is the open run's
+            # upper bound.
+            if open_seen or not prefix:
+                raise TypeError(
+                    "a tuple may hold at most one open run of elements "
+                    "(`...` or `*Ts`)"
+                )
+            rep = prefix.pop()
+            open_seen = True
+            index += 1
+            continue
+        if _is_unpack(element):
+            if open_seen:
+                raise TypeError(
+                    "a tuple may hold at most one open run of elements "
+                    "(`...` or `*Ts`)"
+                )
+            inner = tx.get_args(element)[0] if tx.get_args(element) else None
+            if isinstance(inner, tx.TypeVarTuple):
+                rep = tx.Any
+                var = inner
+                open_seen = True
+            elif safe_get_origin(inner) is tuple:
+                # `Tuple[int, *Tuple[str, int]]` / `Tuple[*Tuple[str, ...]]`:
+                # splice the unpacked tuple's own shape in.
+                spliced = _tuple_shape(tx.get_args(inner))
+                if spliced.rep is None:
+                    # A fixed unpacked tuple flattens into the prefix.
+                    prefix.extend(spliced.prefix)
+                else:
+                    prefix.extend(spliced.prefix)
+                    rep = spliced.rep
+                    var = spliced.var
+                    suffix.extend(spliced.suffix)
+                    open_seen = True
+            else:
+                # An unpacked something the relation does not model: treat its
+                # run as `Any`, and report the form once.
+                _warn_unknown(element)
+                rep = tx.Any
+                open_seen = True
+            index += 1
+            continue
+        (suffix if open_seen else prefix).append(element)
+        index += 1
+    return _TupleShape(tuple(prefix), rep, tuple(suffix), var)
+
+
+def _match_tuple(
+    sub: _TupleShape, sup: _TupleShape
+) -> tx.Optional[_TupleShape]:
+    """Match one tuple shape against another, covariantly (the tuple twin of
+    `_match_params`).
+
+    Returns the shape a `*Ts` in `sup` would capture from `sub` (the run `sub`
+    supplies beyond `sup`'s fixed prefix and suffix), a sentinel closed shape
+    when `sup` is closed and matches, or `#!python None` on no match. Every
+    fixed position is compared covariantly (`issubhint(sub_i, sup_i)`).
+    """
+    sub_open = sub.rep is not None
+    sup_open = sup.rep is not None
+    if not sup_open:
+        # A closed super accepts exactly its own arity.
+        if sub_open or len(sub.prefix) != len(sup.prefix):
+            return None
+        for element, superel in zip(sub.prefix, sup.prefix):
+            if not issubhint(element, superel):
+                return None
+        return _CLOSED_TUPLE_MATCH
+    p2, r2, q2 = sup.prefix, sup.rep, sup.suffix
+    if not sub_open:
+        # A closed sub against an open super: it must supply the whole fixed
+        # prefix and suffix, and its middle elements must satisfy the run.
+        elements = sub.prefix
+        if len(elements) < len(p2) + len(q2):
+            return None
+        for i in range(len(p2)):
+            if not issubhint(elements[i], p2[i]):
+                return None
+        for j in range(1, len(q2) + 1):
+            if not issubhint(elements[-j], q2[-j]):
+                return None
+        middle = elements[len(p2): len(elements) - len(q2)]
+        for element in middle:
+            if not issubhint(element, r2):
+                return None
+        return _TupleShape(tuple(middle), None, (), None)
+    # Both open: the sub's fixed prefix/suffix must cover the super's, its
+    # extra fixed elements must satisfy the super's run, and `r1 <= r2` holds.
+    p1, r1, q1 = sub.prefix, sub.rep, sub.suffix
+    if len(p1) < len(p2) or len(q1) < len(q2):
+        return None
+    for i in range(len(p2)):
+        if not issubhint(p1[i], p2[i]):
+            return None
+    for extra in p1[len(p2):]:
+        if not issubhint(extra, r2):
+            return None
+    if not issubhint(r1, r2):
+        return None
+    for j in range(1, len(q2) + 1):
+        if not issubhint(q1[-j], q2[-j]):
+            return None
+    for extra in q1[: len(q1) - len(q2)]:
+        if not issubhint(extra, r2):
+            return None
+    return _TupleShape(
+        tuple(p1[len(p2):]), r1, tuple(q1[: len(q1) - len(q2)]), None
+    )
+
+
+def _issubtupleshape(sub: _TupleShape, sup: _TupleShape) -> bool:
+    """Whether one tuple shape stands in for another."""
+    return _match_tuple(sub, sup) is not None
