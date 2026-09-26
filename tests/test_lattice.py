@@ -318,14 +318,35 @@ def test_value_dependent_hints(hint: tx.Any) -> None:
     assert is_value_dependent(hint) is True
 
 
-def test_a_typeddict_is_type_dependent_in_v1() -> None:
-    # v1's value-level TypedDict check is type-only, so it does not key on the
-    # value. This flips to True when the v2 shape check lands.
+def test_a_concrete_typeddict_is_value_dependent() -> None:
+    # A concrete TypedDict dispatches on the mapping's shape, so the call
+    # cache must carry the value at a TypedDict-typed argument.
     class Movie(tx.TypedDict):
         title: str
         year: int
 
-    assert is_value_dependent(Movie) is False
+    assert is_value_dependent(Movie) is True
+
+
+def test_the_bare_typeddict_marker_is_type_dependent() -> None:
+    # The bare marker names no fields, so its value-level check is type-only
+    # (a plain dict is not a TypedDict) and the value adds nothing.
+    assert is_value_dependent(tx.TypedDict) is False
+
+
+def test_a_parametrised_generic_typeddict_is_value_dependent() -> None:
+    # A generic `TypedDict` subscripted with a type argument (`GTD[int]`) is a
+    # typing alias, not a `TypedDict` class -- so the classifier must read its
+    # origin, not the alias, to see the shape it dispatches on. Missing this
+    # keys the argument by type only while dispatch reads the shape.
+    T = tx.TypeVar("T")
+
+    class GTD(tx.TypedDict, typing.Generic[T]):
+        a: T
+
+    assert is_value_dependent(GTD[int]) is True
+    # And through a union, which descends into its members.
+    assert is_value_dependent(tx.Optional[GTD[int]]) is True
 
 
 @pytest.mark.parametrize(

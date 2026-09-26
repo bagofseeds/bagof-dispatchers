@@ -9,10 +9,12 @@ looks through.
 # stdlib
 import collections
 import contextlib
+import functools
 import inspect
 import math
 import numbers
 import re
+import sys
 from collections import abc
 
 # dependencies
@@ -332,6 +334,7 @@ def is_typeddict(cls: tx.Any) -> bool:
     return tx.is_typeddict(cls)
 
 
+@functools.lru_cache(maxsize=None)
 def typeddict_required_keys(cls: tx.Any) -> tx.FrozenSet[str]:
     """
     The required keys of a [`TypedDict`][tx.TypedDict].
@@ -348,18 +351,22 @@ def typeddict_required_keys(cls: tx.Any) -> tx.FrozenSet[str]:
     alone -- per-key `Required`/`NotRequired` did not exist.
 
     !!! warning
-        On older Pythons, a [`typing.TypedDict`][] that inherits from a
-        base declared with a different `total=` reports **every**
-        inherited key as required. The stdlib does not record which class
-        declared a key, nor a usable link back to the base -- a subclass
-        has no `__orig_bases__` and its `__mro__` reaches only
-        [`dict`][] - so the true answer is not recoverable.
+        On older Pythons, a [`typing.TypedDict`][] that mixes `total=` across
+        its bases is read only through the subclass's own `total=`, which
+        cannot be right for every key: the stdlib records neither which class
+        declared a key nor a usable link back to the base (a subclass has no
+        `__orig_bases__`, and its `__mro__` reaches only [`dict`][]), so the
+        per-key answer is simply not recoverable.
 
-        The error is in the safe direction: a required key that is really
-        optional makes a valid value fail loudly, rather than letting an
-        invalid one through. Use
-        [`typing_extensions.TypedDict`][tx.TypedDict], which reimplements
-        the class precisely to fix this, when it matters.
+        This errs in **both** directions, not only the safe one. A
+        `total=True` key inherited into a `total=False` subclass is reported
+        *optional*, so a value missing it is accepted when it should fail
+        (`{}` matching a shape with a required key); a `total=False` key
+        inherited into a `total=True` subclass is reported *required*, so a
+        valid value is rejected. Use
+        [`typing_extensions.TypedDict`][tx.TypedDict], which reimplements the
+        class precisely and records `__required_keys__` on every version, when
+        it matters.
 
     !!! example
         ```pycon
@@ -377,6 +384,87 @@ def typeddict_required_keys(cls: tx.Any) -> tx.FrozenSet[str]:
     if getattr(cls, "__total__", True):
         return frozenset(annotations)
     return frozenset()
+
+
+@functools.lru_cache(maxsize=None)
+def typeddict_field_hints(cls: tx.Any) -> tx.Dict[str, tx.Any]:
+    """
+    The declared fields of a [`TypedDict`][tx.TypedDict]: key -> hint.
+
+    Every key the class declares, its own and those inherited from
+    [`TypedDict`][tx.TypedDict] bases, mapped to the hint written for it.
+    The [`Required`][typing.Required] / [`NotRequired`][typing.NotRequired]
+    qualifier is left on the hint -- reading it is
+    [`typeddict_required_keys`][]'s job; a caller that only wants the value
+    type lets the relation look through the qualifier.
+
+    Resolves string annotations against the class's own module where it can
+    ([`typing.get_type_hints`][tx.get_type_hints]). Where a forward reference
+    cannot be resolved, the raw name is kept for that field alone, so the
+    caller sees the name rather than nothing -- and every sibling that *can*
+    be resolved still is.
+
+    !!! example
+        ```pycon
+        >>> class Movie(TypedDict):
+        ...     title: str
+        ...     year: NotRequired[int]
+        >>> sorted(typeddict_field_hints(Movie))
+        ['title', 'year']
+        ```
+    """
+    if is_typeddict_marker(cls):
+        # The bare marker declares no fields of its own.
+        return {}
+    try:
+        return dict(tx.get_type_hints(cls, include_extras=True))
+    except Exception:
+        # `get_type_hints` is all-or-nothing: a single unresolvable forward
+        # reference makes it raise for the whole class. Returning the raw
+        # `__annotations__` would then hand back *every* field unresolved --
+        # under `from __future__ import annotations` all of them are strings --
+        # so a sibling field with a perfectly readable hint would go
+        # unchecked. Resolve each field on its own instead.
+        return _resolve_fields_individually(cls)
+
+
+def _resolve_fields_individually(cls: tx.Any) -> tx.Dict[str, tx.Any]:
+    """Resolve a TypedDict's fields one at a time, keeping what resolves.
+
+    The all-or-nothing fallback from
+    [`typeddict_field_hints`][]: each annotation is evaluated against the
+    class's own module, the ones that resolve are kept, and the ones that do
+    not are left as their raw name (a string) for the caller to skip.
+    """
+    module = sys.modules.get(getattr(cls, "__module__", None))
+    globalns = getattr(module, "__dict__", {})
+    hints = {}  # type: tx.Dict[str, tx.Any]
+    for key, raw in getattr(cls, "__annotations__", {}).items():
+        hints[key] = _resolve_one_annotation(raw, globalns)
+    return hints
+
+
+def _resolve_one_annotation(
+    raw: tx.Any, globalns: tx.Mapping[str, tx.Any]
+) -> tx.Any:
+    """Evaluate one annotation against `globalns`, or keep its raw name.
+
+    A `raw` that is already a hint object (an unquoted annotation) is returned
+    unchanged. A string or [`ForwardRef`][typing.ForwardRef] is evaluated the
+    way [`typing.get_type_hints`][tx.get_type_hints] would; when its name is
+    not defined there, the raw form is returned so the field can be skipped
+    rather than the whole class lost.
+    """
+    if isinstance(raw, tx.ForwardRef):
+        source = raw.__forward_arg__  # type: tx.Any
+    elif isinstance(raw, str):
+        source = raw
+    else:
+        return raw
+    try:
+        return eval(source, dict(globalns))  # noqa: S307 -- as get_type_hints
+    except Exception:
+        return raw
 
 
 def _all_orig_bases(cls: type, _self: bool = True) -> tx.Tuple[type, ...]:

@@ -7,6 +7,7 @@ import typing
 
 # dependencies
 import pytest
+import typing_extensions as tx
 
 # locals
 from bagof.dispatchers._function import Function, _call_key, _KeyValue, _Plan
@@ -129,6 +130,180 @@ def test_non_value_dependent_call_key_uses_types() -> None:
     plan = f._build_plan(shape, cache)
     key = _call_key((1, "a"), {}, plan)
     assert key == (2, int, str)
+
+
+# --- TypedDict value-level dispatch (Phase 8) --------------------------
+
+
+class _TDA(tx.TypedDict):
+    a: int
+
+
+class _TDB(tx.TypedDict):
+    b: int
+
+
+def test_typeddict_shape_selects_the_matching_method() -> None:
+    """Two TypedDict methods dispatch by the dict's shape at the value."""
+    f = Function("f")
+
+    def fa(x: _TDA) -> str:
+        return "a"
+
+    def fb(x: _TDB) -> str:
+        return "b"
+
+    f.register(fa)
+    f.register(fb)
+    # Same argument type (dict) for both, but different shapes select
+    # different methods.
+    assert f({"a": 1}) == "a"
+    assert f({"b": 2}) == "b"
+
+
+def test_typeddict_dict_argument_is_uncached_but_dispatches() -> None:
+    """A dict at a TypedDict-typed argument is unhashable, so uncached.
+
+    It must still dispatch, and repeatedly -- both the cache read and the
+    write fall back to resolving without caching (the shared
+    unhashable-at-value-dependent-position path).
+    """
+    f = Function("f")
+
+    def fa(x: _TDA) -> str:
+        return "a"
+
+    def fb(x: _TDB) -> str:
+        return "b"
+
+    f.register(fa)
+    f.register(fb)
+    assert f({"a": 1}) == "a"  # plans the shape; the dict key is unhashable
+    assert f({"b": 2}) == "b"  # hot-path read falls back, resolves correctly
+    assert f({"a": 3}) == "a"  # and again, still correct
+    # The value-dependent position is recorded on the plan, and the dict value
+    # is genuinely unhashable there, so nothing was cached under it.
+    cache = f._refresh()
+    shape = (1, ())
+    plan = f._build_plan(shape, cache)
+    assert 0 in plan.value_dependent
+    with pytest.raises(TypeError):
+        hash(_call_key(({"a": 1},), {}, plan))
+
+
+# --- generic TypedDict shape (B1) --------------------------------------
+
+
+_T = tx.TypeVar("_T")
+
+
+class _GBox(tx.TypedDict, typing.Generic[_T]):
+    a: _T
+
+
+def test_generic_typeddict_shape_is_not_wrongly_cached() -> None:
+    """A parametrised generic TypedDict dispatches by shape on every call.
+
+    A subscripted `GBox[int]` is a typing alias, not a `TypedDict` class, so
+    the value-dependence classifier has to read its origin. Miss that and the
+    argument keys by type only: the first shape's method is then served for a
+    second, differently-shaped dict of the same type.
+    """
+    f = Function("f")
+
+    def for_box(x: _GBox[int]) -> str:
+        return "box"
+
+    def for_dict(x: dict) -> str:
+        return "dict"
+
+    f.register(for_box)
+    f.register(for_dict)
+    assert f({"a": 1}) == "box"  # matches the generic TypedDict shape
+    assert f({"z": 1}) == "dict"  # different shape -> the plain-dict method
+    assert f({"a": 2}) == "box"  # and back, still by shape
+
+
+# --- hashable mapping at a shape position (B2) -------------------------
+
+
+class _HashDict(dict):
+    """A hashable `dict` subclass -- like `frozendict` / `immutables.Map`.
+
+    It keeps `dict`'s value-based `__eq__` (`{"a": 1} == {"a": 1.0}`) but is
+    hashable, so without care it would slip past the unhashable-value fallback
+    and be cached by that value-based equality.
+    """
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self))
+
+
+class _TDInt(tx.TypedDict):
+    a: int
+
+
+class _TDFloat(tx.TypedDict):
+    a: float
+
+
+def test_hashable_mapping_shape_pair_is_not_miskeyed() -> None:
+    """A hashable mapping at a TypedDict position is never keyed by dict `==`.
+
+    `{"a": 1}` and `{"a": 1.0}` are `==` as dicts but match different shapes
+    (`a: int` vs `a: float`). A hashable dict subclass must still dispatch by
+    shape, not collide on value-equality -- so the mapping is left uncached.
+    """
+    f = Function("f")
+
+    def for_int(x: _TDInt) -> str:
+        return "int"
+
+    def for_float(x: _TDFloat) -> str:
+        return "float"
+
+    f.register(for_int)
+    f.register(for_float)
+    assert f(_HashDict({"a": 1})) == "int"
+    assert f(_HashDict({"a": 1.0})) == "float"  # not the cached "int"
+    assert f(_HashDict({"a": 1})) == "int"
+
+
+class _TDOne(tx.TypedDict):
+    k: tx.Literal[1]
+
+
+class _TDTrue(tx.TypedDict):
+    k: tx.Literal[True]
+
+
+def test_hashable_mapping_literal_field_pair_is_not_miskeyed() -> None:
+    """The Literal-field repro: `1` and `True` are `==` but type-distinct.
+
+    `{"k": 1}` and `{"k": True}` are `==` as dicts, yet `Literal[1]` rejects
+    `True` and `Literal[True]` rejects `1`. A hashable mapping must not let the
+    two share a cache key.
+    """
+    f = Function("f")
+
+    def for_one(x: _TDOne) -> str:
+        return "one"
+
+    def for_true(x: _TDTrue) -> str:
+        return "true"
+
+    f.register(for_one)
+    f.register(for_true)
+    assert f(_HashDict({"k": 1})) == "one"
+    assert f(_HashDict({"k": True})) == "true"  # not the cached "one"
+
+
+def test_key_value_refuses_to_hash_a_mapping() -> None:
+    """`_KeyValue` over a hashable mapping raises on hash -> left uncached."""
+    with pytest.raises(TypeError):
+        hash(_KeyValue(_HashDict({"a": 1})))
+    # A non-mapping value hashes as usual.
+    assert hash(_KeyValue(1)) == hash(_KeyValue(1))
 
 
 # --- abc.register() invalidation ---------------------------------------

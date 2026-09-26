@@ -24,6 +24,7 @@ from ._introspect import (
     safe_isinstance,
     safe_issubclass,
     type2hint,
+    typeddict_field_hints,
     typeddict_required_keys,
     unwrap,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "resolve_newtype",
     "is_typeddict",
     "typeddict_required_keys",
+    "typeddict_field_hints",
     "safe_issubclass",
     "safe_isinstance",
     "issubclassable",

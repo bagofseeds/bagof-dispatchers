@@ -1,6 +1,7 @@
 """Tests for modern typing constructs and forward tolerance."""
 
 # stdlib
+import collections
 import sys
 import typing
 import warnings
@@ -363,6 +364,169 @@ def test_bare_typeddict_marker_is_not_opaque() -> None:
     assert issubhint(dict, tx.TypedDict) is False
     assert issubhint(Movie, tx.TypedDict) is True
     assert ishintstance({"title": "x"}, tx.TypedDict) is False
+
+
+# --- R4b: TypedDict value-level shape check (Phase 8) -------------------
+
+
+class _Movie(tx.TypedDict):
+    title: str
+    year: int
+
+
+class _PartialMovie(tx.TypedDict, total=False):
+    title: str
+    year: int
+
+
+class _NotRequiredYear(tx.TypedDict):
+    title: str
+    year: tx.NotRequired[int]
+
+
+class _RequiredInPartial(tx.TypedDict, total=False):
+    title: tx.Required[str]
+    year: int
+
+
+class _NestedShow(tx.TypedDict):
+    name: str
+    feature: _Movie
+
+
+class _ListField(tx.TypedDict):
+    tags: tx.List[int]
+
+
+def test_typeddict_matches_a_dict_of_the_right_shape() -> None:
+    assert ishintstance({"title": "x", "year": 2001}, _Movie) is True
+
+
+def test_typeddict_rejects_a_missing_required_key() -> None:
+    # The mutation check: on the pre-Phase-8 (type-only) behaviour this dict
+    # was rejected only because its *type* was a plain dict; now the shape is
+    # read, and a required key that is absent is what makes it fail.
+    assert ishintstance({"title": "x"}, _Movie) is False
+
+
+def test_typeddict_rejects_a_wrongly_typed_value() -> None:
+    assert ishintstance({"title": "x", "year": "old"}, _Movie) is False
+
+
+def test_typeddict_rejects_a_non_mapping() -> None:
+    assert ishintstance([("title", "x"), ("year", 1)], _Movie) is False
+    assert ishintstance("title", _Movie) is False
+
+
+def test_typeddict_rejects_a_non_dict_mapping() -> None:
+    # Only a `dict` matches at the value level, not any `Mapping`. This keeps
+    # the value level sound against the hint-level `TypedDict <= dict`: a value
+    # that satisfies the shape must also be a valid `dict`, or
+    # `v in S and S <= dict` would not give `v in dict`.
+    shaped = collections.ChainMap({"title": "x", "year": 1})
+    assert isinstance(shaped, collections.abc.Mapping)  # it is a Mapping ...
+    assert not isinstance(shaped, dict)  # ... but not a dict,
+    assert ishintstance(shaped, _Movie) is False  # so it does not match.
+
+
+def test_typeddict_allows_extra_keys() -> None:
+    # Width subtyping: a dict with more than the declared keys still matches,
+    # matching pydantic's TypeAdapter and the hint-level `TypedDict <= dict`
+    # ordering. (typeguard is stricter; the permissive reading is the chosen
+    # one -- see `_ishintstance_typeddict`.)
+    value = {"title": "x", "year": 1, "director": "someone"}
+    assert ishintstance(value, _Movie) is True
+
+
+def test_typeddict_non_total_optional_key_absent_still_matches() -> None:
+    assert ishintstance({"title": "x"}, _PartialMovie) is True
+    assert ishintstance({}, _PartialMovie) is True
+
+
+def test_typeddict_non_total_still_checks_a_present_key() -> None:
+    assert ishintstance({"year": "old"}, _PartialMovie) is False
+
+
+def test_typeddict_notrequired_key_absent_still_matches() -> None:
+    assert ishintstance({"title": "x"}, _NotRequiredYear) is True
+    assert ishintstance({"title": "x", "year": 1}, _NotRequiredYear) is True
+    assert ishintstance({"title": "x", "year": "z"}, _NotRequiredYear) is False
+
+
+def test_typeddict_required_inside_a_non_total_is_enforced() -> None:
+    assert ishintstance({"title": "x"}, _RequiredInPartial) is True
+    assert ishintstance({"year": 1}, _RequiredInPartial) is False
+
+
+def test_typeddict_nested_typeddict_recurses() -> None:
+    good = {"name": "s", "feature": {"title": "x", "year": 1}}
+    bad = {"name": "s", "feature": {"title": "x"}}  # inner missing 'year'
+    assert ishintstance(good, _NestedShow) is True
+    assert ishintstance(bad, _NestedShow) is False
+
+
+def test_typeddict_container_field_checks_only_the_container() -> None:
+    # A `List[int]` field is read the way `ishintstance` reads any container:
+    # the outer type is checked, the items are not.
+    assert ishintstance({"tags": [1, 2]}, _ListField) is True
+    assert ishintstance({"tags": ["not", "ints"]}, _ListField) is True
+    assert ishintstance({"tags": "notalist"}, _ListField) is False
+
+
+class _ForwardField(tx.TypedDict):
+    name: str
+    ref: "_DefinitelyUndefinedName"  # noqa: F821 -- deliberately unresolvable
+
+
+def test_typeddict_unresolvable_forward_ref_field_is_skipped() -> None:
+    # The name cannot be resolved here, so the field hint stays unreadable and
+    # its value cannot be checked; the present value is accepted rather than
+    # raising (the field is reported via a warning), while the required key is
+    # still enforced.
+    assert ishintstance({"name": "n", "ref": object()}, _ForwardField) is True
+    # `ref` is a required key of a total TypedDict, so its absence still fails.
+    assert ishintstance({"name": "n"}, _ForwardField) is False
+    # And a declared key with a readable hint is still checked.
+    assert ishintstance({"name": 1, "ref": object()}, _ForwardField) is False
+
+
+class _RealPlusUnresolved(tx.TypedDict):
+    ref: "_StillUndefinedName"  # noqa: F821 -- deliberately unresolvable
+    year: "int"  # a forward reference that *does* resolve
+
+
+def test_typeddict_checks_a_resolvable_sibling_of_an_unresolvable_field(
+) -> None:
+    # `get_type_hints` is all-or-nothing, so one unresolvable field used to
+    # drop *every* sibling to a raw string -- and an unchecked `year` would let
+    # a wrongly-typed value through. The per-field fallback resolves `year` on
+    # its own, so it is still checked; `ref` cannot be read and is skipped
+    # (with a warning), not silently ignored.
+    from bagof.dispatchers.core import _relation, typeddict_field_hints
+
+    good = {"year": 1, "ref": object()}
+    bad = {"year": "wrong", "ref": object()}
+    assert ishintstance(good, _RealPlusUnresolved) is True
+    # The real field is still enforced: a wrong-typed `year` fails, and the
+    # unresolvable `ref` is reported once via the package's warning. Clear the
+    # dedup for whichever raw form `ref` kept (a string or a ForwardRef).
+    for hint in typeddict_field_hints(_RealPlusUnresolved).values():
+        _relation._WARNED_UNKNOWN.discard(_relation._warn_key(hint))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert ishintstance(bad, _RealPlusUnresolved) is False
+    unknowns = [
+        w for w in caught if issubclass(w.category, UnknownHintWarning)
+    ]
+    assert len(unknowns) == 1
+
+
+def test_typeddict_hint_level_ordering_unchanged() -> None:
+    # The §2.1 ordering must not move: `dict <= TD` F, `TD <= dict` T,
+    # `TD <= Mapping` T.
+    assert issubhint(dict, _Movie) is False
+    assert issubhint(_Movie, dict) is True
+    assert issubhint(_Movie, tx.Mapping) is True
 
 
 # --- D2: obvious non-hints raise, typing-shaped forms stay opaque ------

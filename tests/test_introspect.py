@@ -21,6 +21,7 @@ from bagof.dispatchers.core import (
 from bagof.dispatchers.core._introspect import (
     _typing_spelling,
     _unwrap_typevar,
+    typeddict_field_hints,
 )
 
 
@@ -141,6 +142,61 @@ def test_dict_is_not_a_subclass_of_a_typeddict() -> None:
     assert safe_issubclass(dict, Base) is False
     assert safe_issubclass(Base, tx.TypedDict) is True
     assert safe_issubclass(Middle, Base) is True
+
+
+# --- typeddict_field_hints --------------------------------------------
+
+
+def test_typeddict_field_hints_includes_inherited_keys() -> None:
+    # Every declared key, own and inherited, mapped to its resolved hint.
+    hints = typeddict_field_hints(Leaf)
+    assert set(hints) == {"a", "b", "c"}
+    assert hints["a"] is int
+
+
+def test_typeddict_field_hints_keeps_the_requiredness_qualifier() -> None:
+    class Movie(tx.TypedDict):
+        title: str
+        year: tx.NotRequired[int]
+
+    hints = typeddict_field_hints(Movie)
+    # The value type is reachable through the qualifier; reading requiredness
+    # is `typeddict_required_keys`' job.
+    from bagof.dispatchers.core import normalise_hint
+
+    assert normalise_hint(hints["year"]) is int
+
+
+def test_typeddict_field_hints_of_the_bare_marker_is_empty() -> None:
+    assert typeddict_field_hints(tx.TypedDict) == {}
+
+
+def test_typeddict_field_hints_resolves_string_siblings_per_field() -> None:
+    # Under `from __future__ import annotations` every field is unresolved at
+    # class creation, and one unresolvable field makes `get_type_hints` raise
+    # for the whole class. The per-field fallback must still resolve the
+    # readable siblings (here `year`) rather than dropping every field.
+    from _future_annotations_td import FutureTD
+
+    hints = typeddict_field_hints(FutureTD)
+    assert hints["year"] is int  # the readable sibling was resolved
+    # The undefined name is kept unresolved (a string or a ForwardRef) so the
+    # caller can skip just that field.
+    assert isinstance(hints["missing"], (str, tx.ForwardRef))
+
+
+def test_resolve_one_annotation_evaluates_or_keeps_a_string() -> None:
+    # stdlib
+    from bagof.dispatchers.core._introspect import _resolve_one_annotation
+
+    # A resolvable string is evaluated against the given globals (builtins are
+    # always available); an undefined name is kept as its raw string.
+    assert _resolve_one_annotation("int", {}) is int
+    assert _resolve_one_annotation("_NameNotDefinedHere", {}) == (
+        "_NameNotDefinedHere"
+    )
+    # A hint that is already an object is returned unchanged.
+    assert _resolve_one_annotation(int, {}) is int
 
 
 # --- Any is never type-like -------------------------------------------
