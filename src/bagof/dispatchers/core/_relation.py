@@ -199,9 +199,11 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
       its members.
     * If `hint` is a [`TypedDict`][tx.TypedDict], checks the *shape* of
       `obj`: it must be a [`dict`][] that holds every required key, and each
-      declared key it holds must carry a value of that field's type. Extra
-      keys are allowed, and a nested `TypedDict` or container field is read
-      recursively.
+      declared key it holds must carry a value of that field's type. Keys
+      beyond the declared ones follow the `TypedDict`: an open one (the
+      default) allows them, a `closed=True` one rejects them, and an
+      `extra_items=` one checks each against that type. A nested `TypedDict`
+      or container field is read recursively.
     * Otherwise, returns `#!python  issubhint(type(obj), hint)`.
 
     !!! warning
@@ -307,6 +309,43 @@ def _ishintstance_type(obj: tx.Any, hint: tx.Any) -> bool:
     return isinstance(obj, type) and safe_issubclass(obj, args_uw[0])
 
 
+# A unique marker for "no such attribute". Distinct from any value a
+# `TypedDict` could carry, so an identity check never confuses it with one.
+_NO_EXTRA_ITEMS = object()
+
+
+def _typeddict_extra_policy(td: tx.Any) -> tx.Tuple[str, tx.Any]:
+    """How a `TypedDict` treats keys beyond the ones it declares.
+
+    Returns one of:
+
+    * `("open", None)` -- extra keys are allowed (the default).
+    * `("closed", None)` -- extra keys are rejected.
+    * `("typed", hint)` -- extra keys are allowed, but each such key's value
+      must satisfy `hint`.
+
+    A `TypedDict` written `closed=True` reports `"closed"`; one written
+    `extra_items=SomeType` reports `("typed", SomeType)`. A class built by an
+    older `typing_extensions` that cannot express either -- so whose
+    closedness cannot be read -- is reported `"open"`, the permissive default,
+    so the check never fails on it.
+    """
+    # `extra_items=SomeType` records the type on `__extra_items__`. When no
+    # `extra_items=` was given, `typing_extensions` leaves a sentinel there
+    # (or, on a version predating the feature, no attribute at all); both mean
+    # "no per-key extra type", so the identity checks below fall through.
+    extra = getattr(td, "__extra_items__", _NO_EXTRA_ITEMS)
+    no_extra = getattr(tx, "NoExtraItems", _NO_EXTRA_ITEMS)
+    if extra is not _NO_EXTRA_ITEMS and extra is not no_extra:
+        # `extra_items=Never` arrives here too, and needs no special case: no
+        # value satisfies `Never`, so any extra key is rejected -- exactly
+        # what `extra_items=Never` means (equivalent to `closed=True`).
+        return "typed", extra
+    if getattr(td, "__closed__", None) is True:
+        return "closed", None
+    return "open", None
+
+
 def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
     """Check that a value has the shape a `TypedDict` describes.
 
@@ -323,16 +362,19 @@ def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
     valid `dict`, a non-`dict` mapping that matched the shape but is not a
     `dict` would break `v in S and S <= T => v in T`.
 
-    **Extra keys are allowed**: a `dict` with keys beyond the declared ones
-    still matches, so long as the declared keys check out. The reason is the
-    nominal subtyping the hint level already encodes: `Sub <= Base` holds for
-    a `TypedDict` `Sub` that inherits from `Base`, so every `Sub`-shaped value
-    must also satisfy `Base`. Were extra keys rejected, a `Sub` value carrying
-    `Sub`'s own extra keys would fail `Base`, breaking
-    `v in Sub and Sub <= Base => v in Base`. This matches `pydantic`'s
-    `TypeAdapter` (a `TypedDict` names a minimum shape, not a closed one);
-    `typeguard` is stricter, and the permissive reading is chosen here to keep
-    the value level sound against the hint-level ordering.
+    Keys **beyond** the declared ones are treated as the `TypedDict` itself
+    says (PEP 728):
+
+    * An **open** `TypedDict` -- the default -- allows extra keys: a `dict`
+      with keys beyond the declared ones still matches, so long as the
+      declared keys check out. Such a `TypedDict` names a minimum shape, not a
+      closed one (as `pydantic`'s `TypeAdapter` reads it too).
+    * A **closed** `TypedDict`, written `closed=True`, rejects any extra key:
+      a value carrying a key it does not declare does not match.
+    * A `TypedDict` written `extra_items=SomeType` allows extra keys but
+      checks each one's value against `SomeType` (through `ishintstance`, the
+      same way a declared field is read). `extra_items=Never` therefore admits
+      no extra key at all, since no value satisfies `Never`.
 
     Two *unrelated* `TypedDict`s that happen to share a satisfiable shape are
     not ordered by this check, so a value matching both dispatches to neither
@@ -344,7 +386,8 @@ def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
     for key in typeddict_required_keys(td):
         if key not in obj:
             return False
-    for key, field_hint in typeddict_field_hints(td).items():
+    field_hints = typeddict_field_hints(td)
+    for key, field_hint in field_hints.items():
         if key not in obj:
             continue
         if isinstance(field_hint, (str, tx.ForwardRef)):
@@ -358,6 +401,32 @@ def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
             continue
         if not ishintstance(obj[key], field_hint):
             return False
+    # Keys the `TypedDict` does not declare are constrained only when it is
+    # closed or carries an `extra_items=` type. An open `TypedDict` (the
+    # common case) skips this loop entirely.
+    #
+    # NOTE (hint-level follow-up): the hint-level `issubhint` on a concrete
+    # `TypedDict` is purely nominal (`safe_issubclass`), so it does not read
+    # closedness. For every *well-formed* PEP 728 `TypedDict` this stays sound
+    # -- a subclass may not add keys to a closed base, nor a key whose value
+    # type is incompatible with a base's `extra_items` -- so a subclass value
+    # never carries a key its closed/typed base would refuse. A subclass that
+    # breaks those rules (which a type checker rejects, but the runtime still
+    # lets you build) could carry such a key, and the nominal hint relation
+    # would still call it a subhint; making `issubhint` closedness-aware to
+    # close that gap is a separate change.
+    policy, extra_hint = _typeddict_extra_policy(td)
+    if policy != "open":
+        for key in obj:
+            if key in field_hints:
+                continue
+            if policy == "closed":
+                return False
+            if isinstance(extra_hint, (str, tx.ForwardRef)):
+                _warn_unknown(extra_hint)
+                continue
+            if not ishintstance(obj[key], extra_hint):
+                return False
     return True
 
 
