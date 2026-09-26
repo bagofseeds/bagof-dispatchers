@@ -365,6 +365,126 @@ def test_bare_typeddict_marker_is_not_opaque() -> None:
     assert ishintstance({"title": "x"}, tx.TypedDict) is False
 
 
+# --- R4b: TypedDict value-level shape check (Phase 8) -------------------
+
+
+class _Movie(tx.TypedDict):
+    title: str
+    year: int
+
+
+class _PartialMovie(tx.TypedDict, total=False):
+    title: str
+    year: int
+
+
+class _NotRequiredYear(tx.TypedDict):
+    title: str
+    year: tx.NotRequired[int]
+
+
+class _RequiredInPartial(tx.TypedDict, total=False):
+    title: tx.Required[str]
+    year: int
+
+
+class _NestedShow(tx.TypedDict):
+    name: str
+    feature: _Movie
+
+
+class _ListField(tx.TypedDict):
+    tags: tx.List[int]
+
+
+def test_typeddict_matches_a_dict_of_the_right_shape() -> None:
+    assert ishintstance({"title": "x", "year": 2001}, _Movie) is True
+
+
+def test_typeddict_rejects_a_missing_required_key() -> None:
+    # The mutation check: on the pre-Phase-8 (type-only) behaviour this dict
+    # was rejected only because its *type* was a plain dict; now the shape is
+    # read, and a required key that is absent is what makes it fail.
+    assert ishintstance({"title": "x"}, _Movie) is False
+
+
+def test_typeddict_rejects_a_wrongly_typed_value() -> None:
+    assert ishintstance({"title": "x", "year": "old"}, _Movie) is False
+
+
+def test_typeddict_rejects_a_non_mapping() -> None:
+    assert ishintstance([("title", "x"), ("year", 1)], _Movie) is False
+    assert ishintstance("title", _Movie) is False
+
+
+def test_typeddict_allows_extra_keys() -> None:
+    # Width subtyping: a dict with more than the declared keys still matches,
+    # matching pydantic's TypeAdapter and the hint-level `TypedDict <= dict`
+    # ordering. (typeguard is stricter; the permissive reading is the chosen
+    # one -- see `_ishintstance_typeddict`.)
+    value = {"title": "x", "year": 1, "director": "someone"}
+    assert ishintstance(value, _Movie) is True
+
+
+def test_typeddict_non_total_optional_key_absent_still_matches() -> None:
+    assert ishintstance({"title": "x"}, _PartialMovie) is True
+    assert ishintstance({}, _PartialMovie) is True
+
+
+def test_typeddict_non_total_still_checks_a_present_key() -> None:
+    assert ishintstance({"year": "old"}, _PartialMovie) is False
+
+
+def test_typeddict_notrequired_key_absent_still_matches() -> None:
+    assert ishintstance({"title": "x"}, _NotRequiredYear) is True
+    assert ishintstance({"title": "x", "year": 1}, _NotRequiredYear) is True
+    assert ishintstance({"title": "x", "year": "z"}, _NotRequiredYear) is False
+
+
+def test_typeddict_required_inside_a_non_total_is_enforced() -> None:
+    assert ishintstance({"title": "x"}, _RequiredInPartial) is True
+    assert ishintstance({"year": 1}, _RequiredInPartial) is False
+
+
+def test_typeddict_nested_typeddict_recurses() -> None:
+    good = {"name": "s", "feature": {"title": "x", "year": 1}}
+    bad = {"name": "s", "feature": {"title": "x"}}  # inner missing 'year'
+    assert ishintstance(good, _NestedShow) is True
+    assert ishintstance(bad, _NestedShow) is False
+
+
+def test_typeddict_container_field_checks_only_the_container() -> None:
+    # A `List[int]` field is read the way `ishintstance` reads any container:
+    # the outer type is checked, the items are not.
+    assert ishintstance({"tags": [1, 2]}, _ListField) is True
+    assert ishintstance({"tags": ["not", "ints"]}, _ListField) is True
+    assert ishintstance({"tags": "notalist"}, _ListField) is False
+
+
+class _ForwardField(tx.TypedDict):
+    name: str
+    ref: "_DefinitelyUndefinedName"  # noqa: F821 -- deliberately unresolvable
+
+
+def test_typeddict_unresolvable_forward_ref_field_is_skipped() -> None:
+    # `get_type_hints` cannot resolve the name here, so the field hint stays a
+    # string and cannot be checked; the present value is accepted rather than
+    # raising, while the required key is still enforced.
+    assert ishintstance({"name": "n", "ref": object()}, _ForwardField) is True
+    # `ref` is a required key of a total TypedDict, so its absence still fails.
+    assert ishintstance({"name": "n"}, _ForwardField) is False
+    # And a declared key with a readable hint is still checked.
+    assert ishintstance({"name": 1, "ref": object()}, _ForwardField) is False
+
+
+def test_typeddict_hint_level_ordering_unchanged() -> None:
+    # The §2.1 ordering must not move: `dict <= TD` F, `TD <= dict` T,
+    # `TD <= Mapping` T.
+    assert issubhint(dict, _Movie) is False
+    assert issubhint(_Movie, dict) is True
+    assert issubhint(_Movie, tx.Mapping) is True
+
+
 # --- D2: obvious non-hints raise, typing-shaped forms stay opaque ------
 
 

@@ -21,10 +21,13 @@ from ._introspect import (
     eq_safenan,
     get_args_uw,
     get_origin_uw,
+    is_typeddict,
     normalise_hint,
     safe_get_args,
     safe_get_origin,
     safe_issubclass,
+    typeddict_field_hints,
+    typeddict_required_keys,
     unwrap,
 )
 
@@ -170,6 +173,11 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
       not a valid `#!python Literal[1]`, even though `#!python True == 1`.
     * If `hint` is a [`Union`][tx.Union], checks `obj` against each of
       its members.
+    * If `hint` is a [`TypedDict`][tx.TypedDict], checks the *shape* of
+      `obj`: it must be a mapping that holds every required key, and each
+      declared key it holds must carry a value of that field's type. Extra
+      keys are allowed, and a nested `TypedDict` or container field is read
+      recursively.
     * Otherwise, returns `#!python  issubhint(type(obj), hint)`.
 
     !!! warning
@@ -227,7 +235,16 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
         # The bare `TypedDict` marker: a value is one iff its type is a
         # `TypedDict` (`safe_issubclass` reads it structurally). Without
         # this it would fall to the opaque rule and accept everything.
+        # The marker names no fields, so there is no shape to check; a plain
+        # `dict` is not one of it.
         return safe_issubclass(type(obj), origin_uw)
+    if is_typeddict(origin_uw):
+        # A concrete `TypedDict` describes the *shape* of a mapping, so a
+        # value is one when it has the declared keys with the declared value
+        # types -- not when its type is nominally the `TypedDict` (a `dict`
+        # literal never is). The bare marker was handled just above, so only
+        # a `TypedDict` with fields reaches here.
+        return _ishintstance_typeddict(obj, origin_uw)
     if isinstance(origin_uw, type):
         # Only the origin can be checked here: a value carries its type,
         # and a type carries no arguments - `type([1])` is `list`, never
@@ -264,6 +281,46 @@ def _ishintstance_type(obj: tx.Any, hint: tx.Any) -> bool:
         return isinstance(obj, type)
     # hint is `type[T]` (or `tx.Type[T]`), so check obj is a subclass of T
     return isinstance(obj, type) and safe_issubclass(obj, args_uw[0])
+
+
+def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
+    """Check that a value has the shape a `TypedDict` describes.
+
+    A value matches when it is a mapping, holds every **required** key, and
+    every declared key it *does* hold carries a value that satisfies that
+    field's hint (checked through `ishintstance`, so a nested `TypedDict` or a
+    container field is read the same way as any other value). `Required` /
+    `NotRequired` and the class's `total=` are honoured through
+    `typeddict_required_keys`.
+
+    **Extra keys are allowed**: a mapping with keys beyond the declared ones
+    still matches, so long as the declared keys check out. This is the width
+    subtyping the hint level already encodes -- `TypedDict <= dict` and
+    `TypedDict <= Mapping` -- read at the value level, and it matches
+    `pydantic`'s `TypeAdapter` (a `TypedDict` names a minimum shape, not a
+    closed one). `typeguard` instead rejects extra keys; the permissive
+    reading is chosen here because rejecting them would contradict the
+    hint-level ordering, under which a `dict` with more keys is still a `dict`.
+    """
+    if not isinstance(obj, abc.Mapping):
+        return False
+    for key in typeddict_required_keys(td):
+        if key not in obj:
+            return False
+    for key, field_hint in typeddict_field_hints(td).items():
+        if key not in obj:
+            continue
+        if isinstance(field_hint, (str, tx.ForwardRef)):
+            # An unresolved forward reference -- a bare string on some
+            # versions, a `ForwardRef` on others -- cannot be read here, so
+            # accept the present value rather than raise. Skipping it quietly
+            # (rather than letting it reach the opaque-hint path) keeps the
+            # shape check from warning about a name it simply could not look
+            # up.
+            continue
+        if not ishintstance(obj[key], field_hint):
+            return False
+    return True
 
 
 def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:

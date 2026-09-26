@@ -379,6 +379,44 @@ def typeddict_required_keys(cls: tx.Any) -> tx.FrozenSet[str]:
     return frozenset()
 
 
+def typeddict_field_hints(cls: tx.Any) -> tx.Dict[str, tx.Any]:
+    """
+    The declared fields of a [`TypedDict`][tx.TypedDict]: key -> hint.
+
+    Every key the class declares, its own and those inherited from
+    [`TypedDict`][tx.TypedDict] bases, mapped to the hint written for it.
+    The [`Required`][typing.Required] / [`NotRequired`][typing.NotRequired]
+    qualifier is left on the hint -- reading it is
+    [`typeddict_required_keys`][]'s job; a caller that only wants the value
+    type lets the relation look through the qualifier.
+
+    Resolves string annotations against the class's own module where it can
+    ([`typing.get_type_hints`][tx.get_type_hints]). Where a forward reference
+    cannot be resolved here, the raw annotation is kept, so the caller sees
+    the name rather than nothing.
+
+    !!! example
+        ```pycon
+        >>> class Movie(TypedDict):
+        ...     title: str
+        ...     year: NotRequired[int]
+        >>> sorted(typeddict_field_hints(Movie))
+        ['title', 'year']
+        ```
+    """
+    if is_typeddict_marker(cls):
+        # The bare marker declares no fields of its own.
+        return {}
+    try:
+        return dict(tx.get_type_hints(cls, include_extras=True))
+    except Exception:
+        # A forward reference whose name is not in the class's module globals
+        # here. `__annotations__` already merges the inherited keys on every
+        # supported version, so fall back to it and let the caller skip a
+        # field it cannot read (a still-string hint).
+        return dict(getattr(cls, "__annotations__", {}))
+
+
 def _all_orig_bases(cls: type, _self: bool = True) -> tx.Tuple[type, ...]:
     """Get all original bases of a type, including the type itself."""
     if not is_typeddict(cls):

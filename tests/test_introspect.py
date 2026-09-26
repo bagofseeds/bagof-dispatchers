@@ -21,6 +21,7 @@ from bagof.dispatchers.core import (
 from bagof.dispatchers.core._introspect import (
     _typing_spelling,
     _unwrap_typevar,
+    typeddict_field_hints,
 )
 
 
@@ -141,6 +142,33 @@ def test_dict_is_not_a_subclass_of_a_typeddict() -> None:
     assert safe_issubclass(dict, Base) is False
     assert safe_issubclass(Base, tx.TypedDict) is True
     assert safe_issubclass(Middle, Base) is True
+
+
+# --- typeddict_field_hints --------------------------------------------
+
+
+def test_typeddict_field_hints_includes_inherited_keys() -> None:
+    # Every declared key, own and inherited, mapped to its resolved hint.
+    hints = typeddict_field_hints(Leaf)
+    assert set(hints) == {"a", "b", "c"}
+    assert hints["a"] is int
+
+
+def test_typeddict_field_hints_keeps_the_requiredness_qualifier() -> None:
+    class Movie(tx.TypedDict):
+        title: str
+        year: tx.NotRequired[int]
+
+    hints = typeddict_field_hints(Movie)
+    # The value type is reachable through the qualifier; reading requiredness
+    # is `typeddict_required_keys`' job.
+    from bagof.dispatchers.core import normalise_hint
+
+    assert normalise_hint(hints["year"]) is int
+
+
+def test_typeddict_field_hints_of_the_bare_marker_is_empty() -> None:
+    assert typeddict_field_hints(tx.TypedDict) == {}
 
 
 # --- Any is never type-like -------------------------------------------
