@@ -323,7 +323,7 @@ def is_value_dependent(hint: tx.Any) -> bool:
         # exactly when that bound is: `TypeVar(bound=Literal[1, 2])` and a
         # constrained `TypeVar` over literals both key on the value.
         return is_value_dependent(_typevar_upper(hint))
-    if is_typeddict(hint) and not is_typeddict_marker(hint):
+    if is_typeddict(origin) and not is_typeddict_marker(origin):
         # A concrete `TypedDict` dispatches on the *shape* of the value -- its
         # keys and their value types -- not on the argument's type alone (a
         # plain `dict` at a `TypedDict`-typed argument matches or not by what
@@ -331,5 +331,8 @@ def is_value_dependent(hint: tx.Any) -> bool:
         # unhashable `dict` value falls through to "uncached" via the shared
         # unhashable-at-value-dependent path. The bare `TypedDict` marker is
         # excluded: it names no fields, so its value-level check is type-only.
+        # The origin, not the hint, is read: a parametrised generic
+        # `TypedDict` (`GTD[int]`) is a typing alias, not a `TypedDict` class,
+        # so it is recognised only through its origin.
         return True
     return False

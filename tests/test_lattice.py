@@ -334,6 +334,21 @@ def test_the_bare_typeddict_marker_is_type_dependent() -> None:
     assert is_value_dependent(tx.TypedDict) is False
 
 
+def test_a_parametrised_generic_typeddict_is_value_dependent() -> None:
+    # A generic `TypedDict` subscripted with a type argument (`GTD[int]`) is a
+    # typing alias, not a `TypedDict` class -- so the classifier must read its
+    # origin, not the alias, to see the shape it dispatches on. Missing this
+    # keys the argument by type only while dispatch reads the shape.
+    T = tx.TypeVar("T")
+
+    class GTD(tx.TypedDict, typing.Generic[T]):
+        a: T
+
+    assert is_value_dependent(GTD[int]) is True
+    # And through a union, which descends into its members.
+    assert is_value_dependent(tx.Optional[GTD[int]]) is True
+
+
 @pytest.mark.parametrize(
     "hint",
     [

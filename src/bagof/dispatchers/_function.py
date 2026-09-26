@@ -26,6 +26,7 @@ argument-type key, and the cache is dropped when the methods change or when an
 
 # stdlib
 import abc
+import collections.abc
 import functools
 import itertools
 import threading
@@ -1240,6 +1241,20 @@ class _KeyValue:
         self.value = value
 
     def __hash__(self) -> int:
+        if isinstance(self.value, collections.abc.Mapping):
+            # A mapping at a value-dependent argument is a `TypedDict`-shape
+            # position, where applicability is decided key by key with the
+            # value types read type-aware. A mapping's own `==` is value-based
+            # (`1 == 1.0 == True`), so keying by it would serve one shape for
+            # a differently-typed one -- and a *hashable* mapping (a `dict`
+            # subclass that defines `__hash__`, `frozendict`, ...) would slip
+            # past the unhashable-value fallback and be cached wrongly. Refuse
+            # to hash it, so the call falls through to "uncached" like a plain
+            # `dict`. Nothing is lost for the other value-dependent kinds: a
+            # mapping never satisfies a `Literal` or a `type[...]`.
+            raise TypeError(
+                "a mapping value cannot key the dispatch cache"
+            )
         return hash(self.value)
 
     def __eq__(self, other: tx.Any) -> bool:
