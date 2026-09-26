@@ -357,6 +357,28 @@ def test_deferred_typevartuple_parameter_is_rejected() -> None:
         sig.applies_to_values((1,), {})
 
 
+# --- case 8: a repeated Callable[[*Ts], R] is solved like a ParamSpec --
+
+
+def test_repeated_callable_typevartuple_tail() -> None:
+    f = Function("f")
+
+    def m(a: C[[U[Ts]], int], b: C[[U[Ts]], str]) -> str:
+        return "m"
+
+    f.register(m)
+
+    def g(x):  # noqa: ANN001, ANN202
+        return 0
+
+    # Same captured list at both `Callable[[*Ts], ...]` slots -> applies.
+    assert f.resolve(C[[int], int], C[[int], str]).name == "m"
+    # A greatest element exists ([int] & [bool] -> [bool], contravariant).
+    assert f.resolve(C[[int], int], C[[bool], str]).name == "m"
+    # Incomparable captured lists ([int] vs [str]) -> no method.
+    assert f.resolve(C[[int], int], C[[str], str], default=None) is None
+
+
 # --- case 9: *Ts does not enter the §3 grouping tie-break --------------
 
 

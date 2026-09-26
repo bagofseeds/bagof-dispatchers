@@ -256,6 +256,40 @@ def test_leading_ellipsis_with_no_element_is_rejected() -> None:
         _tuple_shape((Ellipsis, int))
 
 
+# --- Callable[[int, *Ts], R] rides the open-tail (8c) path -------------
+
+
+def test_callable_unpack_tail_chain() -> None:
+    # `Callable[[int, str], R] < Callable[[int, *Ts], R] == Callable[
+    #  Concatenate[int, P], R] < Callable[..., R]`.
+    fixed = C[[int, str], int]
+    tail = C[[int, U[Ts]], int]
+    concat = C[tx.Concatenate[int, P], int]
+    top = C[..., int]
+    assert issubhint(fixed, tail) is True
+    assert issubhint(tail, fixed) is False
+    assert issubhint(tail, concat) is True and issubhint(concat, tail) is True
+    assert issubhint(tail, top) is True
+    assert issubhint(top, tail) is False
+    # The committed prefix stays contravariant: `int` is not below `bool`, so a
+    # fixed `[bool]` list is not a sub-hint of the open `[int, *Ts]`.
+    assert issubhint(C[[bool], int], C[[int, U[Ts]], int]) is False
+    # ... but `[int]` is (a callable taking `int` stands in for one taking
+    # `bool` and more).
+    assert issubhint(C[[int], int], C[[bool, U[Ts]], int]) is True
+
+
+def test_callable_middle_unpack_with_suffix_degrades() -> None:
+    # `Callable[[int, *Ts, str], R]` degrades to an open `Concatenate[int,...]`
+    # shape (the suffix dropped) -- so a fixed `[int]` list is a sub-hint of
+    # it, and it equals `Concatenate[int, P]`.
+    mid = C[[int, U[Ts], str], int]
+    assert issubhint(C[[int], int], mid) is True
+    assert issubhint(mid, C[[int], int]) is False
+    concat = C[tx.Concatenate[int, P], int]
+    assert issubhint(mid, concat) is True and issubhint(concat, mid) is True
+
+
 # --- Tuple[()] phantom, pre-3.11 only ----------------------------------
 
 

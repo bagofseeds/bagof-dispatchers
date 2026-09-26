@@ -308,9 +308,13 @@ def paramspec_captures(
     if not query_args or not hint_args:
         return
     hint_shape = _callable_param_shape(hint, hint_args[0])
-    if not isinstance(hint_shape.tail, tx.ParamSpec):
-        # Only a slot whose list ends in a `ParamSpec` captures anything; a
-        # `...` tail or a fixed list joins no group.
+    if not isinstance(hint_shape.tail, (tx.ParamSpec, tx.TypeVarTuple)):
+        # Only a slot whose list ends in a `ParamSpec` or an unpacked
+        # `TypeVarTuple` (`Callable[[int, *Ts], R]`) captures anything; a `...`
+        # tail or a fixed list joins no group. Either tail is captured as a
+        # `_ParamShape` and solved by `solve_paramspec` -- so a `Ts` shared
+        # with a `Tuple` capture is solved per kind, keyed by `id(Ts)` in its
+        # own group.
         return
     query_shape = _callable_param_shape(query, query_args[0])
     captured = _match_params(query_shape, hint_shape)

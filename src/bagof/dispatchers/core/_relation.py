@@ -843,6 +843,17 @@ def _callable_param_shape(alias: tx.Any, params: tx.Any) -> _ParamShape:
         # Below 3.10 `Concatenate[X, P]` is flattened to `[X, ..., P]`, and a
         # bare `P` is the one-element list `[P]` (typing_extensions >= 4.13).
         return _ParamShape(tuple(seq[:-1]), seq[-1])
+    for index, element in enumerate(seq):
+        if _is_unpacked_typevartuple(element):
+            if index == len(seq) - 1:
+                # `Callable[[int, *Ts], R]`: the `*Ts` tail is an open run, so
+                # the list rides the same open-tail path a `ParamSpec` does,
+                # carrying the `TypeVarTuple` as its tail.
+                return _ParamShape(tuple(seq[:-1]), tx.get_args(element)[0])
+            # `*Ts` in the *middle* of a list with a fixed suffix
+            # (`Callable[[int, *Ts, str], R]`) is out of v1 scope: degrade to
+            # an open `Concatenate[int, ...]`-shape, dropping the suffix.
+            return _ParamShape(tuple(seq[:index]), Ellipsis)
     if seq and seq[-1] is Ellipsis:
         return _ParamShape(tuple(seq[:-1]), Ellipsis)
     if not seq:

@@ -114,6 +114,7 @@ CORPUS = [
     tx.Callable[tx.Concatenate[int, _P], str],
     tx.Callable[tx.Concatenate[bool, _P], str],
     tx.Callable[tx.Concatenate[int, str, _P], str],
+    tx.Callable[[int, tx.Unpack[_Ts]], str],
     # TypeVars
     _T,
     _TBOUND,
@@ -412,11 +413,12 @@ def test_the_typing_literal_spelling_is_value_dependent() -> None:
         tx.Callable[..., str],
         tx.Callable[_P, str],
         tx.Callable[tx.Concatenate[int, _P], str],
-        # A variadic tuple dispatches on the value's *type* alone (its items
-        # are never inspected), so none is value-dependent.
+        # A variadic tuple / callable dispatches on the value's *type* alone
+        # (its items are never inspected), so none is value-dependent.
         tx.Tuple[int, tx.Unpack[_Ts]],
         tx.Tuple[tx.Unpack[_Ts]],
         tx.Unpack[_Ts],
+        tx.Callable[[int, tx.Unpack[_Ts]], str],
     ],
 )
 def test_type_dependent_hints(hint: tx.Any) -> None:
