@@ -738,12 +738,14 @@ def _issubcallable(hint: tx.Any, superhint: tx.Any) -> bool:
     """Check that a hint is a sub-hint for a `Callable[...]`.
 
     Parameters are compared contravariantly and the return type covariantly.
-    A bare `ParamSpec` parameter list is a wildcard `#!python ...` on either
-    side; a `#!python Concatenate[X, P]` list is a contravariant fixed prefix
-    followed by an open tail (RFC 11.1). A callable *class* -- a function
-    type, `#!python type`, `#!python Type[C]`, or a class with `__call__` --
-    has no parameter list, so it stands in only for an unparametrised
-    `Callable`.
+    A `#!python ...` or a bare `ParamSpec` parameter list is the **top** of
+    parameter lists -- the widest, describing every callable -- so a fixed
+    list is a sub-hint of it but not the other way round; a
+    `#!python Concatenate[X, P]` list is a contravariant fixed prefix followed
+    by an open tail, sitting between the fixed lists and the top (RFC 11.1). A
+    callable *class* -- a function type, `#!python type`, `#!python Type[C]`,
+    or a class with `__call__` -- has no parameter list, so it stands in only
+    for an unparametrised `Callable`.
     """
     hint_uw = unwrap(hint)
     superhint_uw = unwrap(superhint)
@@ -769,75 +771,116 @@ def _issubcallable(hint: tx.Any, superhint: tx.Any) -> bool:
     # Return type is covariant.
     if not issubhint(sub_ret, sup_ret):
         return False
-    return _issubcallable_params(
-        hint_uw, superhint_uw, sub_params, sup_params
+    return _issubparams(
+        _callable_param_shape(hint_uw, sub_params),
+        _callable_param_shape(superhint_uw, sup_params),
     )
 
 
-def _callable_params(
-    alias: tx.Any, params: tx.Any
-) -> tx.Tuple[str, tx.Any]:
-    """Classify a `Callable` parameter list (RFC 11.1).
+class _ParamShape(tx.NamedTuple):
+    """A `Callable` parameter list as a shape (RFC 11.1).
 
-    Returns one of `#!python ("any", None)` for a wildcard (`#!python ...`, a
-    bare `ParamSpec`, or an unknown shape), `#!python ("prefix", [X, ...])`
-    for a `Concatenate` fixed prefix followed by an open tail, or
-    `#!python ("list", [...])` for a fixed parameter list. The `alias` is the
-    whole `Callable[...]` hint, needed to reach `__parameters__` where an
-    older Python has erased the `ParamSpec` out of the arguments.
+    A fixed, contravariant `prefix` followed by a `tail` saying how the list
+    ends:
+
+    * `#!python None` -- a **closed** (fixed-arity) list, e.g. `[int, str]`;
+    * `#!python Ellipsis` or a [`ParamSpec`][typing.ParamSpec] -- an **open**
+      list, one that may be called with arbitrarily many further arguments.
+
+    An open list is the *top* of parameter lists, the way `#!python Tuple[X,
+    ...]` tops the fixed-length tuples: a fixed list is a sub-hint of it, but
+    it is not a sub-hint of any fixed list.
     """
-    if params is Ellipsis or isinstance(
-        params, (tx.ParamSpec, tx.ParamSpecArgs, tx.ParamSpecKwargs)
-    ):
-        return "any", None
+
+    prefix: tx.Tuple[tx.Any, ...]
+    tail: tx.Any
+
+
+# A sentinel `_match_params` returns when a closed super matches: there is no
+# tail to capture, but the result must be non-`None` to signal the match.
+_CLOSED_MATCH = _ParamShape((), None)
+
+
+def _callable_param_shape(alias: tx.Any, params: tx.Any) -> _ParamShape:
+    """Classify a `Callable` parameter list into a `_ParamShape` (RFC 11.1).
+
+    `alias` is the whole `Callable[...]` hint, needed to reach
+    `#!python __parameters__` where an older Python has erased a `ParamSpec`
+    out of the arguments; `params` is its parameter-list argument.
+    """
+    # `Ellipsis` and the `ParamSpec` forms name the open top. `ParamSpec` is
+    # tested before `list`: on 3.8/3.9 a `ParamSpec` *is* a `list` subclass,
+    # so the list branch would otherwise claim it.
+    if params is Ellipsis:
+        return _ParamShape((), Ellipsis)
+    if isinstance(params, tx.ParamSpec):
+        return _ParamShape((), params)
+    if isinstance(params, (tx.ParamSpecArgs, tx.ParamSpecKwargs)):
+        return _ParamShape((), Ellipsis)
     if any(safe_get_origin(params) is form for form in _CONCATENATE_FORMS):
-        # `Concatenate[X1, ..., Xn, P]`: the fixed prefix is everything but
-        # the trailing `ParamSpec`.
-        return "prefix", list(tx.get_args(params)[:-1])
+        # `Concatenate[X1, ..., Xn, tail]`: the fixed prefix is everything but
+        # the trailing element, which is a `ParamSpec` (or `...` on 3.10+).
+        args = tx.get_args(params)
+        return _ParamShape(tuple(args[:-1]), args[-1])
     seq = list(params) if isinstance(params, (list, tuple)) else None
     if seq is None:
-        # An unknown shape degrades to a wildcard rather than raising.
-        return "any", None
-    parameters = getattr(alias, "__parameters__", ())
-    has_ps = any(isinstance(p, tx.ParamSpec) for p in parameters)
+        # An unknown shape degrades to the widest (open) list rather than
+        # raising -- the opaque rule for a form the relation does not model.
+        return _ParamShape((), Ellipsis)
     if seq and isinstance(seq[-1], tx.ParamSpec):
-        # Below 3.10 `Concatenate[X, P]` is flattened to `[X, ..., P]`.
-        return "prefix", seq[:-1]
-    if not seq and has_ps:
-        # Below 3.10 a bare `P` is erased to `[]`, surviving only in
-        # `__parameters__` -- so an empty list plus a `ParamSpec` there is a
-        # wildcard, not a genuine zero-argument list.
-        return "any", None
-    return "list", seq
+        # Below 3.10 `Concatenate[X, P]` is flattened to `[X, ..., P]`, and a
+        # bare `P` is the one-element list `[P]` (typing_extensions >= 4.13).
+        return _ParamShape(tuple(seq[:-1]), seq[-1])
+    if seq and seq[-1] is Ellipsis:
+        return _ParamShape(tuple(seq[:-1]), Ellipsis)
+    if not seq:
+        for parameter in getattr(alias, "__parameters__", ()):
+            if isinstance(parameter, tx.ParamSpec):
+                # Below 3.10 a bare `P` is erased to `[]`, surviving only in
+                # `__parameters__` -- an open list, not a zero-argument one.
+                return _ParamShape((), parameter)
+    return _ParamShape(tuple(seq), None)
 
 
-def _issubcallable_params(
-    sub_alias: tx.Any, sup_alias: tx.Any, sub: tx.Any, sup: tx.Any
-) -> bool:
-    """Compare two `Callable` parameter lists, contravariantly (RFC 11.1)."""
-    sub_kind, sub_val = _callable_params(sub_alias, sub)
-    sup_kind, sup_val = _callable_params(sup_alias, sup)
-    # A wildcard on either side accepts any parameter list.
-    if sub_kind == "any" or sup_kind == "any":
-        return True
-    sub_open = sub_kind == "prefix"
-    sup_open = sup_kind == "prefix"
-    # A closed (fixed-arity) sub cannot stand in for an open super, which may
-    # be called with arbitrarily many arguments the sub does not accept.
-    if sup_open and not sub_open:
-        return False
-    # A fixed list must be at least as long as an open sub's committed prefix.
-    if sub_open and not sup_open and len(sup_val) < len(sub_val):
-        return False
-    # Two fixed lists must have equal arity.
-    if not sub_open and not sup_open and len(sub_val) != len(sup_val):
-        return False
-    # Two open prefixes: the sub's prefix cannot be the longer, or it would
-    # demand arguments the super need not supply.
-    if sub_open and sup_open and len(sub_val) > len(sup_val):
-        return False
-    # Compare the overlapping fixed positions contravariantly: each
-    # super-parameter must be a sub-hint of the matching sub-parameter (a
-    # function taking `int` can stand in for one taking `bool`).
-    overlap = min(len(sub_val), len(sup_val))
-    return all(issubhint(sup_val[i], sub_val[i]) for i in range(overlap))
+def _match_params(
+    sub: _ParamShape, sup: _ParamShape
+) -> tx.Optional[_ParamShape]:
+    """Match one parameter-list shape against another (RFC 11.1).
+
+    `sub` describes the callables the left `Callable` accepts, `sup` those the
+    right does; the match holds when every callable `sub` describes `sup`
+    describes too, with the committed prefixes compared **contravariantly**.
+
+    * A **closed** `sup` accepts exactly its own arity: `sub` must be closed
+      too, with the same prefix length.
+    * An **open** `sup` accepts its committed prefix and anything after: `sub`
+      must supply at least that prefix. The variable at `sup`'s tail then
+      captures the rest of `sub`'s list -- the leftover prefix plus `sub`'s own
+      tail.
+
+    Returns that captured tail shape when `sup` is open, a sentinel closed
+    shape when `sup` is closed and matches, or `#!python None` on no match.
+    """
+    sub_closed = sub.tail is None
+    sup_closed = sup.tail is None
+    k = len(sub.prefix)
+    m = len(sup.prefix)
+    if sup_closed:
+        if not sub_closed or k != m:
+            return None
+    elif k < m:
+        return None
+    # Compare the committed prefix contravariantly: each super-parameter must
+    # be a sub-hint of the matching sub-parameter (a function taking `int` can
+    # stand in for one taking `bool`).
+    for i in range(m):
+        if not issubhint(sup.prefix[i], sub.prefix[i]):
+            return None
+    if sup_closed:
+        return _CLOSED_MATCH
+    return _ParamShape(tuple(sub.prefix[m:]), sub.tail)
+
+
+def _issubparams(sub: _ParamShape, sup: _ParamShape) -> bool:
+    """Whether one parameter-list shape stands in for another (RFC 11.1)."""
+    return _match_params(sub, sup) is not None

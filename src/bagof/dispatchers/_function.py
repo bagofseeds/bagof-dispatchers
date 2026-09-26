@@ -44,6 +44,7 @@ from ._signature import (
     Parameter,
     Signature,
     _catch_all_or_any,
+    _reject_variadic_param,
     _render_hint,
 )
 from .core import (
@@ -1441,7 +1442,10 @@ def _overlay(
     for parameter, hint in zip(overridable, hints):
         replacements[parameter.name] = _overlay_hint(fn, parameter.name, hint)
     for name, hint in named_hints.items():
-        checked = _overlay_hint(fn, name, hint)
+        # A hint targeting `*args` / `**kwargs` may be a `P.args` / `P.kwargs`
+        # form, which degrades to an `Any` tail rather than being refused.
+        allow_variadic = name in (varargs_name, varkw_name)
+        checked = _overlay_hint(fn, name, hint, allow_variadic)
         if name == varargs_name:
             varargs_hint = _catch_all_or_any(checked)
         elif name == varkw_name:
@@ -1474,7 +1478,10 @@ def _overlay(
 
 
 def _overlay_hint(
-    fn: tx.Callable[..., tx.Any], target: str, hint: tx.Any
+    fn: tx.Callable[..., tx.Any],
+    target: str,
+    hint: tx.Any,
+    allow_variadic: bool = False,
 ) -> tx.Any:
     """Normalise a registration hint and check it is a real type hint.
 
@@ -1483,8 +1490,15 @@ def _overlay_hint(
     so it is refused at registration with a message naming the parameter. A
     parametrised form (`#!python Annotated[int, ...]`, `#!python Exact[int]`)
     is plausible through its origin even when the whole is not.
+
+    A `#!python ParamSpec` / `#!python Concatenate[...]` given for an ordinary
+    parameter is refused too; `allow_variadic` lifts that only for a
+    `#!python *args` / `#!python **kwargs` target, where a `P.args` /
+    `P.kwargs` degrades to an `#!python Any` tail.
     """
     normalised = normalise_hint(hint)
+    if not allow_variadic:
+        _reject_variadic_param(target, normalised, fn)
     plausible = is_plausible_hint(normalised) or is_plausible_hint(
         safe_get_origin(normalised)
     )

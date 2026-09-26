@@ -29,6 +29,9 @@ concrete `TypedDict` value-dependent to match -- so the call cache keys on the
 mapping's shape at a `TypedDict`-typed argument.
 """
 
+# stdlib
+from collections import abc
+
 # dependencies
 import typing_extensions as tx
 
@@ -44,7 +47,14 @@ from .core import (
 from .core._compat import UNION_TYPES, is_typeddict_marker
 from .core._exact import exact_target, is_exact
 from .core._introspect import _looks_like_class, is_typeddict
-from .core._relation import _is_literal, _typevar_upper
+from .core._relation import (
+    _callable_param_shape,
+    _is_literal,
+    _issubparams,
+    _match_params,
+    _ParamShape,
+    _typevar_upper,
+)
 
 # --- equivalence -------------------------------------------------------
 
@@ -259,6 +269,86 @@ def typevar_consistent(
         ```
     """
     return solve_typevar(classes, typevar) is not UNSET
+
+
+# --- repeated ParamSpec solving ----------------------------------------
+
+
+def paramspec_captures(
+    query: tx.Any, hint: tx.Any
+) -> tx.Iterator[tx.Tuple[tx.Any, _ParamShape]]:
+    """Yield `(ParamSpec, captured tail)` for a top-level `Callable` slot.
+
+    When a landed slot `hint` is `#!python Callable[..., R]` whose parameter
+    list ends in a [`ParamSpec`][typing.ParamSpec] `P`, and the `query` that
+    reached it is a `#!python Callable[...]` whose list matches, `P` captures
+    the tail of the query's list beyond the slot's committed prefix. A
+    signature that names one `ParamSpec` at several slots must capture a
+    consistent tail at each (RFC 0001 §3, the `ParamSpec` analogue of repeated
+    [`TypeVar`][typing.TypeVar] solving).
+
+    Only a **top-level** `Callable` is read: a `ParamSpec` nested inside
+    another hint (`#!python Optional[Callable[P, int]]`) is not jointly solved.
+    The captured tail is worked out against the *query's* parameters, so a
+    `ParamSpec` solved from `#!python Callable[Concatenate[int, P], R]` sees
+    the query's arguments contravariantly, exactly as applicability does.
+    """
+    query = unwrap(normalise_hint(query), tx.Annotated)
+    hint = unwrap(normalise_hint(hint), tx.Annotated)
+    if get_origin_uw(query) is not abc.Callable:
+        return
+    if get_origin_uw(hint) is not abc.Callable:
+        return
+    query_args = get_args_uw(query)
+    hint_args = get_args_uw(hint)
+    if not query_args or not hint_args:
+        return
+    hint_shape = _callable_param_shape(hint, hint_args[0])
+    if not isinstance(hint_shape.tail, tx.ParamSpec):
+        # Only a slot whose list ends in a `ParamSpec` captures anything; a
+        # `...` tail or a fixed list joins no group.
+        return
+    query_shape = _callable_param_shape(query, query_args[0])
+    captured = _match_params(query_shape, hint_shape)
+    if captured is None:
+        # The lists do not match; applicability has already rejected the call,
+        # so there is nothing to capture.
+        return
+    yield hint_shape.tail, captured
+
+
+def solve_paramspec(tails: tx.Iterable[_ParamShape]) -> tx.Any:
+    """Solve one `ParamSpec` against the tails captured at its slots.
+
+    The `ParamSpec` analogue of
+    [`solve_typevar`][bagof.dispatchers._lattice.solve_typevar]: the captured
+    tails must have a **greatest element** under the parameter-list order (one
+    tail that every other is a sub-list of), and that tail is the solution.
+    `#!python ([int])` and `#!python ([bool])` solve to `#!python ([bool])`;
+    `#!python ([int])` and `#!python ([str])` have no greatest element and are
+    unsolvable; a closed tail and an open tail solve to the open one.
+
+    Returns the solved tail shape, or [`UNSET`][bagof.dispatchers.core.UNSET]
+    when the tails do not agree. No slots means the variable is unconstrained,
+    which is the widest (open) list.
+    """
+    tails = tuple(tails)
+    if not tails:
+        return _ParamShape((), Ellipsis)
+    for candidate in tails:
+        if all(_issubparams(other, candidate) for other in tails):
+            return candidate
+    return UNSET
+
+
+def paramspec_consistent(tails: tx.Iterable[_ParamShape]) -> bool:
+    """Whether the tails captured at one `ParamSpec`'s slots agree (§3).
+
+    The boolean face of
+    [`solve_paramspec`][bagof.dispatchers._lattice.solve_paramspec]: `True`
+    when the captured tails have a greatest element, `False` when they do not.
+    """
+    return solve_paramspec(tails) is not UNSET
 
 
 # --- value dependence --------------------------------------------------

@@ -158,13 +158,16 @@ changes it, and the change is called out.
 | `List[int] ≤ Sequence[int]`, `List[int] ≤ Iterable` | True | ABC registration honoured |
 | `Annotated[int,'x'] ≡ int` | T/T | metadata invisible → `Exact` handled before delegating |
 | `Callable[[int],str]` vs `Callable[[bool],str]` | F/F → **contravariant (post-fix)** | params compared contravariantly, return covariantly |
+| `Callable[[int],R] < Callable[Concatenate[int,P],R] < Callable[P,R] ≡ Callable[...,R]` | True | `...` / bare `P` top the parameter lists, a `Concatenate` prefix sits between (row-flip, §11.1; issue #32) — so `Callable[...,R] ≤ Callable[[int],R]` and `Callable[Concatenate[int,P],R] ≤ Callable[[int],R]` are **False** (were True), which restores transitivity |
 | `int ≤ P` (non-`runtime_checkable` Protocol) | raises → **False (post-fix)** | guarded; registration still refuses with a friendly message |
 | `list ≤ RP` (runtime protocol) | True | protocols dispatch structurally |
 | `dict ≤ TD`, `TD ≤ dict`, `TD ≤ Mapping` | F/T/T | TypedDict orders correctly at hint level |
 | `int ≤ Union` (bare) | False | bare `Union`/`Literal`/`Type` mean "is one of these"; dead for value dispatch |
 
 Value level (`ishintstance`): `{'a':1} in TD` → **False**; `[1] in List[str]`
-→ **True** (items never inspected); `print in Callable[[int],str]` → True;
+→ **True** (items never inspected); `print in Callable[[int],str]` → True
+(a callable's own signature is never inspected, and a `ParamSpec` is not
+solved from values — the value level is unchanged by the row-flip, #33);
 `True in Literal[1]` → False (PEP 586); `1 in T` True, `'x' in TB` False.
 
 ### 2.2 Definitions and selection (name-aware, normative)
@@ -350,8 +353,16 @@ for 2+ captured keywords and ties for 0 or 1.
 **Hint-level `resolve` with TypeVars in the query** uses `issubhint` unchanged.
 
 **Variadic kinds.** `*args: *Ts` / `*args: P.args` → an `Any` tail; a bare
-`Ts`/`P` as a *parameter* annotation is an invalid hint → registration
-`TypeError`. Full `TypeVarTuple`/`ParamSpec` solving is deferred (§11, v2).
+`Ts`/`P` (or a `Concatenate[...]`) as a *parameter* annotation is an invalid
+hint → registration `TypeError`. **`ParamSpec` is solved at the hint level**:
+a `ParamSpec` named at several top-level `Callable` slots must capture a
+consistent parameter list at each (the analogue of a repeated `TypeVar`), the
+group consistent iff the captured lists have a *greatest element* under the
+parameter-list order. Only a top-level landed `Callable` joins the group; a
+`ParamSpec` nested in another hint, or in a return type, is not solved.
+**Value-level `P` solving is deferred (#33)** — a callable value's own
+signature is never inspected. Full `TypeVarTuple` solving is deferred (§11,
+v2).
 
 ---
 
@@ -795,7 +806,10 @@ subclasses of the dispatch errors. The model needs no positional-to-name adapter
 `Literal` value-dependent; `True`∉`Literal[1]`; NaN via `eq_safenan`; unhashable
 → uncached · `Tuple[X,...]`/`Tuple[X,Y]`/`tuple` chain; items not inspected;
 `Tuple[()]` ok · `Callable` parametrisations ordered (post-fix contravariance);
-`Callable[P,R] ≡ Callable[...,R]` · `type[X]` value-dependent; `type[bool] <
+`Callable[[int],R] < Callable[Concatenate[int,P],R] < Callable[P,R] ≡
+Callable[...,R]` (`...`/bare `P` top the lists; row-flip §11.1, #32); a repeated
+`ParamSpec` solved by greatest element at the hint level, value level shallow
+(#33) · `type[X]` value-dependent; `type[bool] <
 type[int] < type` · `Annotated` (non-`Exact`) `≡ X`; `Exact` of a non-class →
 `TypeError` · TypedDict hint-level fine; value-level shape-checks the mapping ·
 Protocols: runtime structural, two satisfied → ambiguous unless comparable,
@@ -806,9 +820,11 @@ ambiguous · preorder laws property-tested.
 **Modern forms (§11):** `type X = …` alias → its value; two aliases of one value
 → duplicate replace + warning; recursive alias → stops at origin · `L[int]` for
 `type L[T] = list[T]` → `List[int]` · `NewType` → supertype · `Tuple[int, *Ts]`
-chain; `Ts` twice → applicability only · `Callable[P,R]` chain;
-`Concatenate[int,P]` contravariant prefix · `*args: P.args`/`*args: *Ts` → `Any`
-tail; `**kwargs` ignored · `Never` param → never applicable · `Required`/
+chain; `Ts` twice → applicability only · `Callable[P,R]` chain, `...`/`P` the
+top; `Concatenate[int,P]` contravariant prefix, longer prefix more specific; a
+repeated `P` solved by greatest element (hint level, #33 for values) ·
+`*args: P.args`/`*args: *Ts` → `Any` tail; `**kwargs` ignored · `Never` param →
+never applicable · `Required`/
 `ReadOnly`/`Final`/`ClassVar` → as inner · unknown/future special form → opaque
 ≈ `Any` + one `UnknownHintWarning`, never raises · `TypeVar(bound=float,
 default=int)` → bound wins, `int` arg does not match (no numeric-tower
@@ -928,9 +944,28 @@ the siblings already do) before the core-magic shim PR merges.
   the §3 grouping tie-break, so `**kwargs: T` beats an untyped `**kwargs`, and
   applicability solves `T` jointly over those keywords with every other slot
   carrying `T`, mirroring `*args: T`, covered by `tests/test_function.py`);
+  `ParamSpec`/`Concatenate` solving (**landed**, Phase 8c: the `Callable`
+  parameter-list order flipped so `...`/`P` top the lists — restoring
+  transitivity, #32 — and a repeated `ParamSpec` is solved jointly by greatest
+  element at the hint level, covered by `tests/test_paramspec_dispatch.py`,
+  `tests/test_relation_callable.py` and `tests/test_lattice.py`);
   `Callable` deep element check;
   `DeprecationWarning` `__getattr__` in core-magic; the `_polymorph` →
   `Function` migration (§8.4).
+
+Deferred to a later phase (tracked in **#33**), out of scope here:
+
+- **Value-level `ParamSpec` solving.** A callable *value*'s own signature is
+  never inspected, so `P` is not solved from values — `print` matches
+  `Callable[[int],str]` and every other `Callable[...]` slot at the value
+  level. Only the hint level (`resolve`, and hint-level applicability) solves
+  `P`.
+- The Phase-7 repeated-grouping tie-break is **not** extended to a repeated
+  `ParamSpec`: two incomparable open prefixes stay ambiguous.
+- `P.args` / `P.kwargs` as first-class components (they remain an `Any` tail),
+  `ParamSpec(bound=)` and PEP 696 `ParamSpec` defaults, and the consistency of
+  the same `P` at *nested* positions of one hint (only a top-level landed
+  `Callable` joins the group) are all out of scope.
 
 Non-goals (stated in the README): `invoke`/`next_method` fall-through,
 return-type dispatch, dispatch on keyword-only parameters, static overload
@@ -965,7 +1000,7 @@ is uniform across spellings and forward-tolerant. Two measured facts shape this:
 | **PEP 613 `TypeAlias`** | 3.10 | 4.x | the bound value is an ordinary hint; the bare marker falls under the unknown-form rule. **Support (trivial)** |
 | **PEP 696 defaults** | 3.13 | 4.4+ | read bound/constraints only via `_typevar_upper`; default ignored. **Support** |
 | **PEP 646 `TypeVarTuple`/`Unpack`/`*Ts`** | 3.11 | 4.1+ | degrade: `*args: *Ts` → `Any` tail; `Unpack[Ts]` in `Tuple[...]` → "zero+ `Any`" slot (prefix/suffix split in `_issubargs`); repeated `Ts` not solved. **Degrade v1**, full ordering deferred |
-| **PEP 612 `ParamSpec`/`Concatenate`** | 3.10 | 4.x | degrade: `Callable[P,R] ≡ Callable[...,R]`; `Concatenate[int,P]` contravariant prefix; `*args: P.args` → `Any` tail; bare `P` as a param → registration `TypeError`. **Degrade v1** |
+| **PEP 612 `ParamSpec`/`Concatenate`** | 3.10 | 4.x | `Callable[[int],R] < Callable[Concatenate[int,P],R] < Callable[P,R] ≡ Callable[...,R]` (`...`/`P` top the lists — row-flip, #32; restores transitivity); `Concatenate` a contravariant prefix, longer prefix more specific; a repeated `P` solved jointly by greatest element at the hint level; `*args: P.args` → `Any` tail; bare `P`/`Concatenate` as a param → registration `TypeError`. Value-level `P` solving deferred (#33). **Support (hint-level)** |
 | **`NewType`** | 3.5/3.10 | typing_extensions class 3.8/3.9 | `resolve_newtype` → `__supertype__`, recursive, in `normalise_hint`. **Support** |
 | **`Never`/`NoReturn`** | 3.11/3.6 | 4.1+ | bottom type; a `Never` param makes a method never applicable (explicit "forbid this combination"). **Support** |
 | **`TypeGuard`/`TypeIs`** | 3.10/3.13 | 4.x/4.10+ | treat as `bool`. **Support** |

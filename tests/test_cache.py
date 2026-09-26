@@ -132,6 +132,49 @@ def test_non_value_dependent_call_key_uses_types() -> None:
     assert key == (2, int, str)
 
 
+def test_callable_paramspec_slot_keys_on_type_only() -> None:
+    """A `Callable[P, int]` slot is not value-dependent (§4).
+
+    The value level never inspects a callable's signature, and a `ParamSpec`
+    is not solved from values. Pinning the cache key here keeps a future
+    value-level `P` solve from silently making the slot value-dependent.
+    """
+    P = tx.ParamSpec("P")
+    f = Function("f")
+
+    def m(fn: tx.Callable[P, int]) -> str:
+        return "m"
+
+    f.register(m)
+    cache = f._refresh()
+    shape = (1, ())
+    plan = f._build_plan(shape, cache)
+    assert plan.value_dependent == frozenset()
+
+    def g(x):  # noqa: ANN001, ANN202
+        return 0
+
+    key = _call_key((g,), {}, plan)
+    assert key == (1, type(g))
+
+
+@pytest.mark.parametrize(
+    "hint",
+    [
+        tx.Callable[[int], int],
+        tx.Callable[..., int],
+        tx.Callable[tx.ParamSpec("_PVD"), int],
+        tx.Callable[tx.Concatenate[int, tx.ParamSpec("_PVD2")], int],
+    ],
+)
+def test_no_callable_form_is_value_dependent(hint: tx.Any) -> None:
+    """No `Callable` form -- `ParamSpec`/`Concatenate` lists included -- is
+    value-dependent, so the cache never keys on a callable value."""
+    from bagof.dispatchers._lattice import is_value_dependent
+
+    assert is_value_dependent(hint) is False
+
+
 # --- TypedDict value-level dispatch (Phase 8) --------------------------
 
 
