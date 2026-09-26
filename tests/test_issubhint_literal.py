@@ -35,6 +35,19 @@ LITERAL_CASES = [
     # `Annotated` is transparent on both sides.
     (tx.Annotated[L[1], "meta"], L[1, 2], True),
     (L[1], tx.Annotated[L[1, 2], "meta"], True),
+    # PEP 586 makes literal matching type-aware (issue #6): `1 == True` and
+    # `1 == 1.0` are True in Python, but they denote different literals.
+    (L[True], L[1], False),
+    (L[1], L[True], False),
+    (L[1], L[1.0], False),
+    (L[1.0], L[1], False),
+    (L[0], L[False], False),
+    (L[False], L[0], False),
+    (L["a"], L[b"a"], False),
+    (L[b"a"], L["a"], False),
+    # ... while same-type values still match.
+    (L[True], L[True, False], True),
+    (L[1], L[1, 2], True),
 ]
 
 
@@ -94,6 +107,15 @@ def test_issubhint_literal_as_hint(
     hint: tx.Any, superhint: tx.Any, expected: bool
 ) -> None:
     assert issubhint(hint, superhint) is expected
+
+
+def test_a_nan_literal_is_a_subhint_of_itself() -> None:
+    # `eq_safenan` keeps a NaN literal equal to itself even though
+    # `nan == nan` is False, so the type-aware compare must still hold --
+    # including across two distinct NaN objects, which exercises
+    # `eq_safenan` rather than object identity.
+    n1, n2 = float("nan"), float("nan")
+    assert issubhint(L[n1], L[n2]) is True
 
 
 def test_literal_hint_against_typevar_uses_the_typevar_branch() -> None:
