@@ -29,7 +29,12 @@ import itertools
 import typing_extensions as tx
 
 # local
-from ._lattice import equivalent, typevar_consistent
+from ._lattice import (
+    equivalent,
+    paramspec_captures,
+    paramspec_consistent,
+    typevar_consistent,
+)
 from .core import (
     ishintstance,
     issubhint,
@@ -100,6 +105,10 @@ _PARAMSPEC_ARGKW = tuple(
     for form in (getattr(tx, name, None),)
     if isinstance(form, type)
 )
+# Every spelling of `Concatenate`, to recognise a `Concatenate[...]` used
+# (wrongly) as a plain parameter annotation. On 3.10 `typing.Concatenate is
+# not tx.Concatenate`, so both spellings must be checked.
+_CONCATENATE_FORMS = spellings("Concatenate")
 
 
 class Parameter:
@@ -434,6 +443,7 @@ class Signature:
                 varkw_name = name
                 varkw = _catch_all_or_any(hint)
             else:
+                _reject_variadic_param(name, hint, fn)
                 params[name] = Parameter(
                     name, hint, param.kind, param.default
                 )
@@ -486,6 +496,9 @@ class Signature:
         new_params = {}  # type: tx.Dict[str, Parameter]
         for name, param in self._parameters.items():
             hint = normalise_hint(hints.get(name, tx.Any))
+            # A forward reference that resolved to a `ParamSpec`/`Concatenate`
+            # is refused here, the same as one written outright.
+            _reject_variadic_param(name, hint, self._fn)
             new_params[name] = Parameter(
                 name, hint, param.kind, param.default
             )
@@ -698,6 +711,9 @@ class Signature:
         groups = {}  # type: tx.Dict[int, tx.Tuple[tx.Any, tx.List[tx.Any]]]
         for key, hint in self._iter_arguments(binding):
             value = args[key] if isinstance(key, int) else kwargs[key]
+            # A `Callable` value is matched shallowly -- its own signature is
+            # never inspected -- so a `ParamSpec` in the slot is not solved
+            # from values here, only from hints in `applies_to_hints`.
             if not ishintstance(value, hint):
                 return False
             if isinstance(hint, tx.TypeVar):
@@ -729,14 +745,23 @@ class Signature:
         if binding is None:
             return False
         groups = {}  # type: tx.Dict[int, tx.Tuple[tx.Any, tx.List[tx.Any]]]
+        pgroups = {}  # type: tx.Dict[int, tx.List[tx.Any]]
         for key, hint in self._iter_arguments(binding):
             query = hints[key] if isinstance(key, int) else named_hints[key]
             if not _hint_query_accepts(query, hint):
                 return False
             if isinstance(hint, tx.TypeVar):
                 groups.setdefault(id(hint), (hint, []))[1].append(query)
+            # A `ParamSpec` named at several `Callable` slots must capture the
+            # same parameter list at each, just as a repeated `TypeVar` must
+            # agree on a class.
+            for pspec, tail in paramspec_captures(query, hint):
+                pgroups.setdefault(id(pspec), []).append(tail)
         for hint, classes in groups.values():
             if not typevar_consistent(classes, hint):
+                return False
+        for tails in pgroups.values():
+            if not paramspec_consistent(tails):
                 return False
         return True
 
@@ -1139,6 +1164,31 @@ def _catch_all_or_any(hint: tx.Any) -> tx.Any:
     if any(origin is form for form in _UNPACK_FORMS):
         return tx.Any
     return hint
+
+
+def _reject_variadic_param(name: str, hint: tx.Any, fn: tx.Any) -> None:
+    """Refuse a `ParamSpec`/`Concatenate` used as a declared parameter hint.
+
+    A [`ParamSpec`][typing.ParamSpec] or `#!python Concatenate[...]` only
+    describes a `#!python Callable`'s parameter list -- written as a plain
+    parameter's annotation it describes no value, so it is refused at
+    registration with a message that names the parameter. The `#!python *args:
+    P.args` / `#!python **kwargs: P.kwargs` forms are not rejected here: they
+    are read as an `#!python Any` tail by
+    [`_catch_all_or_any`][bagof.dispatchers._signature._catch_all_or_any]
+    before ever reaching a declared parameter.
+    """
+    bad = isinstance(hint, tx.ParamSpec) or (
+        bool(_PARAMSPEC_ARGKW) and isinstance(hint, _PARAMSPEC_ARGKW)
+    )
+    if not bad:
+        origin = safe_get_origin(hint)
+        bad = any(origin is form for form in _CONCATENATE_FORMS)
+    if bad:
+        raise TypeError(
+            f"{name!r} of {fn}: a ParamSpec/Concatenate is only valid inside "
+            "Callable[...] (or as *args: P.args / **kwargs: P.kwargs)"
+        )
 
 
 def _hint_source(fn: tx.Callable[..., tx.Any]) -> tx.Any:

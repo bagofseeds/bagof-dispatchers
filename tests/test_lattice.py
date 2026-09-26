@@ -40,6 +40,7 @@ class _Sized(tx.Protocol):
 _T = tx.TypeVar("_T")
 _TBOUND = tx.TypeVar("_TBOUND", bound=int)
 _TCONSTR = tx.TypeVar("_TCONSTR", int, str)
+_P = tx.ParamSpec("_P")
 
 # ~40 hints spanning classes, ABCs, unions, optionals, literals, the tuple /
 # list / dict families, `Callable` pairs, `TypeVar`s and `Exact`. It
@@ -83,13 +84,19 @@ CORPUS = [
     tx.Tuple[int, str],
     tx.Tuple[int, ...],
     tuple,
-    # Callable pairs (contravariant params, covariant return). The `...`
-    # wildcard list is deliberately left out: like `Any`, it is
-    # consistent-with every list without being a true top or bottom, so it
-    # is not part of this strict preorder.
+    # Callable pairs (contravariant params, covariant return). `...` and a
+    # bare `ParamSpec` are the top of parameter lists, and a `Concatenate`
+    # prefix sits between the fixed lists and that top -- all part of the
+    # preorder now that the relation is transitive through them (the row-flip
+    # in RFC 11.1; issue #32).
     tx.Callable[[int], str],
     tx.Callable[[bool], str],
     tx.Callable[[int], bool],
+    tx.Callable[..., str],
+    tx.Callable[_P, str],
+    tx.Callable[tx.Concatenate[int, _P], str],
+    tx.Callable[tx.Concatenate[bool, _P], str],
+    tx.Callable[tx.Concatenate[int, str, _P], str],
     # TypeVars
     _T,
     _TBOUND,
@@ -379,7 +386,140 @@ def test_the_typing_literal_spelling_is_value_dependent() -> None:
         Exact[int],
         type,  # a bare `type` is decided by the type of the value alone
         object,
+        # A `Callable` is matched shallowly at the value level -- its value's
+        # own signature is never inspected -- so no `Callable` form is
+        # value-dependent, `ParamSpec` / `Concatenate` lists included. Pinning
+        # this keeps a future value-level `P` solve from silently changing the
+        # cache key.
+        tx.Callable[[int], str],
+        tx.Callable[..., str],
+        tx.Callable[_P, str],
+        tx.Callable[tx.Concatenate[int, _P], str],
     ],
 )
 def test_type_dependent_hints(hint: tx.Any) -> None:
     assert is_value_dependent(hint) is False
+
+
+# --- repeated ParamSpec solving ----------------------------------------
+
+
+def _shape(*prefix: tx.Any) -> tx.Any:
+    """A closed parameter-list shape from a fixed prefix, for the solver."""
+    from bagof.dispatchers.core._relation import _ParamShape
+
+    return _ParamShape(tuple(prefix), None)
+
+
+def _open_shape(*prefix: tx.Any) -> tx.Any:
+    """An open (`...`-tailed) parameter-list shape, for the solver."""
+    from bagof.dispatchers.core._relation import _ParamShape
+
+    return _ParamShape(tuple(prefix), Ellipsis)
+
+
+def test_solve_paramspec_greatest_element() -> None:
+    from bagof.dispatchers._lattice import (
+        paramspec_consistent,
+        solve_paramspec,
+    )
+
+    # `([int])` and `([bool])` -> `([bool])` (contravariant: int <: bool as a
+    # parameter, so the bool-list is the greater).
+    assert solve_paramspec([_shape(int), _shape(bool)]) == _shape(bool)
+    assert paramspec_consistent([_shape(int), _shape(bool)]) is True
+    # Order does not matter.
+    assert solve_paramspec([_shape(bool), _shape(int)]) == _shape(bool)
+
+
+def test_solve_paramspec_incomparable_is_unset() -> None:
+    from bagof.dispatchers._lattice import (
+        paramspec_consistent,
+        solve_paramspec,
+    )
+
+    assert solve_paramspec([_shape(int), _shape(str)]) is UNSET
+    assert paramspec_consistent([_shape(int), _shape(str)]) is False
+
+
+def test_solve_paramspec_closed_and_open_solve_to_open() -> None:
+    from bagof.dispatchers._lattice import solve_paramspec
+
+    # A closed list is a sub-hint of an open one with a matching prefix, so the
+    # open list is the greatest element.
+    assert solve_paramspec([_shape(int), _open_shape(int)]) == _open_shape(int)
+
+
+def test_solve_paramspec_no_slots_is_the_open_top() -> None:
+    from bagof.dispatchers._lattice import (
+        paramspec_consistent,
+        solve_paramspec,
+    )
+
+    assert solve_paramspec([]) == _open_shape()
+    assert paramspec_consistent([]) is True
+
+
+def test_solve_paramspec_single_tail_always_solves() -> None:
+    from bagof.dispatchers._lattice import (
+        paramspec_consistent,
+        solve_paramspec,
+    )
+
+    assert solve_paramspec([_shape(int, str)]) == _shape(int, str)
+    assert paramspec_consistent([_shape(int, str)]) is True
+
+
+def test_paramspec_captures_reads_a_top_level_callable() -> None:
+    from bagof.dispatchers._lattice import paramspec_captures
+
+    P = tx.ParamSpec("P")
+    # Query `Callable[[int, str], int]` at a slot `Callable[P, int]`: `P`
+    # captures the whole list `([int, str])`.
+    captures = dict(
+        (id(p), tail)
+        for p, tail in paramspec_captures(
+            tx.Callable[[int, str], int], tx.Callable[P, int]
+        )
+    )
+    assert captures[id(P)] == _shape(int, str)
+    # A slot whose list does not end in a ParamSpec captures nothing.
+    assert list(
+        paramspec_captures(
+            tx.Callable[[int], int], tx.Callable[[int], int]
+        )
+    ) == []
+    # A nested (non-top-level) Callable is not read.
+    assert list(
+        paramspec_captures(
+            tx.Optional[tx.Callable[[int], int]],
+            tx.Optional[tx.Callable[P, int]],
+        )
+    ) == []
+    # A bare `Callable` slot (no parameter list) captures nothing.
+    assert list(
+        paramspec_captures(tx.Callable[[int], int], tx.Callable)
+    ) == []
+    # A query whose list does not match the slot captures nothing (the empty
+    # list is too short for the committed `int` prefix).
+    assert list(
+        paramspec_captures(
+            tx.Callable[[], int], tx.Callable[tx.Concatenate[int, P], int]
+        )
+    ) == []
+
+
+def test_paramspec_captures_with_a_concatenate_slot() -> None:
+    from bagof.dispatchers._lattice import paramspec_captures
+
+    P = tx.ParamSpec("P")
+    # Slot `Callable[Concatenate[int, P], int]`, query `Callable[[int, str],
+    # int]`: `P` captures the leftover `([str])`.
+    captures = dict(
+        (id(p), tail)
+        for p, tail in paramspec_captures(
+            tx.Callable[[int, str], int],
+            tx.Callable[tx.Concatenate[int, P], int],
+        )
+    )
+    assert captures[id(P)] == _shape(str)
