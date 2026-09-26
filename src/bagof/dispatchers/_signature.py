@@ -771,8 +771,9 @@ class Signature:
         *other*'s (`A ⊑ B`). A signature that cannot bind the shape is not
         comparable, so the answer is [`False`][].
 
-        The repeated-`TypeVar` group-count tie-break (RFC 0001 §3) is a
-        separate selection step in
+        The repeated-`TypeVar` grouping-refinement tie-break (RFC 0001 §3) --
+        a method whose repeated `TypeVar`s strictly refine another's grouping
+        is more specific -- is a separate selection step in
         [`Function`][bagof.dispatchers.Function] and is deliberately not part
         of this base order, which stays the plain per-argument sub-hint
         relation.

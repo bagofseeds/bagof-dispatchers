@@ -330,7 +330,11 @@ only ever breaks a tie that was ambiguous before, never overturns a strict
 specificity win, and never makes two genuinely independent signatures
 comparable. A signature with a repeated group beats one with none, including a
 fully unannotated `(Any, Any)` — the least-surprising reading of "more
-constraint = more specific" where §3 was otherwise silent.
+constraint = more specific" where §3 was otherwise silent. A group of one
+constrains nothing, so refinement needs a `TypeVar` bound at **two or more**
+positions of the call: `*args: T` vs `*args` refines (and so resolves) for a
+call of 2+ arguments, but ties into a single-element group — and is therefore
+ambiguous — for 0 or 1 argument.
 
 **Hint-level `resolve` with TypeVars in the query** uses `issubhint` unchanged.
 

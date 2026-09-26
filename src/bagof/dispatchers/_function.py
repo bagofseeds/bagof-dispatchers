@@ -12,8 +12,9 @@ it, and specificity compares the hints of the slots the *same* argument landed
 in. The most specific method is the one whose landed hints are a sub-hint of
 every competitor's, position by position; ties are broken by explicit
 `priority`, then the argument's own MRO, then how tightly the signature fits,
-and finally by repeated `TypeVar`s -- a method that constrains more arguments
-to one consistent type wins over one that leaves them independent.
+and finally by repeated `TypeVar`s -- a method whose repeated `TypeVar`s
+strictly refine another's grouping (tie every pair it ties, and at least one
+more) wins.
 
 Registration is thread-safe and lock-free to read: each `register` builds a new
 method tuple and publishes it in one assignment, so a concurrent call never
@@ -624,7 +625,7 @@ class Function:
         naming a more derived base wins), then tightness (a signature absorbing
         fewer arguments into catch-alls, with fewer defaults, wins), and last
         the repeated-`TypeVar` refinement (a method whose repeated `TypeVar`s
-        constrain more arguments to one consistent type wins). A tie that
+        strictly refine another's grouping wins). A tie that
         survives every step leaves more than one candidate and is ambiguous
         (`None`).
         """

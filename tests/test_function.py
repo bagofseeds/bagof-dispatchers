@@ -741,6 +741,32 @@ def test_resolve_by_hint() -> None:
     assert f.resolve(str).name == "an_object"
 
 
+def test_resolve_applies_repeated_typevar_tiebreak() -> None:
+    """The repeated-`TypeVar` tie-break (§3) applies to `resolve` too.
+
+    It is a selection step, so it settles a hint-level `resolve` the same way
+    it settles a value call -- not only value dispatch. With the independent
+    `(T, U)` registered *before* the repeated `(T, T)`, a query of two equal
+    hints resolves to the strictly more specific `(T, T)`; a query of two
+    different hints, which `(T, T)` cannot solve, falls to `(T, U)`.
+    """
+    T, U = _typevar_pair()
+    f = Function("f")
+
+    def free(x: T, y: U) -> str:
+        return "free"
+
+    def same(x: T, y: T) -> str:
+        return "same"
+
+    f.register(free)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # the tie-break -> no ambiguity warning
+        f.register(same)
+    assert f.resolve(int, int).name == "same"
+    assert f.resolve(int, str).name == "free"
+
+
 def test_resolve_default_when_no_match() -> None:
     """`resolve(default=...)` returns the default rather than raising."""
     f = Function("f")
