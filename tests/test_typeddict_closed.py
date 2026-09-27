@@ -177,9 +177,79 @@ def test_extra_items_unresolvable_forward_ref_is_skipped() -> None:
     # An `extra_items` type that is an unresolvable forward reference cannot
     # be read, so an extra key's value is accepted (the field is reported via
     # a warning) rather than raising -- mirroring an unresolvable declared
-    # field. The declared key is still enforced.
-    class TD(tx.TypedDict, extra_items=tx.ForwardRef("Undefined")):
+    # field. The declared key is still enforced. Both spellings a forward ref
+    # can take are covered: a `ForwardRef` object, and a bare string (which
+    # `ishintstance` would otherwise reject with a TypeError -- the case that
+    # makes the skip load-bearing). The string is passed via a name so the
+    # linter does not read it as a forward-ref annotation.
+    undefined = "Undefined"
+    for extra in (tx.ForwardRef("Undefined"), undefined):
+
+        class TD(tx.TypedDict, extra_items=extra):
+            a: int
+
+        assert ishintstance({"a": 1, "b": object()}, TD) is True
+        assert ishintstance({"a": "x", "b": object()}, TD) is False
+
+
+# --- inheritance: closedness / extra_items propagate to subclasses ------
+
+
+@CLOSED
+def test_closed_is_inherited_by_a_subclass() -> None:
+    # PEP 728: a subclass of a closed TypedDict is closed too, even without
+    # repeating the keyword. `typing_extensions` records `__closed__` from the
+    # class's own keyword only, so the policy must be read off the base chain.
+    class Base(tx.TypedDict, closed=True):
         a: int
 
-    assert ishintstance({"a": 1, "b": object()}, TD) is True
-    assert ishintstance({"a": "x", "b": object()}, TD) is False
+    class Sub(Base):
+        pass
+
+    assert ishintstance({"a": 1}, Sub) is True
+    assert ishintstance({"a": 1, "z": 9}, Sub) is False
+
+
+@CLOSED
+def test_closed_subclass_of_open_base_closes_only_itself() -> None:
+    class OpenBase(tx.TypedDict):
+        a: int
+
+    class Sub(OpenBase, closed=True):
+        b: str
+
+    # Inherited and own declared keys are fine; an undeclared extra fails.
+    assert ishintstance({"a": 1, "b": "x"}, Sub) is True
+    assert ishintstance({"a": 1, "b": "x", "z": 9}, Sub) is False
+
+
+@EXTRA
+def test_extra_items_is_inherited_by_a_subclass() -> None:
+    class Base(tx.TypedDict, extra_items=int):
+        a: int
+
+    class Sub(Base):
+        b: bool  # consistent with the inherited extra_items=int
+
+    # An undeclared extra is checked against the inherited extra_items type.
+    assert ishintstance({"a": 1, "b": True, "z": 2}, Sub) is True
+    assert ishintstance({"a": 1, "b": True, "z": "s"}, Sub) is False
+
+
+@CLOSED
+def test_closedness_is_inherited_through_a_generic_base() -> None:
+    # A generic closed base is reached via its origin in the base chain
+    # (`Base[int]` -> `Base`), so a parametrised subclass stays closed.
+    T = tx.TypeVar("T")
+    try:
+
+        class Base(tx.TypedDict, tx.Generic[T], closed=True):
+            a: T
+
+        class Sub(Base[int]):
+            pass
+
+    except Exception:
+        pytest.skip("generic closed TypedDict not expressible here")
+    assert ishintstance({"a": 1}, Sub) is True
+    assert ishintstance({"a": 1, "z": 9}, Sub) is False

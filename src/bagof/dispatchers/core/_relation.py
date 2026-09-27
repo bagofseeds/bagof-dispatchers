@@ -19,6 +19,7 @@ from ._compat import (
 )
 from ._exact import exact_target, is_exact
 from ._introspect import (
+    _all_orig_bases,
     eq_safenan,
     get_args_uw,
     get_origin_uw,
@@ -331,24 +332,31 @@ def _typeddict_extra_policy(td: tx.Any) -> tx.Tuple[str, tx.Any]:
       must satisfy `hint`.
 
     A `TypedDict` written `closed=True` reports `"closed"`; one written
-    `extra_items=SomeType` reports `("typed", SomeType)`. A class built by an
-    older `typing_extensions` that cannot express either -- so whose
-    closedness cannot be read -- is reported `"open"`, the permissive default,
-    so the check never fails on it.
+    `extra_items=SomeType` reports `("typed", SomeType)`. Closedness is
+    **inherited**: a subclass of a closed (or `extra_items=`) `TypedDict` is
+    itself closed/typed even when it does not repeat the keyword, so the base
+    chain is walked nearest-first and the first class that states a policy
+    wins. A class built by an older `typing_extensions` that cannot express
+    either -- so whose closedness cannot be read -- is reported `"open"`, the
+    permissive default, so the check never fails on it.
     """
-    # `extra_items=SomeType` records the type on `__extra_items__`. When no
-    # `extra_items=` was given, `typing_extensions` leaves a sentinel there
-    # (or, on a version predating the feature, no attribute at all); both mean
-    # "no per-key extra type", so the identity checks below fall through.
-    extra = getattr(td, "__extra_items__", _NO_EXTRA_ITEMS)
+    # `extra_items=SomeType` records the type on the declaring class's own
+    # `__extra_items__`; when none was given `typing_extensions` leaves a
+    # sentinel there (or, predating the feature, no attribute). `__closed__`
+    # is likewise set from a class's *own* keyword only, and a `TypedDict`'s
+    # base is not in its MRO -- so read the policy off each class in the base
+    # chain rather than off `td` alone, nearest-first.
     no_extra = getattr(tx, "NoExtraItems", _NO_EXTRA_ITEMS)
-    if extra is not _NO_EXTRA_ITEMS and extra is not no_extra:
-        # `extra_items=Never` arrives here too, and needs no special case: no
-        # value satisfies `Never`, so any extra key is rejected -- exactly
-        # what `extra_items=Never` means (equivalent to `closed=True`).
-        return "typed", extra
-    if getattr(td, "__closed__", None) is True:
-        return "closed", None
+    for base in _all_orig_bases(td):
+        cls = safe_get_origin(base) or base
+        extra = getattr(cls, "__extra_items__", _NO_EXTRA_ITEMS)
+        if extra is not _NO_EXTRA_ITEMS and extra is not no_extra:
+            # `extra_items=Never` arrives here too, and needs no special case:
+            # no value satisfies `Never`, so any extra key is rejected --
+            # exactly what `extra_items=Never` means (like `closed=True`).
+            return "typed", extra
+        if getattr(cls, "__closed__", None) is True:
+            return "closed", None
     return "open", None
 
 
@@ -411,16 +419,18 @@ def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
     # closed or carries an `extra_items=` type. An open `TypedDict` (the
     # common case) skips this loop entirely.
     #
-    # NOTE (hint-level follow-up): the hint-level `issubhint` on a concrete
-    # `TypedDict` is purely nominal (`safe_issubclass`), so it does not read
-    # closedness. For every *well-formed* PEP 728 `TypedDict` this stays sound
-    # -- a subclass may not add keys to a closed base, nor a key whose value
-    # type is incompatible with a base's `extra_items` -- so a subclass value
-    # never carries a key its closed/typed base would refuse. A subclass that
-    # breaks those rules (which a type checker rejects, but the runtime still
-    # lets you build) could carry such a key, and the nominal hint relation
-    # would still call it a subhint; making `issubhint` closedness-aware to
-    # close that gap is a separate change.
+    # NOTE (hint-level follow-up): the value check above reads *inherited*
+    # closedness (via `_typeddict_extra_policy`), but the hint-level
+    # `issubhint` on a concrete `TypedDict` is purely nominal
+    # (`safe_issubclass`) and does not. For every *well-formed* PEP 728
+    # `TypedDict` this stays sound -- a subclass may not add keys to a closed
+    # base, nor a key whose value type is incompatible with a base's
+    # `extra_items`, so a subclass value never carries a key its closed/typed
+    # base would refuse. A subclass that breaks those rules (which a type
+    # checker rejects, but the runtime still lets you build) could carry such
+    # a key, and the nominal hint relation would still call it a subhint;
+    # making `issubhint` closedness-aware to close that gap is a separate
+    # change.
     policy, extra_hint = _typeddict_extra_policy(td)
     if policy != "open":
         for key in obj:
