@@ -21,8 +21,12 @@ from ._exact import exact_target, is_exact
 from ._introspect import (
     _CONTRAVARIANT,
     _COVARIANT,
+    _NON_TYPE_PARAMS,
     _all_orig_bases,
     _generic_variances,
+    _is_plain_typevar,
+    _is_user_generic,
+    _looks_like_class,
     eq_safenan,
     get_args_uw,
     get_origin_uw,
@@ -213,15 +217,21 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
       default) allows them, a `closed=True` one rejects them, and an
       `extra_items=` one checks each against that type. A nested `TypedDict`
       or container field is read recursively.
+    * If `hint` is a parametrised generic (`#!python List[int]`,
+      `#!python Box[int]`), checks that `obj` is an instance of its class,
+      and checks the type arguments only when `obj` **declares** them: an
+      instance built as `#!python Box[int]()`, or an instance of a class
+      written against a parametrised base
+      (`#!python class IntList(List[int])`).
     * Otherwise, returns `#!python  issubhint(type(obj), hint)`.
 
     !!! warning
-        A container's **item types are not checked**: a value carries its
-        type, and a type carries no arguments, so `#!python [1, 2]` is a
-        valid `#!python List[str]` as far as this function is concerned.
-        (Python itself refuses `#!python isinstance(x, list[int])` for the
-        same reason.) Checking the items means iterating them, which is
-        the caller's decision to make - `bagof.validators` does it.
+        A container's **item types are not checked**. A plain
+        `#!python [1, 2]` declares no type arguments, so it is a valid
+        `#!python List[str]` as far as this function is concerned. (Python
+        itself refuses `#!python isinstance(x, list[int])` for the same
+        reason.) Checking the items means iterating them, which is the
+        caller's decision to make - `bagof.validators` does it.
 
     !!! example
         ```pycon
@@ -281,11 +291,19 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
         # a `TypedDict` with fields reaches here.
         return _ishintstance_typeddict(obj, origin_uw)
     if isinstance(origin_uw, type):
-        # Only the origin can be checked here: a value carries its type,
-        # and a type carries no arguments - `type([1])` is `list`, never
-        # `List[int]`. Checking the arguments means looking at the items,
-        # which is the caller's business, not an instance check's.
-        return safe_issubclass(type(obj), origin_uw)
+        # A container's items are never looked at: that means iterating
+        # them, which is the caller's business, not an instance check's. So
+        # the origin is checked, and the arguments only when the value
+        # *declares* them (#50, V5) -- `Box[int]()` records `Box[int]`, and an
+        # instance of `class Child(List[int])` is one of `List[int]` by its
+        # class. A plain `[1]` declares nothing: `type([1])` is `list`, never
+        # `List[int]`, so any list matches every `List[...]`.
+        if not safe_issubclass(type(obj), origin_uw):
+            return False
+        if not tx.get_args(hint):
+            return True
+        declared = _declared_parametrisation(obj, origin_uw)
+        return declared is None or issubhint(declared, hint)
     return issubhint(type(obj), hint)
 
 
@@ -948,6 +966,16 @@ def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
         return True
 
     args = safe_get_args(hint_uw)
+    if get_origin_uw(hint_uw) is not origin:
+        # Differing origins: read the sub-hint as the parametrisation of the
+        # super-hint's origin it declares through its bases (#50, V5), so
+        # `class IntBox(Box[int])` is compared as `Box[int]` and `Flip[int,
+        # str]` for `class Flip(Pair[B, A], Generic[A, B])` as `Pair[str,
+        # int]`. When no base maps onto the origin the arguments are compared
+        # positionally, as before.
+        based = _as_base_args(hint_uw, origin)
+        if based is not None:
+            args = based
     if not args:
         # `list` cannot stand in for `List[int]`: it may hold anything.
         return False
@@ -993,6 +1021,230 @@ def _issubslot(sub: tx.Any, sup: tx.Any, variance: str) -> bool:
     # Invariant: equal, or the super side is a top via gradual consistency
     # (`issubhint(Any, sup)` already answers True when `sup` is `Any`).
     return _equivalent(sub, sup) or issubhint(tx.Any, sup)
+
+
+# --- declared parametrisations (#50, V5) -------------------------------
+
+# The markers a generic lists its own type variables with. A base written
+# `Generic[T]` / `Protocol[T]` says which variables the class takes, not what
+# it inherits, so the base walk below never follows (or subscripts) one.
+_PARAMETER_MARKERS = spellings("Generic") + spellings("Protocol")
+
+
+def _own_bases(cls: type) -> tx.Tuple[tx.Any, ...]:
+    """The bases `cls` was written with, parametrised where they were.
+
+    `__orig_bases__` is read off the class's *own* namespace: an attribute
+    read would find a parent's, which describes the parent's bases, not these.
+    A class written without a parametrised base has none of its own, and its
+    plain `__bases__` are the answer.
+    """
+    written = vars(cls).get("__orig_bases__")
+    if isinstance(written, tuple):
+        return written
+    return cls.__bases__
+
+
+def _free_parameters(cls: type) -> tx.Tuple[tx.Any, ...]:
+    """The type variables a generic class takes (`()` for any other class)."""
+    params = getattr(cls, "__parameters__", ())
+    return params if isinstance(params, tuple) else ()
+
+
+def _filled_bases(
+    node: tx.Any, cls: type
+) -> tx.Optional[tx.Tuple[tx.Any, ...]]:
+    """`cls`'s written bases, with `node`'s arguments filled in.
+
+    `node` is `cls` itself or a parametrisation of it (`Sub[bool]`). Each base
+    that mentions one of `cls`'s type variables is subscripted with what
+    `node` gives that variable -- typing's own substitution, `Box[T][bool]` is
+    `Box[bool]`, the mechanism that resolves a generic type alias too -- and
+    one that mentions none (`Box[int]`, a plain class) is kept as written.
+    The arguments are paired by variable, not by position, because a class
+    may list its variables in another order than a base does (`class
+    Flip(Pair[B, A], Generic[A, B])`).
+
+    Returns `#!python None` when `node` leaves the bases undetermined: a
+    generic class written without arguments (a bare `Sub`), or a
+    `ParamSpec` / `TypeVarTuple` generic, whose arguments do not pair one to
+    one with its variables. A base whose substitution raises is dropped.
+    """
+    params = _free_parameters(cls)
+    if not params:
+        return _own_bases(cls)
+    args = tx.get_args(node)
+    if len(args) != len(params) or not all(
+        _is_plain_typevar(param) for param in params
+    ):
+        return None
+    filled_in = dict(zip(params, args))
+    bases = ()  # type: tx.Tuple[tx.Any, ...]
+    for base in _own_bases(cls):
+        origin = tx.get_origin(base)
+        if origin is None:
+            # A plain class base mentions no variable.
+            bases += (base,)
+            continue
+        if any(origin is marker for marker in _PARAMETER_MARKERS):
+            continue
+        base_params = _free_parameters(base)
+        if not base_params:
+            bases += (base,)
+            continue
+        fill = tuple(filled_in.get(param, param) for param in base_params)
+        try:
+            bases += (base[fill if len(fill) > 1 else fill[0]],)
+        except Exception:
+            # A base that refuses its arguments maps onto nothing; the walk
+            # carries on through the others.
+            continue
+    return bases
+
+
+def _as_base_args(
+    hint: tx.Any, target: type
+) -> tx.Optional[tx.Tuple[tx.Any, ...]]:
+    """`hint` re-expressed as a parametrisation of `target`: its arguments.
+
+    `hint` is a class or a parametrised generic whose origin is a subclass of
+    `target`. The answer is what `hint` fills `target`'s parameters with,
+    read through the bases each class was written with (`__orig_bases__`),
+    nearest first, filling in each class's own arguments as it goes:
+
+    * `class IntBox(Box[int])` is `Box[int]`, so `IntBox` gives `(int,)`;
+    * `class Sub(Box[T])` passes its argument on, so `Sub[bool]` gives
+      `(bool,)`, and a subclass written without a parametrised base (`class
+      Leaf(IntBox)`) is followed through its plain bases;
+    * a standard-library class reached on the way (`class Child(List[int])`
+      reaches `List[int]`) is read positionally against a standard-library
+      `target` it subclasses (`Sequence`), as two such origins always are.
+
+    `hint`'s own arguments are returned when its origin *is* `target` and it
+    has any. Returns `#!python None` when nothing maps -- no base reaches
+    `target` with arguments, as for a `collections.Counter` (a runtime
+    subclass of `dict` that records no parametrised base), or a generic class
+    written without arguments -- and the caller then keeps its positional
+    comparison.
+    """
+    queue = [hint]
+    seen = []  # type: tx.List[tx.Any]
+    while queue:
+        node = queue.pop(0)
+        cls = safe_get_origin(node)
+        args = tx.get_args(node)
+        if cls is target:
+            if args:
+                return args
+            continue
+        if not _looks_like_class(cls) or any(cls is each for each in seen):
+            continue
+        seen.append(cls)
+        if args and "__orig_bases__" not in vars(cls):
+            # A parametrised standard-library class (`List[int]`, `Dict[K,
+            # V]`), which records no parametrised base: its arguments line up
+            # with a standard-library `target` it subclasses and that takes as
+            # many (`Sequence`, `Mapping`) -- the positional reading two such
+            # origins are given. One that takes a different number
+            # (`Dict[K, V]` against `Iterable`, `Tuple[int, int]` against
+            # `Sequence`) cannot be paired up, so nothing maps.
+            variances = _generic_variances(target)
+            if (
+                variances is not None
+                and len(variances) == len(args)
+                and safe_issubclass(cls, target)
+            ):
+                return args
+            continue
+        bases = _filled_bases(node, cls)
+        if bases is not None:
+            queue.extend(bases)
+    return None
+
+
+def _is_fully_declared(args: tx.Optional[tx.Sequence[tx.Any]]) -> bool:
+    """Whether declared arguments say what each parameter holds.
+
+    `#!python False` for no arguments at all, and for arguments that mention a
+    type variable (`class Child(List[T])` leaves `T` open) or
+    [`Any`][typing.Any] anywhere inside them: both leave what the value holds
+    undeclared, so neither may narrow which parametrisations it matches.
+    """
+    if not args:
+        return False
+    for arg in args:
+        # The `TypeVar` family first: on 3.8 the `ParamSpec` backport is a
+        # `list`, and would otherwise be read as a parameter list.
+        if isinstance(arg, tx.TypeVar) or _is_any(arg):
+            return False
+        if _NON_TYPE_PARAMS and isinstance(arg, _NON_TYPE_PARAMS):
+            return False
+        if isinstance(arg, (list, tuple)):
+            # A `Callable`'s parameter list.
+            if arg and not _is_fully_declared(arg):
+                return False
+            continue
+        inner = tx.get_args(arg)
+        if inner and not _is_literal(tx.get_origin(arg)):
+            if not _is_fully_declared(inner):
+                return False
+    return True
+
+
+def _orig_class(obj: tx.Any) -> tx.Any:
+    """The parametrisation `obj` was built from, or `#!python None`.
+
+    Calling a subscripted user generic -- `Box[int]()` -- records `Box[int]`
+    on the new instance as `__orig_class__`. It is absent from a builtin
+    container, from a class built with `__slots__` and no `__dict__`, and
+    from any instance built by calling the bare class. Whatever the attribute
+    holds is only trusted when it is a parametrisation of a class `obj` is an
+    instance of.
+    """
+    try:
+        declared = obj.__orig_class__
+    except Exception:
+        # Absent (`AttributeError`), or a `__getattr__` that raises.
+        return None
+    if not tx.get_args(declared):
+        return None
+    if not safe_issubclass(type(obj), safe_get_origin(declared)):
+        return None
+    return declared
+
+
+def _declared_parametrisation(obj: tx.Any, origin: type) -> tx.Any:
+    """What `obj` declares itself to be, as a parametrisation of `origin`.
+
+    `origin` is the class a parametrised hint (`G[args]`) is written on, and
+    `type(obj)` is already known to be a subclass of it. The answer is a hint
+    to compare with `G[args]` through the relation. Returns, in order:
+
+    1. the instance's `__orig_class__` (`Box[int]` for `Box[int]()`), when
+       `origin` is a user generic and it declares every argument of `origin`;
+    2. else `type(obj)`, when the class declares every argument of `origin`
+       through its bases (`class Child(List[int])`);
+    3. else `#!python None`: the value declares nothing, and only its origin
+       can be checked.
+
+    `Tuple` and `Callable` keep their own shallow value check: their argument
+    lists are shapes, not one argument per parameter.
+    """
+    if origin is tuple or origin is abc.Callable:
+        return None
+    if _is_user_generic(origin):
+        # Only a user generic's instances carry `__orig_class__`; restricting
+        # the read to them is what lets the call cache key such a position on
+        # it and leave every other position keyed on the type alone.
+        declared = _orig_class(obj)
+        if declared is not None and _is_fully_declared(
+            _as_base_args(declared, origin)
+        ):
+            return declared
+    cls = type(obj)
+    if _is_fully_declared(_as_base_args(cls, origin)):
+        return cls
+    return None
 
 
 def _is_subscripted_tuple(hint: tx.Any) -> bool:

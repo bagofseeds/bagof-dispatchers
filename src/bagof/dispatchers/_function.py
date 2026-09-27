@@ -38,7 +38,11 @@ import typing_extensions as tx
 # local
 from . import _errors
 from ._errors import AmbiguousMethodError, NoMethodError
-from ._lattice import equivalent, is_value_dependent
+from ._lattice import (
+    equivalent,
+    is_declaration_dependent,
+    is_value_dependent,
+)
 from ._method import Method
 from ._signature import (
     Parameter,
@@ -104,11 +108,12 @@ class _Plan:
 
     Binding depends only on the shape (how many positionals, which keyword
     names), so it is worked out once per shape: which methods can bind it,
-    where each argument lands in each, the pairwise specificity order, and
-    which arguments a hint reads by value rather than by type.
+    where each argument lands in each, the pairwise specificity order, which
+    arguments a hint reads by value rather than by type, and which -- short
+    of that -- it reads by the parametrisation the value declares.
     """
 
-    __slots__ = ("bindable", "le_matrix", "value_dependent")
+    __slots__ = ("bindable", "le_matrix", "value_dependent", "declared")
 
     def __init__(
         self,
@@ -117,11 +122,15 @@ class _Plan:
         ],
         le_matrix: tx.Dict[tx.Tuple[int, int], bool],
         value_dependent: tx.FrozenSet[tx.Any],
+        declared: tx.FrozenSet[tx.Any] = frozenset(),
     ) -> None:
         # Each entry: (method, binding for the shape, {arg key: landed hint}).
         self.bindable = tuple(bindable)
         self.le_matrix = le_matrix
         self.value_dependent = value_dependent
+        # Argument keys keyed on `(type, declared parametrisation)`; disjoint
+        # from `value_dependent`, whose full-value key already covers it.
+        self.declared = declared
 
 
 class Function:
@@ -588,11 +597,19 @@ class Function:
                     second.signature, shape
                 )
         value_dependent = set()  # type: tx.Set[tx.Any]
+        declared = set()  # type: tx.Set[tx.Any]
         for _, _, landed in bindable:
             for key, hint in landed.items():
                 if is_value_dependent(hint):
                     value_dependent.add(key)
-        plan = _Plan(bindable, le_matrix, frozenset(value_dependent))
+                elif is_declaration_dependent(hint):
+                    declared.add(key)
+        plan = _Plan(
+            bindable,
+            le_matrix,
+            frozenset(value_dependent),
+            frozenset(declared - value_dependent),
+        )
         cache.shape_plans[shape] = plan
         return plan
 
@@ -1230,25 +1247,77 @@ def _call_key(
 
     The type of each argument keys it, plus the value itself where the shape's
     hints read a value rather than a type (a `#!python Literal`, a
-    `#!python type[...]`). The key tuple is always built; a value-dependent
-    argument whose value is unhashable is wrapped so the tuple builds fine and
-    the [`TypeError`][] surfaces only when the key is hashed (on a `dict`
-    access), where the caller catches it and leaves the call uncached.
+    `#!python type[...]`), or the parametrisation the value declares where
+    they read that (a user generic, `#!python Box[int]`). The key tuple is
+    always built; a value-dependent argument whose value is unhashable is
+    wrapped so the tuple builds fine and the [`TypeError`][] surfaces only when
+    the key is hashed (on a `dict` access), where the caller catches it and
+    leaves the call uncached.
     """
     value_dependent = plan.value_dependent
+    declared = plan.declared
     parts = [len(args)]  # type: tx.List[tx.Any]
     for index, value in enumerate(args):
         if index in value_dependent:
             parts.append((type(value), _KeyValue(value)))
+        elif index in declared:
+            parts.append((type(value), _declared_key(value)))
         else:
             parts.append(type(value))
     for keyword in sorted(kwargs):
         value = kwargs[keyword]
         if keyword in value_dependent:
             parts.append((keyword, type(value), _KeyValue(value)))
+        elif keyword in declared:
+            parts.append((keyword, type(value), _declared_key(value)))
         else:
             parts.append((keyword, type(value)))
     return tuple(parts)
+
+
+def _declared_key(value: tx.Any) -> tx.Any:
+    """What keys `value` at a declaration-dependent argument, beside its type.
+
+    The parametrisation the instance recorded when it was built
+    (`#!python Box[int]` for `#!python Box[int]()`), or `#!python None` when it
+    recorded none -- never the instance itself, so every instance built from
+    one parametrisation shares a cache entry.
+    """
+    try:
+        recorded = value.__orig_class__
+    except Exception:
+        # Absent (`AttributeError`), or a `__getattr__` that raises: the value
+        # check reads nothing either (`_orig_class`).
+        return None
+    return _SameObject(recorded)
+
+
+class _SameObject:
+    """An object that keys the cache by identity.
+
+    A recorded parametrisation is compared by identity rather than by `==`:
+    typing's own equality merges some parametrisations dispatch tells apart
+    (on Python 3.8 `#!python Literal[1] == Literal[True]`, so `#!python
+    Box[Literal[1]] == Box[Literal[True]]`), and an unhashable one would leave
+    the call uncached. Identity is always hashable and never merges two
+    different records, and typing caches its subscriptions, so every
+    `#!python Box[int]()` records the same `#!python Box[int]` object and hits
+    the one entry. The key holds the object, so its identity cannot be reused
+    while the entry lives.
+    """
+
+    __slots__ = ("obj",)
+
+    def __init__(self, obj: tx.Any) -> None:
+        self.obj = obj
+
+    def __hash__(self) -> int:
+        return id(self.obj)
+
+    def __eq__(self, other: tx.Any) -> bool:
+        if not isinstance(other, _SameObject):
+            return NotImplemented
+        return self.obj is other.obj
 
 
 class _KeyValue:

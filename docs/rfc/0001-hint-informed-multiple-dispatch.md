@@ -153,6 +153,8 @@ changes it, and the change is called out.
 | `List[bool] ≤ List[int]`, `Dict[str,int] ≤ Dict[str,object]` | **False** | `list`/`dict` are invariant (PEP 484): a subtype argument is not a sub-hint (§2.3; #50) |
 | `Sequence[bool] ≤ Sequence[int]`, `Mapping[str,bool] ≤ Mapping[str,int]` | True | `Sequence` covariant; `Mapping` key-invariant, value-covariant (spec table, §2.3; #50) |
 | `Snk[int] ≤ Snk[bool]` (user `contravariant=True`), `Box[bool] ≤ Box[int]` (user unflagged) | True / **False** | user generics read their declared `TypeVar`: contravariant reverses, unflagged is invariant (§2.3; #50) |
+| `IntBox ≤ Box[int]`, `Sub[bool] ≤ Box[bool]`, `Flip[int,str] ≤ Pair[str,int]`, `IntBox ≤ Box[str]` | **True** / T / T / F | differing origins: the sub-hint is re-expressed through the bases its class was written with — `class IntBox(Box[int])`, `class Sub(Box[T])`, `class Flip(Pair[B, A], Generic[A, B])` — then compared slot by slot (§2.3; V5 of #50) |
+| `Child ≤ List[int]`, `Child ≤ List[float]`, `Child ≤ List[object]`, `Child ≤ Sequence[object]` (`class Child(List[int])`) | **True** / F / F / T | `Child` is `List[int]` nominally; invariance governs comparing that with another `list` parametrisation, covariance lets it widen through `Sequence` (V5 of #50) |
 | `Tuple[int] < Tuple[int, ...] < tuple`, `Tuple[int,...] ≤ Tuple[Any,...]` | True chain | covariant `Tuple` |
 | `Tuple[int,str] ≤ Tuple[int,*Ts]`, `Tuple[int] ≤ Tuple[int,*Ts]`, `Tuple[int,*Ts] ≤ Tuple[*Ts]`, `Tuple[int,*Ts,str] ≤ Tuple[int,*Ts]` | True | `*Ts` is an open run of 0+ `Any`: a fixed prefix captures the rest, a longer fixed prefix/suffix is stricter (Phase-8(b), #28) |
 | `Tuple[int,*Ts]` vs `Tuple[*Ts,int]`, `Tuple[int,*Ts]` vs `Tuple[int,...]` | incomparable | a prefix run and a suffix run, or a `*Ts` run and a `...` run, do not order either way |
@@ -170,7 +172,12 @@ changes it, and the change is called out.
 | `int ≤ Union` (bare) | False | bare `Union`/`Literal`/`Type` mean "is one of these"; dead for value dispatch |
 
 Value level (`ishintstance`): `{'a':1} in TD` → **False**; `[1] in List[str]`
-→ **True** (items never inspected); `print in Callable[[int],str]` → True
+→ **True** (items never inspected, and a plain list declares no arguments);
+a value's **declared** parametrisation is read when it has one (V5 of #50):
+`Box[int]()` records `Box[int]` and is **not** in `Box[str]`, and an instance of
+`class Child(List[int])` is **not** in `List[float]` — while `Box()`, a base
+with a free `T` (`class C(List[T])`), and a declared `Any` stay shallow;
+`print in Callable[[int],str]` → True
 (a callable's own signature is never inspected, and a `ParamSpec` is not
 solved from values — the value level is unchanged by the row-flip, #33);
 `True in Literal[1]` → False (PEP 586); `1 in T` True, `'x' in TB` False.
@@ -295,20 +302,53 @@ multiply.
   covariant container (`Sequence`, `frozenset`) keeps its ordering, and a
   contravariant one reverses. Two `List[X]` overloads with subtype-related
   arguments become incomparable → ambiguous (set a priority), where before the
-  narrower one won. Registering both is **legitimate** — a value carries no type
-  arguments, so both genuinely apply, and a `class Child(List[int])` is
-  dispatched precisely once base-parameter substitution lands (V5) — so **no
-  registration warning is emitted**; the ambiguity surfaces at the call, where a
-  `priority` resolves it.
+  narrower one won. Registering both is **legitimate** — a plain list declares
+  no type arguments, so both genuinely apply to it, while an instance of `class
+  Child(List[int])` is dispatched precisely (below) — so **no registration
+  warning is emitted**; the ambiguity surfaces at the call, where a `priority`
+  resolves it.
+- **Differing origins: base-parameter substitution (V5).** A sub-hint whose
+  origin differs from the super-hint's is re-expressed as a parametrisation of
+  the super-hint's origin before its slots are compared, through the bases each
+  class was *written* with (`__orig_bases__`, read off the class's own
+  namespace; a class with none of its own is followed through `__bases__`),
+  nearest first and cycle-guarded. Each base is filled in with the sub-hint's
+  own arguments by typing's own subscription (`Box[T][bool]` is `Box[bool]`),
+  pairing arguments to variables by identity, not position — so `class
+  Flip(Pair[B, A], Generic[A, B])` makes `Flip[int, str]` a `Pair[str, int]`. A
+  base with no free variable (`Box[int]`) is used as written, which is what
+  makes `class IntBox(Box[int])` a `Box[int]`; a parametrised stdlib base
+  (`List[int]`) is read positionally against a stdlib origin it subclasses that
+  takes as many arguments (`Sequence`), exactly as two stdlib origins always
+  were. When nothing maps — a runtime-only stdlib subclass (`Counter`, which
+  records no parametrised base), a generic class written bare (`Sub`, like a
+  bare `Box`), a `ParamSpec`/`TypeVarTuple` generic, a base whose substitution
+  raises, or an arity mismatch (`Dict[K, V]` against `Iterable`) — the
+  arguments are compared positionally, as before. `Tuple`, `Callable` and
+  `Type` keep their dedicated paths.
 - **Argument positions of a call are covariant.** A parameter *consumes* the
   argument; applicability is `type(v) ⊑ P`; "more specific" is "smaller P". This
   is `Tuple` covariance on the argument tuple — Julia's signatures *are* tuple
   types. This is a separate axis from the per-position variance *inside* a hint.
-- **Value applicability stays shallow.** The spec governs static subtyping; a
-  runtime value carries no type arguments (`type([True])` is `list`), so
-  `ishintstance([1], List[int])` stays True — any list matches every `List[…]`,
-  whatever the container's variance. Variance changes hint **ordering /
-  comparability**, never value applicability.
+- **Value applicability reads only what a value declares.** Dispatch never
+  reads a container's contents: `type([True])` is `list`, so
+  `ishintstance([1], List[int])` stays True — a plain list matches every
+  `List[…]`, whatever the container's variance. But when the value itself
+  *declares* its parametrisation, `ishintstance(v, G[args])` uses it (V5),
+  looking in order at (1) the instance's `__orig_class__` — set by typing when
+  `Box[int]()` is called — read only when `G` is a **user** generic (a
+  `Generic` subclass), and used when it re-expresses as a parametrisation of
+  `G`; then (2) the class's written bases, when `type(v)` re-expresses as a
+  parametrisation of `G` (`class Child(List[int])`). Either decides by
+  `issubhint(declared, G[args])`. Otherwise the check stays shallow: a builtin
+  instance (and `list[int]([1])`, which is a plain list), an instance built
+  from the bare class, a `__slots__` class with no `__dict__` (nowhere to
+  record it), and a declaration whose arguments hold a free `TypeVar` or `Any`
+  (`class C(List[T])`, `Box[Any]()`), since neither says what the value holds.
+  A standard-library `G` (`Sequence[int]`) never reads the instance record,
+  only the class's bases — so `class Row(Sequence[T])`'s `Row[int]()` still
+  matches `Sequence[str]`; that keeps every stdlib-origin position keyed on the
+  type alone (§6). `Tuple` and `Callable` keep their shallow value checks.
 - **`Any` / gradual typing [PEP 483, spec].** The spec separates *subtype of*
   from *consistent with*: `Any` is consistent with everything but is neither its
   subtype nor supertype; `object` is the nominal top. A dispatcher must still
@@ -695,11 +735,21 @@ Caching & thread-safety — **two levels**, because the order is per shape:
    (any method's hint there is `Literal`/`type[...]`, or a `Union`/`TypeVar`
    whose members or upper bound include one — a concrete TypedDict is now in
    this set too, since its value-level shape check reads the mapping's keys and
-   value types, not the argument's type alone). Bounded LRU over shapes;
-   rebuilt on `register`.
+   value types, not the argument's type alone), and, short of that, which are
+   *declaration-dependent* (any method's hint there is a parametrised **user**
+   generic, `Box[int]`, directly or through a `Union`/`TypeVar`/`Annotated`:
+   its value check reads the instance's `__orig_class__`, V5). Bounded LRU over
+   shapes; rebuilt on `register`.
 2. Under each plan, a **call cache** keyed by `tuple(type(v_i)) + tuple((k,
    type(w_k)) for k in sorted keywords)`, with `(type, value)` at value-dependent
-   arguments; an unhashable value at a value-dependent argument → uncached.
+   arguments and `(type, __orig_class__)` at declaration-dependent ones — the
+   recorded parametrisation, compared by identity (typing caches `Box[int]`, so
+   every `Box[int]()` shares one entry, and identity never merges records `==`
+   would, e.g. `Literal[1] == Literal[True]` on 3.8), never the instance. A
+   position that is both keys on the full value, which subsumes the record. A
+   stdlib-origin generic (`List[int]`) costs nothing: what a value declares for
+   it comes from its class, which the type already keys. An unhashable value at
+   a value-dependent argument → uncached.
    Positional and keyword spellings of "the same" call are different shapes and
    therefore different keys (they can bind differently — required, not
    incidental).
@@ -1152,7 +1202,7 @@ is uniform across spellings and forward-tolerant. Two measured facts shape this:
 | **`Annotated`/`Doc` (PEP 727)** | 3.9/typing_extensions | 4.x/4.9+ | transparent except `EXACT`; `Annotated` is a class ≤3.12, not 3.13 (pinned). **Support** |
 | **PEP 604 `X \| Y`** | 3.10 | — | `types.UnionType` in `UNION_TYPES`; 3.14 `types.UnionType is typing.Union` (pinned; verify). **Support** |
 | **PEP 585 `list[int]`** | 3.9 | — | `isinstance(list[int], type)` is True on 3.9/3.10 → guard with `get_origin(x) is None` before treating as a class; `≡ List[int]`. **Support** |
-| **User `Generic[T]`** | 3.8 | — | origin `isinstance`; args compared by the position's declared variance, read live off `__parameters__` (`covariant`/`contravariant`/unflagged→invariant, `infer_variance`→invariant); value check shallow (§2.3; #50). **Support** |
+| **User `Generic[T]`** | 3.8 | — | origin `isinstance`; args compared by the position's declared variance, read live off `__parameters__` (`covariant`/`contravariant`/unflagged→invariant, `infer_variance`→invariant); a subclass is compared through its written bases, and a value by the parametrisation it declares (`Box[int]()`, `class IntBox(Box[int])`), else shallow (§2.3; #50). **Support** |
 | **Unknown / future form** | — | typing_extensions first | opaque rule (§11.2). **Degrade** |
 
 Numeric-tower note (docs): `issubhint(int, T_bound_float)` is False — the spec's

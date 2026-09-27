@@ -797,6 +797,26 @@ _STDLIB_VARIANCE = {
 }  # type: tx.Dict[tx.Any, tx.Tuple[str, ...]]
 
 
+def _is_user_generic(origin: tx.Any) -> bool:
+    """Whether instances of `origin` can record their parametrisation.
+
+    Calling a subscripted [`Generic`][typing.Generic] subclass -- `#!python
+    Box[int]()` -- records `#!python Box[int]` on the new instance as
+    `__orig_class__`. A builtin or standard-library container (`#!python
+    list`, [`collections.abc.Sequence`][]) is not such a class, so its
+    parametrisations (`#!python List[int]`) are never read off an instance.
+
+    !!! example
+        ```pycon
+        >>> T = tx.TypeVar("T")
+        >>> class Box(tx.Generic[T]): pass
+        >>> _is_user_generic(Box), _is_user_generic(list)
+        (True, False)
+        ```
+    """
+    return _looks_like_class(origin) and issubclass(origin, tx.Generic)
+
+
 @functools.lru_cache(maxsize=None)
 def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
     """The per-position variance of a generic's origin, or `#!python None`.

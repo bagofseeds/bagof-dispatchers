@@ -5,7 +5,9 @@ super-hint's origin: a user generic reads its declared `TypeVar`, a stdlib
 generic the vendored spec table. The per-slot rule (`A` sub-side arg, `B`
 super-side arg) is covariant `A <= B`, contravariant `B <= A`, invariant
 `A == B` (with `Any` / a free `TypeVar` a top an invariant slot may widen to).
-Value applicability stays shallow -- any list still matches every `List[...]`.
+A value that declares no type arguments is matched shallowly -- a plain list
+still matches every `List[...]` (what a value *does* declare is read too; see
+`test_declared_parametrisation.py`).
 
 Every hint is spelled through `typing_extensions`, and every row runs on 3.8
 (the docstring / oldest-supported interpreter), so no `X | Y` or `list[int]`.
@@ -241,10 +243,10 @@ def test_invariant_overloads_are_ambiguous() -> None:
 
 
 def test_value_check_is_shallow_regardless_of_variance() -> None:
-    """A value carries no type arguments, so any container matches any arg.
+    """A value declaring no type arguments matches any parametrisation.
 
-    Variance changes hint *ordering*, never value applicability -- the shallow
-    value check is unchanged (#50).
+    Variance changes hint *ordering*; a plain container, or a user generic
+    built without arguments, is still matched by its class alone (#50).
     """
     # An invariant container: a bool list is still a `List[int]` at the value
     # level, and a plain list is still a `List[str]`.

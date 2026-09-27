@@ -17,10 +17,12 @@ questions selection asks of a hint:
   ([`solve_typevar`][bagof.dispatchers._lattice.solve_typevar] /
   [`typevar_consistent`][bagof.dispatchers._lattice.typevar_consistent])?
 
-and one the cache asks:
+and two the cache asks:
 
 * does a hint's applicability depend on the value, not just its type
   ([`is_value_dependent`][bagof.dispatchers._lattice.is_value_dependent])?
+* short of that, does it depend on the parametrisation a value declares
+  ([`is_declaration_dependent`][bagof.dispatchers._lattice.is_declaration_dependent])?
 
 The value check itself stays in the relation: the engine calls
 [`ishintstance`][bagof.dispatchers.core.ishintstance] directly. Its
@@ -48,7 +50,7 @@ from .core import (
 )
 from .core._compat import UNION_TYPES, is_typeddict_marker
 from .core._exact import is_exact
-from .core._introspect import is_typeddict
+from .core._introspect import _is_user_generic, is_typeddict
 from .core._relation import (
     _callable_param_shape,
     _is_literal,
@@ -404,6 +406,14 @@ def is_value_dependent(hint: tx.Any) -> bool:
     the *shape* of a mapping -- its keys and their value types -- so two
     dicts of the same type can match different methods.
 
+    A parametrised user generic (`#!python Box[int]`) is *not* value-dependent,
+    though two instances of one class can match it differently: what decides
+    is the parametrisation each was built from (`#!python Box[int]()` against
+    `#!python Box[str]()`), not the instance, so it gets the narrower key
+    [`is_declaration_dependent`][bagof.dispatchers._lattice.is_declaration_dependent]
+    describes. A standard-library generic (`#!python List[int]`) is neither:
+    what a value declares for it comes from its class alone.
+
     An [`Exact`][bagof.dispatchers.Exact]`[C]` hint is *not* value-dependent,
     though it might look it: it checks `#!python type(value) is C`, which the
     type alone answers. Nor is the bare `#!python TypedDict` marker, which
@@ -455,3 +465,48 @@ def is_value_dependent(hint: tx.Any) -> bool:
         # so it is recognised only through its origin.
         return True
     return False
+
+
+def is_declaration_dependent(hint: tx.Any) -> bool:
+    """Whether a hint's applicability can depend on what a value declares.
+
+    The narrower dependence the call cache keys on between "the type" and
+    "the value" (RFC 0001 §6). A parametrised **user** generic
+    (`#!python Box[int]`) is matched against the parametrisation an instance
+    was built from: `#!python Box[int]()` records `#!python Box[int]` on
+    itself, so two instances of one class can match different methods. The
+    cache therefore keys such an argument on its type *and* that record, not
+    on the instance -- so every `#!python Box[int]()` shares one entry.
+
+    A builtin or standard-library generic (`#!python List[int]`) is not
+    dependent: its instances never carry such a record, and what a subclass
+    declares through its bases (`#!python class Child(List[int])`) belongs to
+    the type. A `#!python Union` or `#!python TypeVar` is dependent when a
+    member or its upper bound is, as for
+    [`is_value_dependent`][bagof.dispatchers._lattice.is_value_dependent].
+
+    !!! example
+        ```pycon
+        >>> from typing import Generic, List, TypeVar
+        >>> T = TypeVar("T")
+        >>> class Box(Generic[T]): pass
+        >>> is_declaration_dependent(Box[int])
+        True
+        >>> is_declaration_dependent(List[int])
+        False
+        ```
+    """
+    hint = normalise_hint(hint)
+    if is_exact(hint):
+        # `Exact[C]` is `type(value) is C` -- decided by the type alone.
+        return False
+    hint = unwrap(hint, tx.Annotated)
+    args = get_args_uw(hint)
+    origin = get_origin_uw(hint)
+    if origin in UNION_TYPES and args:
+        return any(is_declaration_dependent(arg) for arg in args)
+    if isinstance(hint, tx.TypeVar):
+        return is_declaration_dependent(_typevar_upper(hint))
+    # Exactly the hints whose value check reads `__orig_class__` (see
+    # `_declared_parametrisation`): a user generic with arguments.
+    return bool(args) and _is_user_generic(origin)
