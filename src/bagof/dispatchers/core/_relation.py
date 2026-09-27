@@ -799,16 +799,6 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     if hint is superhint:
         return True
 
-    # A bare `TypedDict` marker on the hint side means "any TypedDict". Every
-    # TypedDict-shaped value is a `dict`, so the marker is a sub-hint of `dict`
-    # (and of whatever `dict` is a sub-hint of, e.g. `Mapping`); rank it as
-    # `dict` here. The superhint-is-marker case is handled further below and a
-    # plain `dict` is not a sub-hint of the marker, so the marker stays
-    # strictly below `dict` -- which makes `TypedDict` the unique most-specific
-    # key over `dict` in `resolve_hint` (RFC 0001 §8.1).
-    if is_typeddict_marker(get_origin_uw(hint)):
-        return issubhint(dict, superhint)
-
     # Unwrap superhint origin
     origin_uw = get_origin_uw(superhint)
 
@@ -892,6 +882,21 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
         # subclassable class below. A subscripted form has already resolved to
         # its inner origin above, so only a bare one reaches here.
         return True
+
+    # A bare `TypedDict` marker on the hint side means "any TypedDict". Every
+    # TypedDict-shaped value is a `dict`, so the marker is a sub-hint of `dict`
+    # (and of whatever `dict` is a sub-hint of, e.g. `Mapping`, `object`); rank
+    # it as `dict` here. This is reached only after the union, `TypeVar`,
+    # literal and marker-as-superhint branches above have had their turn, so a
+    # super-hint that merely *contains* the marker (`Optional[TypedDict]`, a
+    # `TypeVar` bound by it, an `Annotated` wrapper, the other spelling) still
+    # matches through those; the redirect applies only against a plain class
+    # super-hint. A plain `dict` is not a sub-hint of the marker (that goes
+    # through the marker-as-superhint branch above and is `False`), so the
+    # marker stays strictly below `dict` -- which makes `TypedDict` the unique
+    # most-specific key over `dict` in `resolve_hint` (RFC 0001 §8.1).
+    if is_typeddict_marker(get_origin_uw(hint)):
+        return issubhint(dict, superhint)
 
     if isinstance(origin_uw, type):
         return _issubclasshint(hint, superhint, origin_uw)

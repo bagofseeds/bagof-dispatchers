@@ -32,7 +32,13 @@ import typing_extensions as tx
 # local
 from ._compat import UnknownHintWarning
 from ._exact import exact_target, is_exact
-from ._introspect import _typing_spelling, mro_index, normalise_hint
+from ._introspect import (
+    _looks_like_class,
+    _typing_spelling,
+    get_origin_uw,
+    mro_index,
+    normalise_hint,
+)
 from ._relation import issubhint
 from ._sentinels import UNSET
 
@@ -126,16 +132,20 @@ def resolve_hint(
         return mapping[best[0]]
 
     # Two or more equally specific keys accept the query. When the query is a
-    # class, refine by argument MRO (RFC 0001 §2.2 step 3): the key nearest in
-    # the query's MRO wins -- so `{Enum, str}` picks `str` for
+    # class, refine by argument MRO (RFC 0001 §2.2 step 3): keep only the keys
+    # nearest in the query's MRO -- so `{Enum, str}` picks `str` for
     # `class Color(str, Enum)`, and the diamond `D(B, C)` picks `B`, both
-    # order-independently, matching the value-dispatch tie-break.
-    refined = _mro_refine(hint, best)
-    if refined is not UNSET:
-        return mapping[refined]
+    # order-independently, matching the value-dispatch tie-break. When several
+    # keys tie at that nearest position (duplicate spellings of one class), the
+    # tie is restricted to just them, so a farther key never wins on order.
+    nearest = _mro_nearest(hint, best)
+    if nearest is not None:
+        best = nearest
+        if len(best) == 1:
+            return mapping[best[0]]
 
-    # Nothing separates them -- a non-class query, or class keys equidistant in
-    # the MRO. Keep the mapping's own order so the choice is repeatable.
+    # Nothing separates them -- a non-class query, or several equidistant keys.
+    # Keep the mapping's own order so the choice is repeatable.
     winner = next(key for key in mapping if key in best)
     if ambiguity == "raise":
         raise _ambiguous_keys(hint, best)
@@ -198,33 +208,43 @@ def _strictly_below(a: tx.Any, b: tx.Any) -> bool:
         return False
 
 
-def _mro_refine(hint: tx.Any, best: tx.Sequence[tx.Any]) -> tx.Any:
-    """The single best key by the query's MRO, or `UNSET` when none is.
+def _mro_nearest(
+    hint: tx.Any, best: tx.Sequence[tx.Any]
+) -> tx.Optional[tx.List[tx.Any]]:
+    """The nearest-MRO subset of `best` for a class query, or `None`.
 
     This is the RFC 0001 §2.2 step-3 refinement, applied to a tie between
-    equally specific keys: when the query is a class, the key whose class is
-    the *nearest* base of the query in its MRO wins. It runs only when the
-    query is a class and every candidate names a distinct position in that
-    MRO (via [`mro_index`][bagof.dispatchers.core.mro_index]); a non-class
-    query, a candidate that is not a class in the MRO (a `#!python Union`, a
-    `#!python Protocol`, an ABC satisfied by registration), or two candidates
-    at the same MRO position all leave the tie unbroken, returning
-    [`UNSET`][bagof.dispatchers.core.UNSET] so the caller's order fallback and
-    ambiguity report still apply.
+    equally specific keys: when the query is a class, the keys whose class is
+    the *nearest* base of the query in its MRO are kept. A single-key result is
+    a clean MRO win (`{Enum, str}` -> `str`; the diamond `D(B, C)` -> `B`); a
+    multi-key result is an irreducible tie between duplicate spellings of the
+    nearest class (`typing.Sequence` and `collections.abc.Sequence`), which the
+    caller resolves among *those* alone -- a farther key never wins on order.
+
+    A parametrised generic query is read as its origin class (`G[int]` refines
+    like `G`), so the answer does not depend on the interpreter version -- a
+    `#!python G[int]` alias is `#!python isinstance(_, type)` on 3.9/3.10 but
+    not on 3.11+, so that test alone would refine inconsistently.
+
+    Returns `#!python None` -- leaving the whole tie to the caller's order
+    fallback -- when the query is not a class, or when any candidate names no
+    position in the query's MRO (a `#!python Union`, a `#!python Protocol` or
+    ABC satisfied by registration, a parametrised generic key).
     """
-    if not isinstance(hint, type):
-        return UNSET
+    query = hint
+    if not _looks_like_class(query):
+        origin = get_origin_uw(query)
+        if not _looks_like_class(origin):
+            return None
+        query = origin
     ranked = []
     for key in best:
-        index = mro_index(key, hint)
+        index = mro_index(key, query)
         if index is None:
-            return UNSET
+            return None
         ranked.append((index, key))
     nearest = min(index for index, _ in ranked)
-    winners = [key for index, key in ranked if index == nearest]
-    if len(winners) == 1:
-        return winners[0]
-    return UNSET
+    return [key for index, key in ranked if index == nearest]
 
 
 def _warn_unusable_key(key: tx.Any) -> None:

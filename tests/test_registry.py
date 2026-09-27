@@ -226,6 +226,76 @@ def test_mro_tiebreak_equidistant_class_keys_stay_ambiguous() -> None:
         resolve_hint(_Seq, abc_first)
 
 
+def test_mro_tiebreak_nearest_group_excludes_a_farther_key() -> None:
+    """A farther key never wins on order when the nearest position ties.
+
+    `class S2(abc.Sequence, B)` reaches `Sequence` nearer than `B` in its MRO.
+    The two `Sequence` spellings tie at that nearest position, so the tie is
+    restricted to *them* -- `B` is dropped, never picked up by the order
+    fallback -- and the result is one of the `Sequence` values, either order.
+    """
+    class _S2(abc.Sequence, _MroB):
+        def __getitem__(self, index: int) -> int:
+            raise IndexError
+
+        def __len__(self) -> int:
+            return 0
+
+    b_first = {_MroB: "b", typing.Sequence: "typing", abc.Sequence: "abc"}
+    abc_first = {abc.Sequence: "abc", typing.Sequence: "typing", _MroB: "b"}
+    with pytest.warns(RuntimeWarning):
+        assert resolve_hint(_S2, b_first, ambiguity="warn") == "typing"
+    with pytest.warns(RuntimeWarning):
+        assert resolve_hint(_S2, abc_first, ambiguity="warn") == "abc"
+    with pytest.raises(AmbiguousMethodError):
+        resolve_hint(_S2, b_first)
+
+
+def test_mro_tiebreak_parametrised_generic_query_is_version_consistent() -> (
+    None
+):
+    """A `G[int]` query refines exactly like a bare `G` on every version.
+
+    A parametrised generic alias is `isinstance(_, type)` on 3.9/3.10 but not
+    on 3.11+, so the tie-break resolves the query to its origin class -- the
+    same class a `G[int]` value has at runtime -- rather than depending on that
+    quirk.
+    """
+    _T = typing.TypeVar("_T")
+
+    class _Gen(_MroB, _MroC, typing.Generic[_T]):
+        pass
+
+    # `{C, B}` is a genuine tie for `_Gen` (it subclasses both), so the query
+    # must reach the MRO refinement -- where `B` is the nearer base.
+    registry = {_MroC: "c", _MroB: "b"}
+    bare = resolve_hint(_Gen, registry)
+    parametrised = resolve_hint(_Gen[int], registry)
+    assert bare == parametrised == "b"
+
+
+def test_non_class_query_tie_is_ambiguous_by_design() -> None:
+    """A bare `Literal` key vs a class stays ambiguous (RFC 0001 §8.1 (3)).
+
+    `Literal[1]` is a sub-hint of both bare `Literal` ("any literal") and
+    `int`, but the two keys are incomparable and neither is a class in a value
+    MRO, so MRO cannot decide -- it raises by default and, under
+    `ambiguity="warn"`, warns and takes the first registered.
+    """
+    lit_first = {tx.Literal: "literal", int: "number"}
+    int_first = {int: "number", tx.Literal: "literal"}
+    with pytest.raises(AmbiguousMethodError):
+        resolve_hint(tx.Literal[1], lit_first)
+    with pytest.warns(RuntimeWarning):
+        assert resolve_hint(tx.Literal[1], lit_first, ambiguity="warn") == (
+            "literal"
+        )
+    with pytest.warns(RuntimeWarning):
+        assert resolve_hint(tx.Literal[1], int_first, ambiguity="warn") == (
+            "number"
+        )
+
+
 def test_exact_key_convenience() -> None:
     """An `Exact[C]` key answers a plain-`C` query (RFC §4 convenience)."""
     registry = {Exact[int]: "exactly int"}

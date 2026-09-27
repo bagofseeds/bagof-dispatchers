@@ -103,8 +103,14 @@ CORPUS = [
     dict,
     # TypedDict rows (#19): the bare marker ("any TypedDict") and a concrete
     # TypedDict both sit strictly below `dict` -- every TypedDict value is a
-    # dict, but a plain `dict` is neither.
+    # dict, but a plain `dict` is neither. The marker is reduced to `dict` only
+    # against a plain-class super-hint, so it must still be ordered correctly
+    # when merely *contained* in one (a union member, an `Annotated` wrapper)
+    # or written in the other spelling -- these rows are that regression.
     tx.TypedDict,
+    typing.TypedDict,
+    tx.Optional[tx.TypedDict],
+    tx.Annotated[tx.TypedDict, "m"],
     _Movie,
     tx.Tuple[int],
     tx.Tuple[int, str],
