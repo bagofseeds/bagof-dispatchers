@@ -47,6 +47,7 @@ from .core import (
 )
 from .core._compat import _UNPACK_FORMS, UNION_TYPES, spellings
 from .core._exact import exact_target, is_exact
+from .core._introspect import _typing_spelling
 from .core._relation import (
     _is_subscripted_tuple,
     _is_unpacked_typevartuple,
@@ -1073,6 +1074,12 @@ def _has_forward_ref(hint: tx.Any) -> bool:
     [`ForwardRef`][typing.ForwardRef], or a bare string a PEP 585 builtin
     generic (`#!python list["Node"]`) or a `#!python Union` member keeps
     unwrapped.
+
+    A [`Callable`][typing.Callable]'s parameter list arrives from
+    [`get_args`][typing.get_args] as a plain `#!python list`
+    (`#!python Callable[["X"], int]` -> `#!python ([ForwardRef("X")], int)`),
+    not a direct argument, so a `#!python list` element is descended into
+    element by element.
     """
     if isinstance(hint, str):
         return True
@@ -1086,7 +1093,14 @@ def _has_forward_ref(hint: tx.Any) -> bool:
         # `Annotated[T, ...]`: only the wrapped type `T` can carry a reference;
         # the metadata is arbitrary values, so it is not descended into.
         return _has_forward_ref(hint.__origin__)
-    return any(_has_forward_ref(arg) for arg in tx.get_args(hint))
+    for arg in tx.get_args(hint):
+        if isinstance(arg, list):
+            # A `Callable` parameter list is a plain list of parameter hints.
+            if any(_has_forward_ref(element) for element in arg):
+                return True
+        elif _has_forward_ref(arg):
+            return True
+    return False
 
 
 def _hint_eq(a: tx.Any, b: tx.Any) -> bool:
@@ -1100,15 +1114,24 @@ def _hint_eq(a: tx.Any, b: tx.Any) -> bool:
     (`#!python List["Later"]`, `#!python Optional["Node"]`) the two are
     compared structurally instead -- a generic alias compares by its origin and
     its arguments, and each nested `ForwardRef` by name, so two genuinely
-    different spellings do not collapse to equal. Two fully resolved hints are
-    compared with [`equivalent`][bagof.dispatchers._lattice.equivalent].
+    different spellings do not collapse to equal. A reference's
+    `__forward_module__` is not consulted, so the same name recorded against
+    different modules compares equal, as at the top level. Two fully resolved
+    hints are compared with
+    [`equivalent`][bagof.dispatchers._lattice.equivalent].
     """
     a_name = _forward_name(a)
     b_name = _forward_name(b)
     if a_name is not None or b_name is not None:
         return a_name == b_name
     if _has_forward_ref(a) or _has_forward_ref(b):
-        return a == b
+        # A nested forward reference has no namespace, so the two are compared
+        # structurally rather than through the sub-hint relation. Canonicalise
+        # each side's generic spelling first (`list["Zed"]` -> `List["Zed"]`)
+        # so two spellings of the same type match, then compare structurally so
+        # a bare-string reference equals a `ForwardRef` of the same name. A
+        # plain `a == b` is spelling-sensitive on both counts.
+        return _structural_hint_eq(_typing_spelling(a), _typing_spelling(b))
     return equivalent(a, b)
 
 
