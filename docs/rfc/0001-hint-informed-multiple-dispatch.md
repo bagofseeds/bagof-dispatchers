@@ -295,7 +295,11 @@ multiply.
   covariant container (`Sequence`, `frozenset`) keeps its ordering, and a
   contravariant one reverses. Two `List[X]` overloads with subtype-related
   arguments become incomparable → ambiguous (set a priority), where before the
-  narrower one won.
+  narrower one won. Registering both is **legitimate** — a value carries no type
+  arguments, so both genuinely apply, and a `class Child(List[int])` is
+  dispatched precisely once base-parameter substitution lands (V5) — so **no
+  registration warning is emitted**; the ambiguity surfaces at the call, where a
+  `priority` resolves it.
 - **Argument positions of a call are covariant.** A parameter *consumes* the
   argument; applicability is `type(v) ⊑ P`; "more specific" is "smaller P". This
   is `Tuple` covariance on the argument tuple — Julia's signatures *are* tuple
@@ -542,7 +546,11 @@ imported". Raised in `Function.dispatch`/`resolve`, not in the `__call__` frame.
 `Function.ambiguities()` (Julia's `detect_ambiguities`) returns incomparable
 registered pairs that could both apply — a test helper CI can assert empty.
 Registration only *warns* for guaranteed-ambiguous shapes, never raises, so
-import order cannot break a program.
+import order cannot break a program. A pair split by a differing `priority` is
+resolved deterministically at the call — the higher priority wins — so it is
+neither warned nor listed. A same-origin parametrised pair (`List[int]` vs
+`List[str]`) is *not* warned or listed either: registering both is legitimate
+and the incomparability only shows at the call.
 
 ---
 
@@ -908,8 +916,9 @@ subclasses of the dispatch errors. The model needs no positional-to-name adapter
 ## 9. Corner-case checklist (each is a test)
 
 **Hints & lattice:** `Any` vs `object` (`object < Any`; unannotated = `Any`) ·
-`List[int] < list ≡ List`; `List[int]`+`List[str]` at one position →
-`RuntimeWarning` · `Optional`/`Union` ordered by `issubhint`; `None` arg is
+`List[int] < list ≡ List`; `List[int]`+`List[str]` at one position → ambiguous
+at the call (set a priority), no registration warning — registering both is
+legitimate · `Optional`/`Union` ordered by `issubhint`; `None` arg is
 `NoneType` · bare `Union`/`Literal`/`Type` never applicable to a value (warn) ·
 `Literal` value-dependent; `True`∉`Literal[1]`; NaN via `eq_safenan`; unhashable
 → uncached · `Tuple[X,...]`/`Tuple[X,Y]`/`tuple` chain; items not inspected;
@@ -971,8 +980,12 @@ positional theorem → property test against the reference positional engine.
 **Registration & lifecycle:** new registration → cache cleared, order extended,
 atomic publish · concurrent registration/call → never torn · same name in two
 modules → distinct `Function`s; reload → replacement with `RuntimeWarning` ·
-bad registrations → `TypeError` · `priority` ties still ambiguous, never
-overrides a strict specificity win · `ambiguities()` lists warned pairs ·
+bad registrations → `TypeError` · equal-`priority` ties still ambiguous, never
+override a strict specificity win · a differing-`priority` clash is resolved
+deterministically, so it is neither warned nor listed (V4) · `ambiguities()`
+lists warned pairs · a same-origin parametrised pair (`List[int]`/`List[str]`,
+invariant `List[int]`/`List[bool]`) is incomparable and ambiguous at the call,
+but registering both is legitimate so it is not warned or listed ·
 core-magic re-export identity; `get_from_registry` parity.
 
 ---

@@ -339,10 +339,12 @@ class Function:
         """Warn when `method` is guaranteed to be ambiguous with another.
 
         Only guaranteed ambiguities are warned (RFC 0001 §5): a pair that
-        binds the same shape, is incomparable, and whose landed hints are
-        comparable at every argument -- so some call matches both. A pair that
-        only clashes for a value neither is written for (a diamond subclass
-        yet to exist) is left for the call to surface.
+        binds the same shape, is incomparable at equal priority, and whose
+        landed hints are comparable at every argument -- so some call matches
+        both. A pair split by a differing `priority` is resolved
+        deterministically at the call, so it is not warned; and a pair that
+        only clashes for a value neither is written for (a diamond subclass yet
+        to exist) is left for the call to surface.
         """
         for other in methods:
             if other is method:
@@ -492,13 +494,14 @@ class Function:
     def ambiguities(self) -> tx.List[tx.Tuple[Method, Method]]:
         """The pairs of methods that could dispatch ambiguously.
 
-        Each pair binds a common call shape, is incomparable, and has
-        comparable hints at every argument of that shape -- so some call
-        matches both with no most specific method. This is a heuristic over
-        each method's own fully-applied shape (RFC 0001 §5): it finds the
-        ambiguities a call written straightforwardly would hit, not every
-        ambiguity reachable through `#!python *args` spreading or an
-        unforeseen subclass.
+        Each pair binds a common call shape, is incomparable at equal priority,
+        and has comparable hints at every argument of that shape -- so some
+        call matches both with no most specific method. A pair split by a
+        differing `priority` is resolved deterministically at the call, so it
+        is not listed. This is a heuristic over each method's own fully-applied
+        shape (RFC 0001 §5): it finds the ambiguities a call written
+        straightforwardly would hit, not every ambiguity reachable through
+        `#!python *args` spreading or an unforeseen subclass.
 
         !!! example
             ```pycon
@@ -1003,11 +1006,11 @@ def _shapes_for_pair(
 def _pair_ambiguous(first: Method, second: Method, shape: tx.Any) -> bool:
     """Whether two methods are guaranteed ambiguous for `shape`.
 
-    Both must bind the shape, be incomparable, land their arguments on the
-    same keys, and have comparable hints at every argument -- so the tuple
-    that is most specific at each position matches both. A method with a hint
-    still unresolved cannot be compared, so the pair is treated as not (yet)
-    ambiguous.
+    Both must bind the shape, be incomparable at equal priority, land their
+    arguments on the same keys, and have comparable hints at every argument --
+    so the tuple that is most specific at each position matches both. A method
+    with a hint still unresolved cannot be compared, so the pair is treated as
+    not (yet) ambiguous.
     """
     try:
         return _pair_ambiguous_resolved(first, second, shape)
@@ -1022,6 +1025,11 @@ def _pair_ambiguous_resolved(
     first_binding = _bind_shape(first.signature, shape)
     second_binding = _bind_shape(second.signature, shape)
     if first_binding is None or second_binding is None:
+        return False
+    # A differing `priority` breaks the tie deterministically at dispatch (the
+    # higher one wins, RFC 0001 §2.2/§5), so the pair is never ambiguous at a
+    # call -- do not warn or list it.
+    if first.priority != second.priority:
         return False
     a_le = first.signature.le(second.signature, shape)
     b_le = second.signature.le(first.signature, shape)
