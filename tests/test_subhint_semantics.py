@@ -13,7 +13,7 @@ from bagof.dispatchers.core import (
     normalise_hint,
 )
 
-# --- covariant argument comparison -------------------------------------
+# --- per-position variance argument comparison (#50) -------------------
 
 ARG_CASES = [
     # A parametrised hint is a subhint of its own origin.
@@ -28,12 +28,19 @@ ARG_CASES = [
     # anything at all.
     (list, tx.List[int], False),
     (dict, tx.Dict[str, int], False),
-    # Arguments are compared covariantly.
-    (tx.List[bool], tx.List[int], True),
+    # Arguments are compared by each position's declared variance (#50).
+    # `list` is invariant, so a subtype argument does NOT make a sub-hint:
+    # `List[bool]` and `List[int]` describe different, incomparable lists.
+    (tx.List[bool], tx.List[int], False),
     (tx.List[str], tx.List[int], False),
-    (tx.Dict[str, bool], tx.Dict[str, int], True),
+    # `dict` is invariant in both key and value, so an `int`->`bool` value is
+    # not a sub-hint either.
+    (tx.Dict[str, bool], tx.Dict[str, int], False),
+    # `Any` on the super side is a top an invariant slot may still widen to.
     (tx.List[int], tx.List[tx.Any], True),
-    # ... including through the container hierarchy.
+    # ... and through the container hierarchy the variance is the super-hint
+    # origin's: `Sequence`/`Iterable` are covariant, so a subtype item still
+    # makes a sub-hint.
     (tx.List[int], tx.Sequence[int], True),
     (tx.List[int], tx.Iterable[int], True),
     (tx.List[bool], tx.Sequence[int], True),

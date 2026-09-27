@@ -164,6 +164,74 @@ of `int`. `Exact[C]` accepts a value only when its type is **exactly** `C`:
 
 To a type checker `Exact[int]` reads as plain `int`.
 
+## Variance
+
+A generic's type argument is compared by the **variance its parameter
+declares**, following the typing spec. A covariant `TypeVar`
+(`covariant=True`) orders a container the same way as its argument, so a more
+specific argument gives a more specific — and preferred — overload:
+
+```pycon
+>>> import typing_extensions as tx
+>>> from bagof.dispatchers import dispatch
+>>> T_co = tx.TypeVar("T_co", covariant=True)
+>>> class Source(tx.Generic[T_co]):
+...     pass
+>>> @dispatch
+... def read(s: Source[int]) -> str:
+...     return "ints"
+>>> @dispatch
+... def read(s: Source[bool]) -> str:
+...     return "bools"
+>>> read(Source())          # Source[bool] is the more specific overload
+'bools'
+```
+
+A contravariant `TypeVar` (`contravariant=True`) reverses that order, so the
+*wider* argument wins instead:
+
+```pycon
+>>> T_contra = tx.TypeVar("T_contra", contravariant=True)
+>>> class Sink(tx.Generic[T_contra]):
+...     pass
+>>> @dispatch
+... def write(s: Sink[int]) -> str:
+...     return "ints"
+>>> @dispatch
+... def write(s: Sink[bool]) -> str:
+...     return "bools"
+>>> write(Sink())           # Sink[int] is the more specific overload
+'ints'
+```
+
+A plain `TypeVar` — and every mutable standard-library container, such as
+`list` — is **invariant**: `List[int]` and `List[bool]` describe different,
+incomparable lists, so two such overloads tie and you break it with a
+`priority`:
+
+```pycon
+>>> import warnings
+>>> from bagof.dispatchers import Function
+>>> handle = Function("handle")
+>>> with warnings.catch_warnings():
+...     warnings.simplefilter("ignore")   # registration warns about the clash
+...     @handle.register
+...     def _ints(xs: tx.List[int]) -> str: return "ints"
+...     @handle.register(priority=1)
+...     def _bools(xs: tx.List[bool]) -> str: return "bools"
+>>> handle([True, False])   # the priority chooses
+'bools'
+```
+
+`Sequence`, `frozenset`, `Iterable` and the other read-only containers are
+covariant, so a `Sequence[bool]` overload stays more specific than a
+`Sequence[int]` one — only the mutable containers are invariant. Variance
+changes only how hints are **ordered**: a value carries no type arguments, so
+any list still matches every `List[...]` at call time.
+
+If you use `bagof.hints`, its `typevars.co`, `typevars.contra` and
+`typevars.inv` variables carry the matching flags and are read the same way.
+
 ## Dispatching on numbers
 
 Dispatch matches the **runtime type** of a value, so a `float` overload accepts

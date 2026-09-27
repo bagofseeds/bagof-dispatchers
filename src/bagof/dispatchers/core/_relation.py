@@ -19,7 +19,10 @@ from ._compat import (
 )
 from ._exact import exact_target, is_exact
 from ._introspect import (
+    _CONTRAVARIANT,
+    _COVARIANT,
     _all_orig_bases,
+    _generic_variances,
     eq_safenan,
     get_args_uw,
     get_origin_uw,
@@ -709,10 +712,18 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     A hint is a valid subhint if all values that are valid for the hint
     are also valid for the superhint.
 
-    Arguments are compared covariantly, so `#!python List[bool]` is a
-    subhint of `#!python List[int]`. A hint with no arguments is *not* a
-    subhint of one that has them - a bare `#!python list` may hold
-    anything, so it cannot stand in for a `#!python List[int]`.
+    Each argument position is compared by the **variance the generic
+    declares for it** (PEP 484): a covariant position (a
+    `#!python Sequence`'s item) forwards the relation, so
+    `#!python Sequence[bool]` is a sub-hint of `#!python Sequence[int]`; a
+    contravariant one reverses it; an invariant one -- a mutable container
+    like `#!python list`, or an unflagged user `#!python TypeVar` -- demands
+    that the two arguments accept the same values, so `#!python List[bool]`
+    is **not** a sub-hint of `#!python List[int]`. A free `#!python TypeVar`
+    or `#!python Any` on the super side is a top an invariant position may
+    still widen to. A hint with no arguments is *not* a subhint of one that
+    has them - a bare `#!python list` may hold anything, so it cannot stand
+    in for a `#!python List[int]`.
 
     !!! note
         An **unparametrised** `#!python Union` or `#!python Literal` asks
@@ -725,13 +736,15 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
 
     !!! example
         ```pycon
-        >>> from typing import List, Union
+        >>> from typing import List, Sequence, Union
         >>> issubhint(bool, int)
         True
         >>> issubhint(Union[int, str], Union[int, str, bytes])
         True
-        >>> issubhint(List[bool], List[int])
+        >>> issubhint(Sequence[bool], Sequence[int])  # Sequence covariant
         True
+        >>> issubhint(List[bool], List[int])  # list invariant
+        False
         >>> issubhint(list, List[int])  # a bare list may hold anything
         False
         >>> issubhint(int, str)
@@ -924,7 +937,43 @@ def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
         # `list` cannot stand in for `List[int]`: it may hold anything.
         return False
 
+    variances = _generic_variances(origin)
+    if variances is not None and len(variances) == len(args) == len(superargs):
+        # Compare each position by the variance the super-hint's origin
+        # declares for it (#50): a covariant slot forwards the relation, a
+        # contravariant slot reverses it, an invariant slot demands equality.
+        return all(
+            _issubslot(arg, superarg, variance)
+            for arg, superarg, variance in zip(args, superargs, variances)
+        )
+    # No readable per-position variance -- a `ParamSpec`/`TypeVarTuple` origin,
+    # an arity mismatch, or an origin the table does not cover -- keeps the
+    # covariant argument comparison.
     return _issubargs(args, superargs)
+
+
+def _issubslot(sub: tx.Any, sup: tx.Any, variance: str) -> bool:
+    """Whether a sub-side argument fits a super-side one at one slot (#50).
+
+    `variance` is a generic parameter position's declared variance (the string
+    constants from [`_introspect`][], read off the super-hint's origin). Per
+    PEP 484:
+
+    * **covariant** -- `sub` must be a sub-hint of `sup`, so a covariant
+      container narrows with its item (`Sequence[bool] <= Sequence[int]`);
+    * **contravariant** -- `sup` must be a sub-hint of `sub`, so a consumer of
+      `int` stands in for a consumer of `bool`;
+    * **invariant** -- the two must accept the same values, *or* the super side
+      is a top the slot may widen to (`Any`, or a free `TypeVar` equivalent to
+      `Any`). That gradual-consistency exception keeps a free `T`/`Any` above
+      every invariant `G[X]`, so a generic-fallback overload stays comparable.
+    """
+    if variance == _COVARIANT:
+        return issubhint(sub, sup)
+    if variance == _CONTRAVARIANT:
+        return issubhint(sup, sub)
+    # Invariant: equal, or the super side is a top via gradual consistency.
+    return _equivalent(sub, sup) or _is_any(sup) or issubhint(tx.Any, sup)
 
 
 def _is_subscripted_tuple(hint: tx.Any) -> bool:
@@ -965,6 +1014,11 @@ def _issubargs(
     args: tx.Tuple[tx.Any, ...], superargs: tx.Tuple[tx.Any, ...]
 ) -> bool:
     """Check a hint's arguments against a superhint's, covariantly.
+
+    The covariant fallback for a generic with no readable per-position
+    variance (a `ParamSpec`/`TypeVarTuple` origin, or an arity mismatch); an
+    origin whose variance is known is compared slot by slot (each by its
+    declared variance) in [`_issubclasshint`][] instead.
 
     The arguments are read as tuple *shapes* (a fixed prefix, an optional open
     run, a fixed suffix) so a trailing ellipsis (`Tuple[int, ...]`) and an

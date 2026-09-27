@@ -57,8 +57,11 @@ def test_generic_alias_substitutes_its_arguments() -> None:
     assert resolve_alias(L[int]) == tx.List[int]
     assert resolve_alias(L[bool]) == tx.List[bool]
     assert issubhint(L[int], list) is True
-    # The argument survives, so two parameterisations are distinguished.
-    assert issubhint(L[bool], L[int]) is True
+    # The argument survives, so two parameterisations are distinguished. `L`
+    # resolves to the invariant `list`, so `L[int]` is a sub-hint only of
+    # itself, and a subtype argument (`L[bool]`) is incomparable to it (#50).
+    assert issubhint(L[int], L[int]) is True
+    assert issubhint(L[bool], L[int]) is False
     assert issubhint(L[str], L[int]) is False
 
 
@@ -93,7 +96,9 @@ def test_native_pep695_alias() -> None:
     assert issubhint(resolved, tx.List[int]) and issubhint(
         tx.List[int], resolved
     )
-    assert issubhint(Box[bool], Box[int]) is True
+    # `Box[T]` resolves to the invariant `list[T]`, so a subtype argument is
+    # not a sub-hint: `list[bool]` and `list[int]` are incomparable (#50).
+    assert issubhint(Box[bool], Box[int]) is False
 
 
 @pytest.mark.skipif(
