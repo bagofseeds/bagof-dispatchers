@@ -85,14 +85,19 @@ def _run(
 
 
 def _markdown_sources() -> tx.List[Path]:
-    """The docs pages whose examples are executed: README and ``docs/*.md``."""
+    """The docs pages whose examples are executed.
+
+    README and every page under ``docs/`` -- the guide, the RFC and the API
+    reference alike -- so a page moved or added under ``docs/`` is picked up
+    without touching this file.
+    """
     sources = [_ROOT / "README.md"]
-    sources.extend(sorted((_ROOT / "docs").glob("*.md")))
+    sources.extend(sorted((_ROOT / "docs").rglob("*.md")))
     return [path for path in sources if path.exists()]
 
 
 @pytest.mark.parametrize(
-    "path", _markdown_sources(), ids=lambda p: p.name
+    "path", _markdown_sources(), ids=lambda p: str(p.relative_to(_ROOT))
 )
 def test_markdown_examples(path: Path) -> None:
     """Every ``pycon`` block in a docs page runs and prints what it claims."""

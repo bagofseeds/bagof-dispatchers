@@ -4,7 +4,24 @@ extra_css = ["stylesheets/extra.css"]
 
 nav = [
   {"Bag of" = "https://bagofseeds.github.io/bagof/"},
-  {"Dispatchers" = "index.md"},
+  {"Dispatchers" = [
+    "index.md",
+    {"Getting started" = "guide/getting-started.md"},
+    {"Registering overloads" = "guide/registering-overloads.md"},
+    {"When two overloads are equally specific" = "guide/ambiguous-overloads.md"},
+    {"When nothing matches" = "guide/no-match.md"},
+    {"Exact types" = "guide/exact-types.md"},
+    {"Dispatching on numbers" = "guide/numbers.md"},
+    {"Variance" = "guide/variance.md"},
+    {"Your own registry" = "guide/registries.md"},
+    {"Without a def" = "guide/without-a-def.md"},
+    {"Part of bagof" = "guide/part-of-bagof.md"},
+  ]},
+  {"API" = [
+    "api/index.md",
+    {"core" = "api/core.md"},
+  ]},
+  {"RFC" = "rfc/0001-hint-informed-multiple-dispatch.md"},
 ]
 
 # The site_name is shown in the page header and the browser window title
