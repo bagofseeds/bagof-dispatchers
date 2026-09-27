@@ -1359,6 +1359,67 @@ def test_same_as_varargs_presence_differs() -> None:
     )
 
 
+def test_same_as_canonicalises_callable_param_list_spelling() -> None:
+    """A `Callable` param list is compared element-wise (issue #47).
+
+    `Callable[[list[int]], int]` and `Callable[[List[int]], int]` name the
+    same type and are `same_as`, though the two param lists are distinct
+    `list` objects that `list.__eq__` alone judges unequal (`list[int]` does
+    not compare equal to `List[int]`).
+    """
+    typing_spelled = Signature.from_hints(tx.Callable[[tx.List[int]], int])
+    assert typing_spelled.same_as(
+        Signature.from_hints(tx.Callable[[tx.List[int]], int])
+    )
+    if sys.version_info >= (3, 9):
+        # PEP 585 `list[int]` only exists from 3.9; the `typing.List`
+        # spellings above cover the older interpreters.
+        builtin_spelled = Signature.from_hints(
+            tx.Callable[[list[int]], int]  # noqa: F821 -- runtime only
+        )
+        assert builtin_spelled.same_as(typing_spelled)
+        assert typing_spelled.same_as(builtin_spelled)
+
+
+def test_same_as_callable_param_list_with_forward_ref() -> None:
+    """A forward ref inside a `Callable` param list is spelling-insensitive.
+
+    `Callable[[list["X"]], int]` and `Callable[[List["X"]], int]` name the
+    same type (issue #47), across the bare-string (3.9/3.10) vs `ForwardRef`
+    (3.11+) difference PEP 585 keeps inside the param list.
+    """
+    typing_spelled = Signature.from_hints(tx.Callable[[tx.List["X"]], int])
+    assert typing_spelled.same_as(
+        Signature.from_hints(tx.Callable[[tx.List["X"]], int])
+    )
+    if sys.version_info >= (3, 9):
+        builtin_spelled = Signature.from_hints(
+            tx.Callable[[list["X"]], int]  # noqa: F821 -- runtime only
+        )
+        assert builtin_spelled.same_as(typing_spelled)
+        assert typing_spelled.same_as(builtin_spelled)
+
+
+def test_same_as_distinguishes_callable_param_lists() -> None:
+    """Genuinely different `Callable` param lists are not `same_as`."""
+    int_arg = Signature.from_hints(tx.Callable[[int], int])
+    str_arg = Signature.from_hints(tx.Callable[[str], int])
+    two_arg = Signature.from_hints(tx.Callable[[int, int], int])
+    assert not int_arg.same_as(str_arg)
+    assert not int_arg.same_as(two_arg)
+    assert not two_arg.same_as(int_arg)
+
+
+def test_same_as_callable_ellipsis_param_list() -> None:
+    """`Callable[..., int]` forms compare, and differ from a real list."""
+    any_args = Signature.from_hints(tx.Callable[..., int])
+    int_arg = Signature.from_hints(tx.Callable[[int], int])
+    assert any_args.same_as(Signature.from_hints(tx.Callable[..., int]))
+    # A `...` param list must never be judged the same as a concrete list.
+    assert not any_args.same_as(int_arg)
+    assert not int_arg.same_as(any_args)
+
+
 def test_from_callable_empty_class_takes_object_constructor() -> None:
     """A class with neither `__init__` nor `__new__` has no dispatched args."""
 
