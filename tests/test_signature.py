@@ -681,6 +681,23 @@ def test_has_forward_ref_recurses_and_terminates() -> None:
     assert not sigmod._has_forward_ref(typing.List[int])
 
 
+def test_has_forward_ref_descends_callable_parameter_list() -> None:
+    """A forward reference in a `Callable`'s parameter list is found (#15).
+
+    `get_args(Callable[["X"], int])` yields the parameter types as a plain
+    `list`, not a direct argument, so the recursion must descend into a `list`
+    element to see the reference.
+    """
+    assert sigmod._has_forward_ref(tx.Callable[["X"], int])  # noqa: F821
+    assert sigmod._has_forward_ref(
+        typing.List[tx.Callable[["X"], int]]  # noqa: F821
+    )
+    # A reference in a `Callable`'s return type is found the ordinary way.
+    assert sigmod._has_forward_ref(tx.Callable[[int], "X"])  # noqa: F821
+    # A fully resolved `Callable` holds no reference.
+    assert not sigmod._has_forward_ref(tx.Callable[[int], int])
+
+
 def test_has_forward_ref_ignores_literal_members_and_metadata() -> None:
     """A `Literal` member and `Annotated` metadata are values, not refs.
 
@@ -711,6 +728,68 @@ def test_hint_eq_top_level_string_matches_forward_ref() -> None:
     """A top-level raw string and a `ForwardRef` naming it compare equal."""
     assert sigmod._hint_eq("Later", tx.ForwardRef("Later"))
     assert not sigmod._hint_eq("Later", tx.ForwardRef("Other"))
+
+
+def test_deferred_callable_signatures_differ_without_warning() -> None:
+    """Deferred `Callable[["X"], int]` vs `["Y"]` differ, quietly (#15).
+
+    Both parameter lists hold an unresolvable forward reference, so the two
+    signatures must be compared structurally -- unequal here, and without
+    routing the names through the sub-hint relation, which would warn.
+    """
+
+    def p(x: tx.Callable[["Zed"], int]) -> None: ...  # noqa: F821
+
+    def q(x: tx.Callable[["Yed"], int]) -> None: ...  # noqa: F821
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        sp, sq = Signature.from_callable(p), Signature.from_callable(q)
+        assert sp._deferred and sq._deferred
+        assert sp != sq
+
+
+def test_deferred_callable_signatures_same_name_equal() -> None:
+    """Two deferred `Callable[["X"], int]` signatures are equal, quietly."""
+
+    def p(x: tx.Callable[["Zed"], int]) -> None: ...  # noqa: F821
+
+    def q(x: tx.Callable[["Zed"], int]) -> None: ...  # noqa: F821
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert Signature.from_callable(p) == Signature.from_callable(q)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 9),
+    reason="PEP 585 builtin generics (list[...]) need Python 3.9+",
+)
+def test_deferred_equality_ignores_generic_spelling() -> None:
+    """A deferred `list["Zed"]` equals a deferred `List["Zed"]` (#16).
+
+    The two denote the same type but are different objects -- a
+    `types.GenericAlias` holding a bare string versus a `typing._GenericAlias`
+    holding a `ForwardRef` -- so the deferred equality must canonicalise the
+    spelling and unify the reference before comparing.
+    """
+
+    def p(x: list["Zed"]) -> None: ...  # noqa: F821
+
+    def q(x: typing.List["Zed"]) -> None: ...  # noqa: F821
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        sp, sq = Signature.from_callable(p), Signature.from_callable(q)
+        assert sp._deferred and sq._deferred
+        assert sp == sq
+
+    def r(x: typing.List["Yed"]) -> None: ...  # noqa: F821
+
+    # Different names still compare unequal after canonicalisation.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert Signature.from_callable(p) != Signature.from_callable(r)
 
 
 # --- PEP 585 builtin generics keep bare-string forward refs ------------

@@ -45,6 +45,7 @@ from .core import (
 )
 from .core._compat import _UNPACK_FORMS, spellings
 from .core._exact import exact_target, is_exact
+from .core._introspect import _typing_spelling
 from .core._relation import (
     _is_subscripted_tuple,
     _is_unpacked_typevartuple,
@@ -1060,6 +1061,12 @@ def _has_forward_ref(hint: tx.Any) -> bool:
     [`ForwardRef`][typing.ForwardRef], or a bare string a PEP 585 builtin
     generic (`#!python list["Node"]`) or a `#!python Union` member keeps
     unwrapped.
+
+    A [`Callable`][typing.Callable]'s parameter list arrives from
+    [`get_args`][typing.get_args] as a plain `#!python list`
+    (`#!python Callable[["X"], int]` -> `#!python ([ForwardRef("X")], int)`),
+    not a direct argument, so a `#!python list` element is descended into
+    element by element.
     """
     if isinstance(hint, str):
         return True
@@ -1073,7 +1080,14 @@ def _has_forward_ref(hint: tx.Any) -> bool:
         # `Annotated[T, ...]`: only the wrapped type `T` can carry a reference;
         # the metadata is arbitrary values, so it is not descended into.
         return _has_forward_ref(hint.__origin__)
-    return any(_has_forward_ref(arg) for arg in tx.get_args(hint))
+    for arg in tx.get_args(hint):
+        if isinstance(arg, list):
+            # A `Callable` parameter list is a plain list of parameter hints.
+            if any(_has_forward_ref(element) for element in arg):
+                return True
+        elif _has_forward_ref(arg):
+            return True
+    return False
 
 
 def _hint_eq(a: tx.Any, b: tx.Any) -> bool:
@@ -1095,7 +1109,13 @@ def _hint_eq(a: tx.Any, b: tx.Any) -> bool:
     if a_name is not None or b_name is not None:
         return a_name == b_name
     if _has_forward_ref(a) or _has_forward_ref(b):
-        return a == b
+        # A nested forward reference has no namespace, so the two are compared
+        # structurally rather than through the sub-hint relation. Canonicalise
+        # each side's generic spelling first (`list["Zed"]` -> `List["Zed"]`)
+        # so two spellings of the same type match, then compare structurally so
+        # a bare-string reference equals a `ForwardRef` of the same name. A
+        # plain `a == b` is spelling-sensitive on both counts.
+        return _structural_hint_eq(_typing_spelling(a), _typing_spelling(b))
     return equivalent(a, b)
 
 
