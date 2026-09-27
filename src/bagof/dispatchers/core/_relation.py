@@ -603,8 +603,11 @@ def _is_subscripted_tuple(hint: tx.Any) -> bool:
     Told apart from a bare, unparametrised `Tuple`/`tuple`. The empty-tuple
     type `Tuple[()]` reports its arguments as the phantom `#!python ((),)` on
     Python 3.8-3.10 and as genuinely empty `#!python ()` on 3.11+, so an empty
-    argument list alone cannot distinguish it from a bare `Tuple` there; only a
-    subscripted alias carries an `__args__` attribute on 3.11+.
+    argument list alone cannot distinguish it from a bare `Tuple`. A
+    subscripted alias with no arguments still carries an `__args__` attribute
+    where a bare form does not -- the load-bearing fallback for a genuinely
+    empty argument list, which includes the PEP 585 `#!python tuple[()]`
+    spelling on 3.9-3.10 as well as every empty-args form on 3.11+.
     """
     if any(hint is form for form in _BARE_TUPLE_FORMS):
         return False
@@ -995,8 +998,8 @@ def _tuple_shape(args: tx.Tuple[tx.Any, ...]) -> _TupleShape:
     """Classify a tuple's arguments into a `_TupleShape`.
 
     `Tuple[()]` on 3.8-3.10 reports its arguments as the phantom `#!python
-    ((),)`; it is normalised here to no elements (the empty-tuple bug #36 is
-    tracked separately and untouched). A second open run in one tuple is
+    ((),)`; it is normalised here to no elements, so the empty-tuple type is
+    read the same way on every version. A second open run in one tuple is
     refused (PEP 646 allows a single unpack; `typing` does not enforce it at
     runtime, so the relation does).
     """

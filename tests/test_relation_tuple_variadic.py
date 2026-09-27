@@ -51,8 +51,8 @@ def _no_unknown_hint_warnings() -> tx.Iterator[None]:
 # --- the semantics table, both directions ------------------------------
 
 # (hint, superhint, expected) -- straight from RFC 0001 §2.1 / the Phase-8(b)
-# table. `Tuple[()] <= Tuple[*Ts]` is version-dependent (issue #36) and tested
-# separately below.
+# table. `Tuple[()] <= Tuple[*Ts]` is read the same way on every version (the
+# empty-tuple type is discriminated from a bare `Tuple`) and tested below.
 TABLE = [
     (T[int, str], T[int, U[Ts]], True),          # Ts captures (str,)
     (T[int], T[int, U[Ts]], True),               # zero-run allowed
