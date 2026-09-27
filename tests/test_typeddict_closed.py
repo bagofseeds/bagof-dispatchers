@@ -178,7 +178,7 @@ def test_extra_items_unresolvable_forward_ref_is_skipped() -> None:
     # be read, so an extra key's value is accepted (the field is reported via
     # a warning) rather than raising -- mirroring an unresolvable declared
     # field. The declared key is still enforced.
-    class TD(tx.TypedDict, extra_items="Undefined"):
+    class TD(tx.TypedDict, extra_items=tx.ForwardRef("Undefined")):
         a: int
 
     assert ishintstance({"a": 1, "b": object()}, TD) is True
