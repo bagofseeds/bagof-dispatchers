@@ -21,8 +21,12 @@ from ._exact import exact_target, is_exact
 from ._introspect import (
     _CONTRAVARIANT,
     _COVARIANT,
+    _NON_TYPE_PARAMS,
     _all_orig_bases,
     _generic_variances,
+    _is_plain_typevar,
+    _looks_like_class,
+    _reads_declared_arguments,
     eq_safenan,
     get_args_uw,
     get_origin_uw,
@@ -213,15 +217,33 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
       default) allows them, a `closed=True` one rejects them, and an
       `extra_items=` one checks each against that type. A nested `TypedDict`
       or container field is read recursively.
+    * If `hint` is a parametrised generic (`#!python List[int]`,
+      `#!python Box[int]`), checks that `obj` is an instance of its class,
+      and checks the type arguments only when `obj` **declares** them: an
+      instance built as `#!python Box[int]()`, or an instance of a class
+      written against a parametrised base
+      (`#!python class IntList(List[int])`). The arguments are then compared
+      as [`issubhint`][bagof.dispatchers.core.issubhint] compares them, so
+      an invariant position asks for the same type: `#!python Box[int]()` is
+      not a `#!python Box[object]`, and an `#!python IntList` is not a
+      `#!python List[object]` (it is a `#!python List[Any]`, a
+      `#!python list` and a `#!python Sequence[object]`).
+
+    !!! note
+        `#!python Box[int]()` writes its record onto the instance only after
+        `__init__` returns, so a call dispatched on `self` from inside
+        `__init__` sees a value that declares nothing yet. An instance that
+        cannot hold the record -- a class with `__slots__` and no
+        `__dict__`, or a frozen dataclass -- never declares its arguments.
     * Otherwise, returns `#!python  issubhint(type(obj), hint)`.
 
     !!! warning
-        A container's **item types are not checked**: a value carries its
-        type, and a type carries no arguments, so `#!python [1, 2]` is a
-        valid `#!python List[str]` as far as this function is concerned.
-        (Python itself refuses `#!python isinstance(x, list[int])` for the
-        same reason.) Checking the items means iterating them, which is
-        the caller's decision to make - `bagof.validators` does it.
+        A container's **item types are not checked**. A plain
+        `#!python [1, 2]` declares no type arguments, so it is a valid
+        `#!python List[str]` as far as this function is concerned. (Python
+        itself refuses `#!python isinstance(x, list[int])` for the same
+        reason.) Checking the items means iterating them, which is the
+        caller's decision to make - `bagof.validators` does it.
 
     !!! example
         ```pycon
@@ -281,11 +303,19 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
         # a `TypedDict` with fields reaches here.
         return _ishintstance_typeddict(obj, origin_uw)
     if isinstance(origin_uw, type):
-        # Only the origin can be checked here: a value carries its type,
-        # and a type carries no arguments - `type([1])` is `list`, never
-        # `List[int]`. Checking the arguments means looking at the items,
-        # which is the caller's business, not an instance check's.
-        return safe_issubclass(type(obj), origin_uw)
+        # A container's items are never looked at: that means iterating
+        # them, which is the caller's business, not an instance check's. So
+        # the origin is checked, and the arguments only when the value
+        # *declares* them (#50, V5) -- `Box[int]()` records `Box[int]`, and an
+        # instance of `class Child(List[int])` is one of `List[int]` by its
+        # class. A plain `[1]` declares nothing: `type([1])` is `list`, never
+        # `List[int]`, so any list matches every `List[...]`.
+        if not safe_issubclass(type(obj), origin_uw):
+            return False
+        if not tx.get_args(hint):
+            return True
+        declared = _declared_parametrisation(obj, origin_uw)
+        return declared is None or issubhint(declared, hint)
     return issubhint(type(obj), hint)
 
 
@@ -951,6 +981,16 @@ def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
         return True
 
     args = safe_get_args(hint_uw)
+    if get_origin_uw(hint_uw) is not origin:
+        # Differing origins: read the sub-hint as the parametrisation of the
+        # super-hint's origin it declares through its bases (#50, V5), so
+        # `class IntBox(Box[int])` is compared as `Box[int]` and `Flip[int,
+        # str]` for `class Flip(Pair[B, A], Generic[A, B])` as `Pair[str,
+        # int]`. When no base maps onto the origin the arguments are compared
+        # positionally, as before.
+        based = _as_base_args(hint_uw, origin)
+        if based is not None:
+            args = based
     if not args:
         # `list` cannot stand in for `List[int]`: it may hold anything.
         return False
@@ -978,24 +1018,317 @@ def _issubslot(sub: tx.Any, sup: tx.Any, variance: str) -> bool:
     PEP 484:
 
     * **covariant** -- `sub` must be a sub-hint of `sup`, so a covariant
-      container narrows with its item (`Sequence[bool] <= Sequence[int]`);
+      container narrows with its item (`Sequence[bool] <= Sequence[int]`). A
+      `TypeVar` is read as its bound (or its constraints), which is already
+      what solving it would give: `G[A] <= G[T]` for some `T <= B` exactly
+      when `A <= B`.
     * **contravariant** -- `sup` must be a sub-hint of `sub`, so a consumer of
-      `int` stands in for a consumer of `bool`;
-    * **invariant** -- the two must accept the same values, *or* the super side
-      is a top the slot may widen to: `Any`, or a *free* `TypeVar` (one with no
-      bound or constraints, so equivalent to `Any`). That gradual-consistency
-      exception keeps a free `T`/`Any` above every invariant `G[X]`, so a
-      generic-fallback overload stays comparable. A *bounded* / *constrained*
-      `TypeVar` is read as its bound, not as a top, so `G[X]` and `G[TB]` only
-      tie when `X` equals that bound.
+      `int` stands in for a consumer of `bool`. A `TypeVar` is read as its
+      bound here too; see [`_issubslot_invariant`][] for why it is not solved.
+    * **invariant** -- see [`_issubslot_invariant`][]: the two must accept the
+      same values, or the super side is a `TypeVar` that can be solved to the
+      sub side, or a top (`Any`, a free `TypeVar`).
     """
     if variance == _COVARIANT:
         return issubhint(sub, sup)
     if variance == _CONTRAVARIANT:
+        # Solving a `TypeVar` here would ask whether the two sides *overlap*
+        # (`Snk[bool] <= Snk[T <= int]` needs some `T` below both `bool` and
+        # `int`), which is not transitive -- `D(B, C)` is below both `B` and
+        # `C`, which are not related -- and cannot be decided over an open
+        # class hierarchy. So a contravariant slot keeps reading a `TypeVar`
+        # as its bound, which keeps the order a preorder (#50, V5).
         return issubhint(sup, sub)
-    # Invariant: equal, or the super side is a top via gradual consistency
-    # (`issubhint(Any, sup)` already answers True when `sup` is `Any`).
-    return _equivalent(sub, sup) or issubhint(tx.Any, sup)
+    return _issubslot_invariant(sub, sup)
+
+
+def _issubslot_invariant(sub: tx.Any, sup: tx.Any) -> bool:
+    """Whether `G[sub] <= G[sup]` at an invariant slot (#50, V5).
+
+    A `TypeVar` on the super side stands for *some* type within its bound or
+    constraints, as a type checker solves it; on the sub side it stands for a
+    whole family, which a single type cannot contain:
+
+    * `sup` is `Any` or a free `TypeVar` -- the top the slot may widen to
+      (gradual consistency), so a generic-fallback overload stays above every
+      specialisation;
+    * `sup` is a bounded `TypeVar` `T <= B` -- `T` can be solved to `sub`
+      exactly when `sub <= B` (a `TypeVar` `sub` read by its own bound), so
+      `Box[bool] <= Box[T <= int]`, and `Box[T1 <= B1] <= Box[T2 <= B2]` iff
+      `B1 <= B2`;
+    * `sup` is a constrained `TypeVar` -- `T` is solved to one constraint, so
+      `sub` must be equivalent to one of them (a constrained `sub`: each of its
+      constraints to one of them);
+    * otherwise `sup` is a concrete type, and `sub` must be equivalent to it.
+      A `TypeVar` `sub` never is: `Box[T <= int]` is not a `Box[int]`, since
+      `T` may be `bool`.
+
+    This is transitive: each rule reduces to `<=` or to equivalence against
+    the super side's bound or constraints, which chain.
+    """
+    if sub is sup or issubhint(tx.Any, sup):
+        return True
+    sub_uw = unwrap(normalise_hint(sub), tx.Annotated)
+    sup_uw = unwrap(normalise_hint(sup), tx.Annotated)
+    sub_is_typevar = isinstance(sub_uw, tx.TypeVar)
+    if isinstance(sup_uw, tx.TypeVar):
+        constraints = getattr(sup_uw, "__constraints__", ())
+        if not constraints:
+            # Bounded (a free one is the top, above): `sub` within the bound.
+            return issubhint(sub, sup)
+        if sub_is_typevar:
+            members = getattr(sub_uw, "__constraints__", ())
+            if not members:
+                # A bounded or free family is not one constraint.
+                return False
+        else:
+            members = (sub,)
+        return all(
+            any(_equivalent(member, each) for each in constraints)
+            for member in members
+        )
+    if sub_is_typevar:
+        return False
+    return _equivalent(sub, sup)
+
+
+# --- declared parametrisations (#50, V5) -------------------------------
+
+# The markers a generic lists its own type variables with. A base written
+# `Generic[T]` / `Protocol[T]` says which variables the class takes, not what
+# it inherits, so the base walk below never follows (or subscripts) one.
+_PARAMETER_MARKERS = spellings("Generic") + spellings("Protocol")
+
+
+def _own_bases(cls: type) -> tx.Tuple[tx.Any, ...]:
+    """The bases `cls` was written with, parametrised where they were.
+
+    `__orig_bases__` is read off the class's *own* namespace: an attribute
+    read would find a parent's, which describes the parent's bases, not these.
+    A class written without a parametrised base has none of its own, and its
+    plain `__bases__` are the answer.
+    """
+    written = vars(cls).get("__orig_bases__")
+    if isinstance(written, tuple):
+        return written
+    return cls.__bases__
+
+
+def _free_parameters(cls: type) -> tx.Tuple[tx.Any, ...]:
+    """The type variables a generic class takes (`()` for any other class)."""
+    params = getattr(cls, "__parameters__", ())
+    return params if isinstance(params, tuple) else ()
+
+
+def _filled_bases(
+    node: tx.Any, cls: type
+) -> tx.Optional[tx.Tuple[tx.Any, ...]]:
+    """`cls`'s written bases, with `node`'s arguments filled in.
+
+    `node` is `cls` itself or a parametrisation of it (`Sub[bool]`). Each base
+    that mentions one of `cls`'s type variables is subscripted with what
+    `node` gives that variable -- typing's own substitution, `Box[T][bool]` is
+    `Box[bool]`, the mechanism that resolves a generic type alias too -- and
+    one that mentions none (`Box[int]`, a plain class) is kept as written.
+    The arguments are paired by variable, not by position, because a class
+    may list its variables in another order than a base does (`class
+    Flip(Pair[B, A], Generic[A, B])`).
+
+    Returns `#!python None` when `node` leaves the bases undetermined: a
+    generic class written without arguments (a bare `Sub`), or a
+    `ParamSpec` / `TypeVarTuple` generic, whose arguments do not pair one to
+    one with its variables. A base whose substitution raises is dropped.
+    """
+    params = _free_parameters(cls)
+    if not params:
+        return _own_bases(cls)
+    args = tx.get_args(node)
+    if len(args) != len(params) or not all(
+        _is_plain_typevar(param) for param in params
+    ):
+        return None
+    filled_in = dict(zip(params, args))
+    bases = ()  # type: tx.Tuple[tx.Any, ...]
+    for base in _own_bases(cls):
+        origin = tx.get_origin(base)
+        if origin is None:
+            # A plain class base mentions no variable.
+            bases += (base,)
+            continue
+        if any(origin is marker for marker in _PARAMETER_MARKERS):
+            continue
+        base_params = _free_parameters(base)
+        if not base_params:
+            bases += (base,)
+            continue
+        fill = tuple(filled_in.get(param, param) for param in base_params)
+        try:
+            bases += (base[fill if len(fill) > 1 else fill[0]],)
+        except Exception:
+            # A base that refuses its arguments maps onto nothing; the walk
+            # carries on through the others.
+            continue
+    return bases
+
+
+def _as_base_args(
+    hint: tx.Any, target: type
+) -> tx.Optional[tx.Tuple[tx.Any, ...]]:
+    """`hint` re-expressed as a parametrisation of `target`: its arguments.
+
+    `hint` is a class or a parametrised generic whose origin is a subclass of
+    `target`. The answer is what `hint` fills `target`'s parameters with,
+    read through the bases each class was written with (`__orig_bases__`),
+    nearest first, filling in each class's own arguments as it goes:
+
+    * `class IntBox(Box[int])` is `Box[int]`, so `IntBox` gives `(int,)`;
+    * `class Sub(Box[T])` passes its argument on, so `Sub[bool]` gives
+      `(bool,)`, and a subclass written without a parametrised base (`class
+      Leaf(IntBox)`) is followed through its plain bases;
+    * the walk is breadth-first, so the base nearest `hint` wins, and between
+      bases at the same depth the one listed first: in a diamond `class D(A,
+      B)` with `class A(Box[int])` and `class B(Box[str])`, `D` is a
+      `Box[int]`;
+    * a standard-library class reached on the way (`class Child(List[int])`
+      reaches `List[int]`) is read positionally against a standard-library
+      `target` it subclasses (`Sequence`), as two such origins always are.
+
+    `hint`'s own arguments are returned when its origin *is* `target` and it
+    has any. Returns `#!python None` when nothing maps -- no base reaches
+    `target` with arguments, as for a `collections.Counter` (a runtime
+    subclass of `dict` that records no parametrised base), or a generic class
+    written without arguments -- and the caller then keeps its positional
+    comparison.
+    """
+    queue = [hint]
+    seen = []  # type: tx.List[tx.Any]
+    while queue:
+        node = queue.pop(0)
+        cls = safe_get_origin(node)
+        args = tx.get_args(node)
+        if cls is target:
+            if args:
+                return args
+            continue
+        if not _looks_like_class(cls) or any(cls is each for each in seen):
+            continue
+        seen.append(cls)
+        if args and "__orig_bases__" not in vars(cls):
+            # A parametrised standard-library class (`List[int]`, `Dict[K,
+            # V]`), which records no parametrised base: its arguments line up
+            # with a standard-library `target` it subclasses and that takes as
+            # many (`Sequence`, `Mapping`) -- the positional reading two such
+            # origins are given. One that takes a different number
+            # (`Dict[K, V]` against `Iterable`, `Tuple[int, int]` against
+            # `Sequence`) cannot be paired up, so nothing maps.
+            variances = _generic_variances(target)
+            if (
+                variances is not None
+                and len(variances) == len(args)
+                and safe_issubclass(cls, target)
+            ):
+                return args
+            continue
+        bases = _filled_bases(node, cls)
+        if bases is not None:
+            queue.extend(bases)
+    return None
+
+
+def _is_fully_declared(args: tx.Optional[tx.Sequence[tx.Any]]) -> bool:
+    """Whether declared arguments say what each parameter holds.
+
+    `#!python False` for no arguments at all, and for arguments that mention a
+    type variable (`class Child(List[T])` leaves `T` open),
+    [`Any`][typing.Any], or a name not yet resolved (`Box["int"]()` records
+    `Box[ForwardRef('int')]`) anywhere inside them: each leaves what the value
+    holds undeclared, so none may narrow which parametrisations it matches.
+    """
+    if not args:
+        return False
+    for arg in args:
+        # The `TypeVar` family first: on 3.8 the `ParamSpec` backport is a
+        # `list`, and would otherwise be read as a parameter list.
+        if isinstance(arg, tx.TypeVar) or _is_any(arg):
+            return False
+        if isinstance(arg, (str, tx.ForwardRef)):
+            return False
+        if _NON_TYPE_PARAMS and isinstance(arg, _NON_TYPE_PARAMS):
+            return False
+        if isinstance(arg, (list, tuple)):
+            # A `Callable`'s parameter list.
+            if arg and not _is_fully_declared(arg):
+                return False
+            continue
+        inner = tx.get_args(arg)
+        if inner and not _is_literal(tx.get_origin(arg)):
+            if not _is_fully_declared(inner):
+                return False
+    return True
+
+
+def _orig_class(obj: tx.Any) -> tx.Any:
+    """The parametrisation `obj` was built from, or `#!python None`.
+
+    Calling a subscripted user generic -- `Box[int]()` -- records `Box[int]`
+    on the new instance as `__orig_class__`. It is absent from a builtin
+    container, from any instance built by calling the bare class, and from
+    one typing cannot write it onto: a class built with `__slots__` and no
+    `__dict__`, and a frozen dataclass (typing swallows the
+    `FrozenInstanceError`). It is also written only *after* `__init__`
+    returns, so a dispatch on `self` from inside `__init__` sees an instance
+    that declares nothing yet. Whatever the attribute holds is only trusted
+    when it is a parametrisation of a class `obj` is an instance of.
+    """
+    try:
+        declared = obj.__orig_class__
+    except Exception:
+        # Absent (`AttributeError`), or a `__getattr__` that raises.
+        return None
+    if not tx.get_args(declared):
+        return None
+    if not safe_issubclass(type(obj), safe_get_origin(declared)):
+        return None
+    return declared
+
+
+def _declared_parametrisation(obj: tx.Any, origin: type) -> tx.Any:
+    """What `obj` declares itself to be, as a parametrisation of `origin`.
+
+    `origin` is the class a parametrised hint (`G[args]`) is written on, and
+    `type(obj)` is already known to be a subclass of it. The answer is a hint
+    to compare with `G[args]` through the relation. Returns, in order:
+
+    1. the instance's `__orig_class__` (`Box[int]` for `Box[int]()`), when
+       `obj` is an instance of a `Generic` subclass and the record declares
+       every argument of `origin` -- against a user generic or a
+       standard-library one alike (`Row[int]()` for `class Row(Sequence[T])`
+       is a `Sequence[int]`);
+    2. else `type(obj)`, when the class declares every argument of `origin`
+       through its bases (`class Child(List[int])`);
+    3. else `#!python None`: the value declares nothing, and only its origin
+       can be checked.
+
+    Only an origin with one readable argument per parameter is read
+    ([`_reads_declared_arguments`][]): `Tuple` and `Callable` (whose argument
+    lists are shapes), a `ParamSpec` / `TypeVarTuple` generic (`Hook[[int]]`),
+    and any origin whose parameters cannot be read keep the shallow check.
+    """
+    if not _reads_declared_arguments(origin):
+        return None
+    if isinstance(obj, tx.Generic):
+        # Only a `Generic` instance can carry `__orig_class__`, and only one
+        # is asked -- the same gate the call cache applies before reading it
+        # (`_declared_key`), so the key always covers what the check reads.
+        declared = _orig_class(obj)
+        if declared is not None and _is_fully_declared(
+            _as_base_args(declared, origin)
+        ):
+            return declared
+    cls = type(obj)
+    if _is_fully_declared(_as_base_args(cls, origin)):
+        return cls
+    return None
 
 
 def _is_subscripted_tuple(hint: tx.Any) -> bool:

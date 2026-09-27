@@ -43,6 +43,7 @@ class _Sized(tx.Protocol):
 
 _T = tx.TypeVar("_T")
 _TBOUND = tx.TypeVar("_TBOUND", bound=int)
+_TBOUND_OBJ = tx.TypeVar("_TBOUND_OBJ", bound=object)
 _TCONSTR = tx.TypeVar("_TCONSTR", int, str)
 _P = tx.ParamSpec("_P")
 _Ts = tx.TypeVarTuple("_Ts")
@@ -68,6 +69,30 @@ class _Box(tx.Generic[_T]):
 
 class _Cell(tx.Generic[_T]):
     """A second invariant user generic, for the variance corpus (#50)."""
+
+
+_A = tx.TypeVar("_A")
+_B_ = tx.TypeVar("_B_")
+
+
+class _IntBox(_Box[int]):
+    """A class declaring `_Box[int]` through its base (#50, V5)."""
+
+
+class _Sub(_Box[_T]):
+    """A generic passing its argument on to `_Box` (#50, V5)."""
+
+
+class _Pair(tx.Generic[_A, _B_]):
+    """An invariant two-parameter user generic (#50, V5)."""
+
+
+class _Flip(_Pair[_B_, _A], tx.Generic[_A, _B_]):
+    """`_Pair` with its parameters swapped: `_Flip[X, Y]` is `_Pair[Y, X]`."""
+
+
+class _Child(tx.List[int]):
+    """A list subclass declaring `List[int]` through its base (#50, V5)."""
 
 
 class _Movie(tx.TypedDict):
@@ -140,11 +165,33 @@ CORPUS = [
     _Box[_T],
     _Box[tx.Any],
     _Box[tx.Never],
+    # bounded / constrained `TypeVar` slots (#50, V5): solved on the super
+    # side at an invariant slot, read by the bound at a covariant or
+    # contravariant one.
+    _Box[_TBOUND],
+    _Box[_TBOUND_OBJ],
+    _Box[_TCONSTR],
+    _Box[tx.Union[int, str]],
+    _Box[str],
+    _Src[_TBOUND],
+    _Snk[_TBOUND],
     _Cell[int],
     tx.Sequence[int],
     tx.Sequence[bool],
     tx.Mapping[str, int],
     tx.Mapping[str, bool],
+    # declared parametrisations (#50, V5): classes and parametrisations whose
+    # origin differs from the super-hint's, read through their bases --
+    # `_IntBox` is `_Box[int]`, `_Sub[bool]` is `_Box[bool]`, `_Flip[int, str]`
+    # is `_Pair[str, int]`, and `_Child` is `List[int]` (so a
+    # `Sequence[int]`, but not a `List[bool]`).
+    _IntBox,
+    _Sub[bool],
+    _Sub[int],
+    _Pair[str, int],
+    _Pair[int, str],
+    _Flip[int, str],
+    _Child,
     # TypedDict rows (#19): the bare marker ("any TypedDict") and a concrete
     # TypedDict both sit strictly below `dict` -- every TypedDict value is a
     # dict, but a plain `dict` is neither. The marker is reduced to `dict` only

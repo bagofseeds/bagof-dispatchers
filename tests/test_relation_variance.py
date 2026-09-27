@@ -5,7 +5,9 @@ super-hint's origin: a user generic reads its declared `TypeVar`, a stdlib
 generic the vendored spec table. The per-slot rule (`A` sub-side arg, `B`
 super-side arg) is covariant `A <= B`, contravariant `B <= A`, invariant
 `A == B` (with `Any` / a free `TypeVar` a top an invariant slot may widen to).
-Value applicability stays shallow -- any list still matches every `List[...]`.
+A value that declares no type arguments is matched shallowly -- a plain list
+still matches every `List[...]` (what a value *does* declare is read too; see
+`test_declared_parametrisation.py`).
 
 Every hint is spelled through `typing_extensions`, and every row runs on 3.8
 (the docstring / oldest-supported interpreter), so no `X | Y` or `list[int]`.
@@ -27,6 +29,10 @@ from bagof.dispatchers.core import ishintstance, issubhint
 
 _T = tx.TypeVar("_T")
 _TB = tx.TypeVar("_TB", bound=int)
+_TBO = tx.TypeVar("_TBO", bound=object)
+_TC = tx.TypeVar("_TC", int, str)
+_TC2 = tx.TypeVar("_TC2", int, str)
+_TC3 = tx.TypeVar("_TC3", int, str, bytes)
 _T_co = tx.TypeVar("_T_co", covariant=True)
 _T_contra = tx.TypeVar("_T_contra", contravariant=True)
 
@@ -68,11 +74,45 @@ TRUTH_TABLE = [
     (Box[int], Box[tx.Any], True),
     (Box[_T], Box[int], False),
     (Box[tx.Any], Box[int], False),
-    # A *bounded* `TypeVar` is read as its bound, not as a top: only the exact
-    # bound ties in an invariant slot, so a generic-fallback overload written
-    # `Box[TB]` no longer sits above its specialisations (#50; Fable review).
-    (Box[bool], Box[_TB], False),
+    # A *bounded* `TypeVar` on the super side is solved, as a type checker
+    # does (#50, V5 -- owner decision): `T <= int` can stand for `bool`, so
+    # `Box[bool] <= Box[TB]`. V3 read it as exactly its bound and answered
+    # False here; a `Box[TB]` fallback now sits above its specialisations.
+    (Box[bool], Box[_TB], True),
     (Box[int], Box[_TB], True),
+    (Box[str], Box[_TB], False),
+    # On the sub side it stands for a whole family, which no single type
+    # contains: V3 had `Box[TB]` and `Box[int]` equivalent; now `Box[int]` is
+    # strictly below `Box[TB]` (#50, V5).
+    (Box[_TB], Box[int], False),
+    (Box[_TB], Box[_TB], True),
+    (Box[_TB], Box[_TBO], True),
+    (Box[_TBO], Box[_TB], False),
+    (Box[_TB], Box[_T], True),
+    # A constrained `TypeVar` is solved to one of its constraints.
+    (Box[int], Box[_TC], True),
+    (Box[str], Box[_TC], True),
+    (Box[bool], Box[_TC], False),
+    (Box[tx.Union[int, str]], Box[_TC], False),
+    (Box[_TC], Box[_TC], True),
+    # Same constraints: the same family, both ways; more constraints: wider.
+    (Box[_TC2], Box[_TC], True),
+    (Box[_TC], Box[_TC2], True),
+    (Box[_TC], Box[_TC3], True),
+    (Box[_TC3], Box[_TC], False),
+    (Box[_TC], Box[int], False),
+    (Box[_TC], Box[_TB], False),
+    (Box[_TB], Box[_TC], False),
+    # Covariant slots already read a `TypeVar` as its bound, which is what
+    # solving it gives.
+    (Src[bool], Src[_TB], True),
+    (Src[_TB], Src[int], True),
+    (Src[_TB], Src[bool], False),
+    # Contravariant slots keep the bound reading: solving there would ask
+    # whether two types overlap, which is not transitive (#50, V5).
+    (Snk[bool], Snk[_TB], False),
+    (Snk[object], Snk[_TB], True),
+    (Snk[_TB], Snk[bool], True),
     # A `Literal` in an invariant slot is not equal to its value's type.
     (tx.List[tx.Literal[1]], tx.List[int], False),
     # a user covariant generic (`Src`).
@@ -241,10 +281,10 @@ def test_invariant_overloads_are_ambiguous() -> None:
 
 
 def test_value_check_is_shallow_regardless_of_variance() -> None:
-    """A value carries no type arguments, so any container matches any arg.
+    """A value declaring no type arguments matches any parametrisation.
 
-    Variance changes hint *ordering*, never value applicability -- the shallow
-    value check is unchanged (#50).
+    Variance changes hint *ordering*; a plain container, or a user generic
+    built without arguments, is still matched by its class alone (#50).
     """
     # An invariant container: a bool list is still a `List[int]` at the value
     # level, and a plain list is still a `List[str]`.

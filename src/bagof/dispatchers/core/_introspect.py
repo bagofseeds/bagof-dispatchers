@@ -840,6 +840,38 @@ def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
     return None
 
 
+def _reads_declared_arguments(origin: tx.Any) -> bool:
+    """Whether a value's declared arguments are read against `origin[...]`.
+
+    A parametrisation of a class whose parameters line up one per argument
+    with a readable variance -- a user generic (`#!python Box[int]`) or a
+    standard-library one (`#!python List[int]`, `#!python Sequence[int]`) --
+    is checked against what a value declares: the parametrisation an instance
+    of a [`Generic`][typing.Generic] subclass was built from, or the one its
+    class was written against. `#!python Type[C]`, a `TypedDict`, and the
+    shape-typed `Tuple` and `Callable` keep their own checks, and so does a
+    `ParamSpec` / `TypeVarTuple` generic.
+
+    The value check and the call cache both ask this, so they always agree on
+    which arguments can depend on a declaration.
+
+    !!! example
+        ```pycon
+        >>> import collections.abc
+        >>> _reads_declared_arguments(collections.abc.Sequence)
+        True
+        >>> _reads_declared_arguments(tuple), _reads_declared_arguments(type)
+        (False, False)
+        ```
+    """
+    return (
+        _looks_like_class(origin)
+        and origin is not type
+        and not is_typeddict(origin)
+        and _generic_variances(origin) is not None
+    )
+
+
 # --- eq_safenan --------------------------------------------------------
 
 
