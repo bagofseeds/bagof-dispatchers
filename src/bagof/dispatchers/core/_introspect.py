@@ -675,6 +675,170 @@ def _first_concrete_constraint(hint: tx.Any) -> tx.Optional[type]:
     return None
 
 
+# --- variance ----------------------------------------------------------
+
+
+# The three variances a generic's parameter position can have (PEP 484).
+# Plain strings rather than an enum: they are only ever compared and
+# carried, and a string reads straight in a table and a test.
+_COVARIANT = "covariant"
+_CONTRAVARIANT = "contravariant"
+_INVARIANT = "invariant"
+
+
+# The members of the `TypeVar` family that are *not* plain type variables:
+# a [`ParamSpec`][typing.ParamSpec] or a [`TypeVarTuple`][typing.TypeVarTuple]
+# fills a parameter position, but has no variance of its own. On Python 3.8
+# `typing_extensions` backports both as subclasses of
+# [`TypeVar`][typing.TypeVar], so a bare `#!python isinstance(p, tx.TypeVar)`
+# accepts them there; this tuple is what tells them back apart on every
+# version.
+_NON_TYPE_PARAMS = tuple(
+    form
+    for name in ("ParamSpec", "TypeVarTuple")
+    for form in (getattr(tx, name, None),)
+    if isinstance(form, type)
+)
+
+
+def _is_plain_typevar(param: tx.Any) -> bool:
+    """Whether `param` is an ordinary `TypeVar`, not a `ParamSpec`/`*Ts`.
+
+    A [`ParamSpec`][typing.ParamSpec] or
+    [`TypeVarTuple`][typing.TypeVarTuple] carries no variance, so a generic
+    that has one in a parameter position has no readable per-position
+    variance at all.
+    """
+    return isinstance(param, tx.TypeVar) and not (
+        _NON_TYPE_PARAMS and isinstance(param, _NON_TYPE_PARAMS)
+    )
+
+
+def _typevar_variance(tv: tx.Any) -> str:
+    """The variance a [`TypeVar`][typing.TypeVar] declares (PEP 484).
+
+    Returns `#!python "covariant"` for a `#!python TypeVar(..., covariant=
+    True)`, `#!python "contravariant"` for a `#!python TypeVar(...,
+    contravariant=True)`, and `#!python "invariant"` otherwise -- which
+    includes an unflagged type variable (invariant by PEP 484) and a PEP 695
+    `#!python class Box[T]` variable, whose variance is inferred by the type
+    checker and cannot be read at runtime, so it is taken as invariant.
+
+    Every attribute is read with [`getattr`][], because the `TypeVar` family
+    differs across Python 3.8-3.13 and between [`typing`][] and
+    `typing_extensions`.
+
+    !!! example
+        ```pycon
+        >>> _typevar_variance(tx.TypeVar("T_co", covariant=True))
+        'covariant'
+        >>> _typevar_variance(tx.TypeVar("T"))
+        'invariant'
+        ```
+    """
+    if getattr(tv, "__infer_variance__", False) is True:
+        # PEP 695 auto-variance: the type checker decides, so at runtime it
+        # is the owner's call, taken as invariant.
+        return _INVARIANT
+    if getattr(tv, "__covariant__", False):
+        return _COVARIANT
+    if getattr(tv, "__contravariant__", False):
+        return _CONTRAVARIANT
+    return _INVARIANT
+
+
+# The per-position variance of the standard-library generics, keyed by the
+# runtime origin [`tx.get_origin`][] returns for each.
+#
+# GENERATED from CPython 3.8's `typing` module, the typing spec's reference
+# implementation: on 3.8 `typing.List`, `typing.Sequence`, ... still expose
+# `__parameters__` whose `TypeVar`s carry the spec variance, while from 3.9
+# on the special aliases expose nothing. Variance is version-invariant, so
+# these values hold on every supported Python. `tests/
+# test_variance_introspect.py` regenerates this from the live `typing` on
+# 3.8 and asserts it equals this table, so any drift is caught rather than
+# silently trusted.
+#
+# `Tuple` and `Callable` are deliberately absent: they carry no
+# `__parameters__` and are ordered by their own dedicated paths (tuple shape,
+# and contravariant parameters with a covariant return) in `_relation.py`.
+_STDLIB_VARIANCE = {
+    list: (_INVARIANT,),
+    set: (_INVARIANT,),
+    frozenset: (_COVARIANT,),
+    dict: (_INVARIANT, _INVARIANT),
+    type: (_COVARIANT,),
+    collections.deque: (_INVARIANT,),
+    collections.defaultdict: (_INVARIANT, _INVARIANT),
+    collections.OrderedDict: (_INVARIANT, _INVARIANT),
+    collections.Counter: (_INVARIANT,),
+    collections.ChainMap: (_INVARIANT, _INVARIANT),
+    abc.Sequence: (_COVARIANT,),
+    abc.MutableSequence: (_INVARIANT,),
+    abc.Set: (_COVARIANT,),
+    abc.MutableSet: (_INVARIANT,),
+    abc.Mapping: (_INVARIANT, _COVARIANT),
+    abc.MutableMapping: (_INVARIANT, _INVARIANT),
+    abc.Collection: (_COVARIANT,),
+    abc.Container: (_COVARIANT,),
+    abc.Iterable: (_COVARIANT,),
+    abc.Iterator: (_COVARIANT,),
+    abc.Reversible: (_COVARIANT,),
+    abc.KeysView: (_INVARIANT,),
+    abc.ValuesView: (_COVARIANT,),
+    abc.ItemsView: (_INVARIANT, _COVARIANT),
+    abc.Generator: (_COVARIANT, _CONTRAVARIANT, _COVARIANT),
+    abc.Coroutine: (_COVARIANT, _CONTRAVARIANT, _COVARIANT),
+    abc.Awaitable: (_COVARIANT,),
+    abc.AsyncIterable: (_COVARIANT,),
+    abc.AsyncIterator: (_COVARIANT,),
+    abc.AsyncGenerator: (_COVARIANT, _CONTRAVARIANT),
+}  # type: tx.Dict[tx.Any, tx.Tuple[str, ...]]
+
+
+@functools.lru_cache(maxsize=None)
+def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
+    """The per-position variance of a generic's origin, or `#!python None`.
+
+    Reads the variance of each of `origin`'s parameter positions:
+
+    * a standard-library origin (`#!python list`,
+      [`collections.abc.Sequence`][], ...) is looked up in the spec-derived
+      [`_STDLIB_VARIANCE`][] table;
+    * a user-defined generic is read live off its `#!python __parameters__`,
+      each declared [`TypeVar`][typing.TypeVar] giving its own position's
+      variance;
+    * anything else -- an origin with a [`ParamSpec`][typing.ParamSpec] or
+      [`TypeVarTuple`][typing.TypeVarTuple] in a parameter position, or one
+      with no readable parameters -- returns `#!python None`, leaving the
+      caller to fall back to its own default.
+
+    !!! example
+        ```pycon
+        >>> _generic_variances(list)
+        ('invariant',)
+        >>> import collections.abc
+        >>> _generic_variances(collections.abc.Sequence)
+        ('covariant',)
+        >>> T_co = tx.TypeVar("T_co", covariant=True)
+        >>> class Box(tx.Generic[T_co]): pass
+        >>> _generic_variances(Box)
+        ('covariant',)
+        ```
+    """
+    if origin in _STDLIB_VARIANCE:
+        return _STDLIB_VARIANCE[origin]
+    params = getattr(origin, "__parameters__", None)
+    if (
+        isinstance(origin, type)
+        and isinstance(params, tuple)
+        and params
+        and all(_is_plain_typevar(param) for param in params)
+    ):
+        return tuple(_typevar_variance(param) for param in params)
+    return None
+
+
 # --- eq_safenan --------------------------------------------------------
 
 
