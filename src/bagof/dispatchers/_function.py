@@ -128,8 +128,9 @@ class _Plan:
         self.bindable = tuple(bindable)
         self.le_matrix = le_matrix
         self.value_dependent = value_dependent
-        # Argument keys keyed on `(type, declared parametrisation)`; disjoint
-        # from `value_dependent`, whose full-value key already covers it.
+        # Argument keys keyed on `(type, declared parametrisation)`. A key in
+        # both sets carries both: a value's own `==` need not tell two
+        # parametrisations apart (a dataclass generic compares its fields).
         self.declared = declared
 
 
@@ -602,13 +603,13 @@ class Function:
             for key, hint in landed.items():
                 if is_value_dependent(hint):
                     value_dependent.add(key)
-                elif is_declaration_dependent(hint):
+                if is_declaration_dependent(hint):
                     declared.add(key)
         plan = _Plan(
             bindable,
             le_matrix,
             frozenset(value_dependent),
-            frozenset(declared - value_dependent),
+            frozenset(declared),
         )
         cache.shape_plans[shape] = plan
         return plan
@@ -1259,7 +1260,14 @@ def _call_key(
     parts = [len(args)]  # type: tx.List[tx.Any]
     for index, value in enumerate(args):
         if index in value_dependent:
-            parts.append((type(value), _KeyValue(value)))
+            if index in declared:
+                # Both: the value's own `==` does not see the record (a
+                # dataclass generic compares its fields), so key on each.
+                parts.append(
+                    (type(value), _KeyValue(value), _declared_key(value))
+                )
+            else:
+                parts.append((type(value), _KeyValue(value)))
         elif index in declared:
             parts.append((type(value), _declared_key(value)))
         else:
@@ -1267,7 +1275,17 @@ def _call_key(
     for keyword in sorted(kwargs):
         value = kwargs[keyword]
         if keyword in value_dependent:
-            parts.append((keyword, type(value), _KeyValue(value)))
+            if keyword in declared:
+                parts.append(
+                    (
+                        keyword,
+                        type(value),
+                        _KeyValue(value),
+                        _declared_key(value),
+                    )
+                )
+            else:
+                parts.append((keyword, type(value), _KeyValue(value)))
         elif keyword in declared:
             parts.append((keyword, type(value), _declared_key(value)))
         else:
@@ -1282,7 +1300,15 @@ def _declared_key(value: tx.Any) -> tx.Any:
     (`#!python Box[int]` for `#!python Box[int]()`), or `#!python None` when it
     recorded none -- never the instance itself, so every instance built from
     one parametrisation shares a cache entry.
+
+    Only an instance of a `Generic` subclass is asked: the value check reads
+    the record only after checking the value's class against a user generic,
+    so the two stay in step, and any other value -- a `str` at a
+    `#!python Union[Box[int], str]` argument, a lazy proxy whose `__getattr__`
+    does work -- is never probed.
     """
+    if not isinstance(value, tx.Generic):
+        return None
     try:
         recorded = value.__orig_class__
     except Exception:
@@ -1300,10 +1326,15 @@ class _SameObject:
     (on Python 3.8 `#!python Literal[1] == Literal[True]`, so `#!python
     Box[Literal[1]] == Box[Literal[True]]`), and an unhashable one would leave
     the call uncached. Identity is always hashable and never merges two
-    different records, and typing caches its subscriptions, so every
-    `#!python Box[int]()` records the same `#!python Box[int]` object and hits
-    the one entry. The key holds the object, so its identity cannot be reused
-    while the entry lives.
+    different records. The key holds the object, so its identity cannot be
+    reused while the entry lives.
+
+    Typing caches its subscriptions, so `#!python Box[int]()` usually records
+    the one `#!python Box[int]` object and hits the one entry. That cache is a
+    bounded LRU (128 entries per subscription site), though: after enough
+    other subscriptions evict it, a fresh `#!python Box[int]` is a new object
+    and a new entry. The cost is a missed hit and a re-resolution, never a
+    wrong method.
     """
 
     __slots__ = ("obj",)

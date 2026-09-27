@@ -258,6 +258,10 @@ parametrised user generic, both say what they hold:
 Dispatch never looks inside a container, so a value that declares nothing —
 a plain `[1, 2]`, or a `Box()` built without arguments — still matches every
 parameterisation, as the ambiguous `handle([True, False])` above shows.
+A declared argument follows the same variance as the hints do, so an
+invariant position asks for the same type: a `Box[int]()` does not match
+`Box[object]`, and an `IntList` does not match `List[object]` (it does match
+`List[Any]`, `list` and `Sequence[object]`).
 
 `Sequence`, `frozenset`, `Iterable` and the other read-only containers are
 covariant, so a `Sequence[bool]` overload stays more specific than a

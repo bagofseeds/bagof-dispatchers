@@ -312,7 +312,9 @@ multiply.
   the super-hint's origin before its slots are compared, through the bases each
   class was *written* with (`__orig_bases__`, read off the class's own
   namespace; a class with none of its own is followed through `__bases__`),
-  nearest first and cycle-guarded. Each base is filled in with the sub-hint's
+  breadth-first and cycle-guarded, so the nearest base wins and, between bases
+  at the same depth, the first listed (a diamond `class D(A, B)` over
+  `A(Box[int])` and `B(Box[str])` is a `Box[int]`). Each base is filled in with the sub-hint's
   own arguments by typing's own subscription (`Box[T][bool]` is `Box[bool]`),
   pairing arguments to variables by identity, not position — so `class
   Flip(Pair[B, A], Generic[A, B])` makes `Flip[int, str]` a `Pair[str, int]`. A
@@ -343,8 +345,17 @@ multiply.
   `issubhint(declared, G[args])`. Otherwise the check stays shallow: a builtin
   instance (and `list[int]([1])`, which is a plain list), an instance built
   from the bare class, a `__slots__` class with no `__dict__` (nowhere to
-  record it), and a declaration whose arguments hold a free `TypeVar` or `Any`
-  (`class C(List[T])`, `Box[Any]()`), since neither says what the value holds.
+  record it) or a frozen dataclass (typing swallows the `FrozenInstanceError`),
+  `self` seen from inside `__init__` (the record is written only after
+  `__init__` returns), and a declaration whose arguments hold a free `TypeVar`,
+  `Any` or an unresolved name (`class C(List[T])`, `Box[Any]()`,
+  `Box["int"]()`), since none says what the value holds. A `ParamSpec` /
+  `TypeVarTuple` generic, whose arguments do not pair one per parameter, stays
+  shallow too. Where a value does declare, the comparison is the spec's, so
+  an invariant position tightens what used to match shallowly: `Box[int]()` no
+  longer matches `Box[object]`, `Box[Union[int, str]]` or `Box[Optional[int]]`,
+  and a `class Strs(List[str])` instance no longer matches `List[object]` —
+  it still matches `List[Any]`, `list` and `Sequence[object]`.
   A standard-library `G` (`Sequence[int]`) never reads the instance record,
   only the class's bases — so `class Row(Sequence[T])`'s `Row[int]()` still
   matches `Sequence[str]`; that keeps every stdlib-origin position keyed on the
@@ -746,7 +757,12 @@ Caching & thread-safety — **two levels**, because the order is per shape:
    recorded parametrisation, compared by identity (typing caches `Box[int]`, so
    every `Box[int]()` shares one entry, and identity never merges records `==`
    would, e.g. `Literal[1] == Literal[True]` on 3.8), never the instance. A
-   position that is both keys on the full value, which subsumes the record. A
+   position that is both keys on the value *and* the record — the value's own
+   `==` need not see the record (a dataclass generic compares its fields). The
+   record is read only off an instance of a `Generic` subclass, as the value
+   check does, so no other value is probed. Typing's subscription cache is a
+   bounded LRU, so after churn a fresh `Box[int]` object is a new entry: a
+   missed hit, never a wrong method. A
    stdlib-origin generic (`List[int]`) costs nothing: what a value declares for
    it comes from its class, which the type already keys. An unhashable value at
    a value-dependent argument → uncached.

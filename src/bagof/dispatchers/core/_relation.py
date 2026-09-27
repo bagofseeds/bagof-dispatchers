@@ -222,7 +222,19 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
       and checks the type arguments only when `obj` **declares** them: an
       instance built as `#!python Box[int]()`, or an instance of a class
       written against a parametrised base
-      (`#!python class IntList(List[int])`).
+      (`#!python class IntList(List[int])`). The arguments are then compared
+      as [`issubhint`][bagof.dispatchers.core.issubhint] compares them, so
+      an invariant position asks for the same type: `#!python Box[int]()` is
+      not a `#!python Box[object]`, and an `#!python IntList` is not a
+      `#!python List[object]` (it is a `#!python List[Any]`, a
+      `#!python list` and a `#!python Sequence[object]`).
+
+    !!! note
+        `#!python Box[int]()` writes its record onto the instance only after
+        `__init__` returns, so a call dispatched on `self` from inside
+        `__init__` sees a value that declares nothing yet. An instance that
+        cannot hold the record -- a class with `__slots__` and no
+        `__dict__`, or a frozen dataclass -- never declares its arguments.
     * Otherwise, returns `#!python  issubhint(type(obj), hint)`.
 
     !!! warning
@@ -1116,6 +1128,10 @@ def _as_base_args(
     * `class Sub(Box[T])` passes its argument on, so `Sub[bool]` gives
       `(bool,)`, and a subclass written without a parametrised base (`class
       Leaf(IntBox)`) is followed through its plain bases;
+    * the walk is breadth-first, so the base nearest `hint` wins, and between
+      bases at the same depth the one listed first: in a diamond `class D(A,
+      B)` with `class A(Box[int])` and `class B(Box[str])`, `D` is a
+      `Box[int]`;
     * a standard-library class reached on the way (`class Child(List[int])`
       reaches `List[int]`) is read positionally against a standard-library
       `target` it subclasses (`Sequence`), as two such origins always are.
@@ -1166,9 +1182,10 @@ def _is_fully_declared(args: tx.Optional[tx.Sequence[tx.Any]]) -> bool:
     """Whether declared arguments say what each parameter holds.
 
     `#!python False` for no arguments at all, and for arguments that mention a
-    type variable (`class Child(List[T])` leaves `T` open) or
-    [`Any`][typing.Any] anywhere inside them: both leave what the value holds
-    undeclared, so neither may narrow which parametrisations it matches.
+    type variable (`class Child(List[T])` leaves `T` open),
+    [`Any`][typing.Any], or a name not yet resolved (`Box["int"]()` records
+    `Box[ForwardRef('int')]`) anywhere inside them: each leaves what the value
+    holds undeclared, so none may narrow which parametrisations it matches.
     """
     if not args:
         return False
@@ -1176,6 +1193,8 @@ def _is_fully_declared(args: tx.Optional[tx.Sequence[tx.Any]]) -> bool:
         # The `TypeVar` family first: on 3.8 the `ParamSpec` backport is a
         # `list`, and would otherwise be read as a parameter list.
         if isinstance(arg, tx.TypeVar) or _is_any(arg):
+            return False
+        if isinstance(arg, (str, tx.ForwardRef)):
             return False
         if _NON_TYPE_PARAMS and isinstance(arg, _NON_TYPE_PARAMS):
             return False
@@ -1196,10 +1215,13 @@ def _orig_class(obj: tx.Any) -> tx.Any:
 
     Calling a subscripted user generic -- `Box[int]()` -- records `Box[int]`
     on the new instance as `__orig_class__`. It is absent from a builtin
-    container, from a class built with `__slots__` and no `__dict__`, and
-    from any instance built by calling the bare class. Whatever the attribute
-    holds is only trusted when it is a parametrisation of a class `obj` is an
-    instance of.
+    container, from any instance built by calling the bare class, and from
+    one typing cannot write it onto: a class built with `__slots__` and no
+    `__dict__`, and a frozen dataclass (typing swallows the
+    `FrozenInstanceError`). It is also written only *after* `__init__`
+    returns, so a dispatch on `self` from inside `__init__` sees an instance
+    that declares nothing yet. Whatever the attribute holds is only trusted
+    when it is a parametrisation of a class `obj` is an instance of.
     """
     try:
         declared = obj.__orig_class__
@@ -1227,10 +1249,12 @@ def _declared_parametrisation(obj: tx.Any, origin: type) -> tx.Any:
     3. else `#!python None`: the value declares nothing, and only its origin
        can be checked.
 
-    `Tuple` and `Callable` keep their own shallow value check: their argument
-    lists are shapes, not one argument per parameter.
+    Only an origin with one readable argument per parameter is read: `Tuple`
+    and `Callable` (whose argument lists are shapes), a `ParamSpec` /
+    `TypeVarTuple` generic (`Hook[[int]]`), and any origin whose parameters
+    cannot be read keep the shallow check.
     """
-    if origin is tuple or origin is abc.Callable:
+    if _generic_variances(origin) is None:
         return None
     if _is_user_generic(origin):
         # Only a user generic's instances carry `__orig_class__`; restricting

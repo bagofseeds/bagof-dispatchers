@@ -21,6 +21,7 @@ Every class is built twice, once from `typing` and once from
 # stdlib
 import collections
 import collections.abc
+import dataclasses
 import sys
 import types
 import typing
@@ -570,7 +571,7 @@ def test_a_standard_library_position_keeps_its_type_only_key() -> None:
     assert _call_key(([1],), {}, plan) == (1, list)
 
 
-def test_full_value_key_subsumes_the_declared_one() -> None:
+def test_a_position_that_is_both_keys_on_value_and_record() -> None:
     T = tx.TypeVar("T")
 
     class Box(tx.Generic[T]):
@@ -583,7 +584,56 @@ def test_full_value_key_subsumes_the_declared_one() -> None:
     assert f(1) == "one"
     plan = _plan_of(f, (1, ()))
     assert plan.value_dependent == frozenset({0})
-    assert plan.declared == frozenset()
+    assert plan.declared == frozenset({0})
+
+
+def test_value_equality_does_not_stand_in_for_the_record() -> None:
+    """A dataclass generic's `==` ignores `__orig_class__`: key on both."""
+    T = tx.TypeVar("T")
+
+    @dataclasses.dataclass(unsafe_hash=True)
+    class DBox(tx.Generic[T]):
+        v: tx.Any
+
+    f = Function("f")
+    f.register((tx.Literal["auto"],))(lambda x: "auto")
+    f.register((DBox[int],))(lambda x: "int")
+    f.register((DBox[str],))(lambda x: "str")
+    assert DBox[int](1) == DBox[str](1)
+    assert f(DBox[int](1)) == "int"
+    assert f(DBox[str](1)) == "str"
+    assert f("auto") == "auto"
+    # The keyword spelling keys the same way.
+    g = Function("g")
+    g.register({"b": tx.Literal["auto"]})(lambda *, b: "auto")
+    g.register({"b": DBox[int]})(lambda *, b: "int")
+    g.register({"b": DBox[str]})(lambda *, b: "str")
+    assert g(b=DBox[int](1)) == "int"
+    assert g(b=DBox[str](1)) == "str"
+
+
+def test_only_generic_instances_are_asked_for_a_record() -> None:
+    """The key probes no value the value check would not read."""
+    T = tx.TypeVar("T")
+
+    class Box(tx.Generic[T]):
+        pass
+
+    probed = []  # type: tx.List[str]
+
+    class Proxy:
+        def __getattr__(self, name: str) -> tx.Any:
+            probed.append(name)
+            raise AttributeError(name)
+
+    f = Function("f")
+    f.register((tx.Union[Box[int], str, Proxy],))(lambda x: "ok")
+    assert f("s") == "ok"
+    assert f(Proxy()) == "ok"
+    assert "__orig_class__" not in probed
+    plan = _plan_of(f, (1, ()))
+    assert plan.declared == frozenset({0})
+    assert _call_key(("s",), {}, plan) == (1, (str, None))
 
 
 def test_declared_key_survives_a_raising_getattr() -> None:
@@ -610,3 +660,103 @@ def test_same_object_compares_by_identity() -> None:
     assert hash(_SameObject(record)) == hash(_SameObject(record))
     assert _SameObject(record) != _SameObject(tx.List[str])
     assert _SameObject(record).__eq__(record) is NotImplemented
+
+
+# --- review follow-ups: shapes that must stay shallow or tighten -------
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="a ParamSpec list argument is 3.10+"
+)
+def test_a_paramspec_generic_value_stays_shallow() -> None:
+    P = tx.ParamSpec("P")
+
+    class Hook(tx.Generic[P]):
+        pass
+
+    value = Hook[[int]]()
+    assert ishintstance(value, Hook[[int]]) is True
+    assert ishintstance(value, Hook[[str]]) is True
+    hook = Function("hook")
+    hook.register((Hook[[int]],))(lambda h: "hook")
+    assert hook(value) == "hook"
+
+
+def test_an_unresolved_name_declares_nothing() -> None:
+    """`Box["int"]()` records a `ForwardRef`, which says nothing yet."""
+    T = tx.TypeVar("T")
+
+    class Box(tx.Generic[T]):
+        pass
+
+    value = Box["int"]()
+    assert ishintstance(value, Box[int]) is True
+    assert ishintstance(value, Box[str]) is True
+    f = Function("f")
+    f.register((Box[int],))(lambda b: "int")
+    assert f(value) == "int"
+    assert _is_fully_declared(("int",)) is False
+
+
+def test_a_frozen_dataclass_generic_records_nothing() -> None:
+    T = tx.TypeVar("T")
+
+    @dataclasses.dataclass(frozen=True)
+    class Frozen(tx.Generic[T]):
+        v: int = 0
+
+    value = Frozen[int]()
+    assert not hasattr(value, "__orig_class__")
+    assert ishintstance(value, Frozen[str]) is True
+
+
+def test_self_inside_init_declares_nothing_yet() -> None:
+    """The record is written only after `__init__` returns."""
+    T = tx.TypeVar("T")
+    seen = []  # type: tx.List[bool]
+
+    class Box(tx.Generic[T]):
+        def __init__(self) -> None:
+            seen.append(ishintstance(self, Box[str]))
+
+    value = Box[int]()
+    assert seen == [True]
+    assert ishintstance(value, Box[str]) is False
+
+
+def test_invariant_positions_tighten_declared_values() -> None:
+    T = tx.TypeVar("T")
+
+    class Box(tx.Generic[T]):
+        pass
+
+    class Strs(tx.List[str]):
+        pass
+
+    value = Box[int]()
+    assert ishintstance(value, Box[object]) is False
+    assert ishintstance(value, Box[tx.Union[int, str]]) is False
+    assert ishintstance(value, Box[tx.Optional[int]]) is False
+    assert ishintstance(Strs(), tx.List[object]) is False
+    assert ishintstance(Strs(), tx.List[tx.Any]) is True
+    assert ishintstance(Strs(), list) is True
+    assert ishintstance(Strs(), tx.Sequence[object]) is True
+
+
+def test_a_diamond_takes_the_first_listed_base() -> None:
+    T = tx.TypeVar("T")
+
+    class Box(tx.Generic[T]):
+        pass
+
+    class Ints(Box[int]):
+        pass
+
+    class Strs(Box[str]):
+        pass
+
+    class Both(Ints, Strs):
+        pass
+
+    assert issubhint(Both, Box[int]) is True
+    assert issubhint(Both, Box[str]) is False
