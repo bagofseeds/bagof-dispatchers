@@ -38,7 +38,7 @@ import typing_extensions as tx
 # local
 from . import _errors
 from ._errors import AmbiguousMethodError, NoMethodError
-from ._lattice import equivalent, is_value_dependent, mro_index
+from ._lattice import equivalent, is_value_dependent
 from ._method import Method
 from ._signature import (
     Parameter,
@@ -53,6 +53,7 @@ from .core import (
     UNSET,
     ishintstance,
     issubhint,
+    mro_index,
     normalise_hint,
     safe_get_origin,
 )

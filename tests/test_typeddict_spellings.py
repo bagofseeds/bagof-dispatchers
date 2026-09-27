@@ -8,9 +8,11 @@ import pytest
 import typing_extensions as tx
 
 # local
+from bagof.dispatchers._lattice import equivalent
 from bagof.dispatchers.core import (
     is_typeddict,
     issubclassable,
+    issubhint,
     safe_issubclass,
     typeddict_required_keys,
 )
@@ -145,3 +147,67 @@ def test_required_keys_falls_back_to_total() -> None:
 
     assert typeddict_required_keys(OldStyle) == {"a", "b"}
     assert typeddict_required_keys(OldStylePartial) == frozenset()
+
+
+# --- the bare `TypedDict` marker is a sub-hint of `dict` (#19) -----------
+
+
+@pytest.mark.parametrize("name,TD", SPELLINGS)
+def test_bare_typeddict_marker_is_subhint_of_dict(
+    name: str, TD: tx.Any
+) -> None:
+    """A bare `TypedDict` marker means "any TypedDict", and every TypedDict
+    value is a `dict`, so the marker is a sub-hint of `dict` -- but a plain
+    `dict` is not the marker's sub-hint, so the marker stays strictly below
+    `dict`."""
+    assert issubhint(TD, dict)
+    assert not issubhint(dict, TD)
+
+
+@pytest.mark.parametrize("name,TD", SPELLINGS)
+def test_bare_typeddict_marker_is_not_below_unrelated_types(
+    name: str, TD: tx.Any
+) -> None:
+    """The marker ranks as `dict`, so it is not a sub-hint of an unrelated
+    class or of `int`."""
+    assert not issubhint(TD, int)
+    assert not issubhint(TD, list)
+
+
+@pytest.mark.parametrize("name,TD", SPELLINGS)
+def test_concrete_typeddict_is_subhint_of_dict(
+    name: str, TD: tx.Any
+) -> None:
+    """A concrete TypedDict is a sub-hint of `dict` too."""
+    cls = _build(TD)["plain"]
+    assert issubhint(cls, dict)
+
+
+def test_bare_markers_are_interchangeable_across_spellings() -> None:
+    """The two bare `TypedDict` markers stay equivalent both ways (#19).
+
+    The `TypedDict <= dict` redirect applies only against a plain-class
+    super-hint, so a marker super-hint still goes through the nominal path --
+    keeping `typing.TypedDict` and `typing_extensions.TypedDict`
+    interchangeable (which `canonical_typeddict` and this file rely on)."""
+    assert issubhint(typing.TypedDict, tx.TypedDict)
+    assert issubhint(tx.TypedDict, typing.TypedDict)
+    assert equivalent(typing.TypedDict, tx.TypedDict)
+    assert equivalent(tx.TypedDict, typing.TypedDict)
+
+
+@pytest.mark.parametrize("name,TD", SPELLINGS)
+def test_bare_marker_stays_subhint_when_contained(
+    name: str, TD: tx.Any
+) -> None:
+    """A super-hint that merely *contains* the marker still matches it (#19).
+
+    Moving the `TypedDict <= dict` redirect below the union / `TypeVar` /
+    `Annotated` handling is what keeps these True -- a containing super-hint is
+    not silently replaced by `dict`."""
+    assert issubhint(TD, tx.Optional[TD])
+    assert issubhint(TD, tx.Union[TD, int])
+    assert issubhint(TD, tx.Annotated[TD, "m"])
+    assert issubhint(tx.Annotated[TD, "m"], TD)
+    bound = tx.TypeVar("bound", bound=TD)
+    assert issubhint(TD, bound)

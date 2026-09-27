@@ -6,8 +6,11 @@ this mapping best describes this hint?" -- the successor to
 type distance, this one uses the sub-hint relation
 ([`issubhint`][bagof.dispatchers.core.issubhint]) directly: the best entry is
 the mapping key that accepts the query and is the most specific such key. When
-two equally specific keys both accept the query the lookup is ambiguous, and
-the caller chooses -- raise, warn or ignore.
+two equally specific keys both accept the query, a **class** query breaks the
+tie
+by MRO (RFC 0001 §2.2 step 3, the same refinement the value-dispatch path
+uses); a tie MRO cannot break is ambiguous and the caller chooses -- raise,
+warn or ignore.
 
 The mapping's *values* are whatever the caller stored; the key is a type hint.
 Keys are compared by the relation, so a `#!python Union` key matches any of its
@@ -29,7 +32,13 @@ import typing_extensions as tx
 # local
 from ._compat import UnknownHintWarning
 from ._exact import exact_target, is_exact
-from ._introspect import _typing_spelling, normalise_hint
+from ._introspect import (
+    _looks_like_class,
+    _typing_spelling,
+    get_origin_uw,
+    mro_index,
+    normalise_hint,
+)
 from ._relation import issubhint
 from ._sentinels import UNSET
 
@@ -52,6 +61,14 @@ def resolve_hint(
     match (the query is a key, by equality) always wins, and a
     [`Exact`][bagof.dispatchers.Exact]`[C]` key is additionally reachable by a
     query equivalent to `C`.
+
+    When several keys are equally specific and the query is a **class**, the
+    tie is broken by the query's MRO (RFC 0001 §2.2 step 3): the key whose
+    class is the nearest base of the query wins. So `#!python {Enum, str}`
+    resolves `#!python class Color(str, Enum)` to `str`, and a diamond
+    `#!python D(B, C)` resolves `#!python {B, C}` to `B`, order-independently.
+    A tie that MRO cannot break -- a non-class query, or class keys equidistant
+    in the MRO -- falls to `ambiguity`.
 
     Parameters
     ----------
@@ -114,8 +131,21 @@ def resolve_hint(
     if len(best) == 1:
         return mapping[best[0]]
 
-    # Two or more equally specific keys accept the query and nothing separates
-    # them. Keep the mapping's own order so the choice is repeatable.
+    # Two or more equally specific keys accept the query. When the query is a
+    # class, refine by argument MRO (RFC 0001 §2.2 step 3): keep only the keys
+    # nearest in the query's MRO -- so `{Enum, str}` picks `str` for
+    # `class Color(str, Enum)`, and the diamond `D(B, C)` picks `B`, both
+    # order-independently, matching the value-dispatch tie-break. When several
+    # keys tie at that nearest position (duplicate spellings of one class), the
+    # tie is restricted to just them, so a farther key never wins on order.
+    nearest = _mro_nearest(hint, best)
+    if nearest is not None:
+        best = nearest
+        if len(best) == 1:
+            return mapping[best[0]]
+
+    # Nothing separates them -- a non-class query, or several equidistant keys.
+    # Keep the mapping's own order so the choice is repeatable.
     winner = next(key for key in mapping if key in best)
     if ambiguity == "raise":
         raise _ambiguous_keys(hint, best)
@@ -176,6 +206,45 @@ def _strictly_below(a: tx.Any, b: tx.Any) -> bool:
         return issubhint(na, nb) and not issubhint(nb, na)
     except TypeError:
         return False
+
+
+def _mro_nearest(
+    hint: tx.Any, best: tx.Sequence[tx.Any]
+) -> tx.Optional[tx.List[tx.Any]]:
+    """The nearest-MRO subset of `best` for a class query, or `None`.
+
+    This is the RFC 0001 §2.2 step-3 refinement, applied to a tie between
+    equally specific keys: when the query is a class, the keys whose class is
+    the *nearest* base of the query in its MRO are kept. A single-key result is
+    a clean MRO win (`{Enum, str}` -> `str`; the diamond `D(B, C)` -> `B`); a
+    multi-key result is an irreducible tie between duplicate spellings of the
+    nearest class (`typing.Sequence` and `collections.abc.Sequence`), which the
+    caller resolves among *those* alone -- a farther key never wins on order.
+
+    A parametrised generic query is read as its origin class (`G[int]` refines
+    like `G`), so the answer does not depend on the interpreter version -- a
+    `#!python G[int]` alias is `#!python isinstance(_, type)` on 3.9/3.10 but
+    not on 3.11+, so that test alone would refine inconsistently.
+
+    Returns `#!python None` -- leaving the whole tie to the caller's order
+    fallback -- when the query is not a class, or when any candidate names no
+    position in the query's MRO (a `#!python Union`, a `#!python Protocol` or
+    ABC satisfied by registration, a parametrised generic key).
+    """
+    query = hint
+    if not _looks_like_class(query):
+        origin = get_origin_uw(query)
+        if not _looks_like_class(origin):
+            return None
+        query = origin
+    ranked = []
+    for key in best:
+        index = mro_index(key, query)
+        if index is None:
+            return None
+        ranked.append((index, key))
+    nearest = min(index for index, _ in ranked)
+    return [key for index, key in ranked if index == nearest]
 
 
 def _warn_unusable_key(key: tx.Any) -> None:

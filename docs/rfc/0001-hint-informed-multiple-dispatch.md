@@ -241,6 +241,12 @@ under `⊑_C`. Then, in order, drop members strictly dominated under:
      catch-alls (`*args`/`**kwargs`), then fewer default-filled parameters, then
      no `**kwargs`, then no `*args`.
 
+  The single-key lookup `resolve_hint` (§8.1) applies the **same step-3 MRO
+  refinement** to a tie between equally specific *class* keys, reading the
+  class *query* in place of an argument's runtime type: `{Enum, str}` resolves
+  `class Color(str, Enum)` to `str`, and `{C, B}` resolves the diamond
+  `D(B, C)` to `B`. A tie MRO cannot break falls to its `ambiguity` handling.
+
   `|Max| = 1` → done; `|Max| > 1` → **`AmbiguousMethodError`**; nothing
   bindable-and-applicable → **`NoMethodError`**, whose message distinguishes "no
   method accepts keyword `scake`" (with a `difflib` did-you-mean over all
@@ -669,7 +675,8 @@ the failing argument; a binding failure is rendered in words after the signature
 src/bagof/dispatchers/
   __init__.py        # CLEAN public API — re-exports ONLY: dispatch, Dispatcher, Function, Method,
                      #   Signature, Parameter, Exact, DispatchError, NoMethodError, AmbiguousMethodError
-  _lattice.py        # equivalent(), mro_index(), TypeVar solving, value-dependence classifier —
+  _lattice.py        # equivalent(), TypeVar solving, value-dependence classifier —
+                     #   mro_index() moved to core/_introspect.py so resolve_hint shares it (#19).
                      #   dispatch-internal, builds on core._relation. The value check stays in the
                      #   relation: the v1 engine calls core.ishintstance directly (no wrapper). The
                      #   Phase-8 TypedDict-shape value check is introduced then under an explicit,
@@ -690,7 +697,8 @@ src/bagof/dispatchers/
     _introspect.py   # safe_get_origin/args, get_origin_uw/args_uw, unwrap, normalise_hint (resolves
                      #   aliases/NewType/qualifiers), resolve_alias, resolve_newtype, issubclassable,
                      #   issubscriptable, is_typeddict, typeddict_required_keys, safe_issubclass,
-                     #   safe_isinstance, get_concrete_type, type2hint, _typing_spelling, eq_safenan
+                     #   safe_isinstance, get_concrete_type, type2hint, _typing_spelling, eq_safenan,
+                     #   mro_index (shared by _lattice value dispatch and _registry resolve_hint, #19)
     _relation.py     # issubhint (+ branches), ishintstance (+ helpers) — Exact/Callable-variance-aware,
                      #   opaque fall-through for unknown forms, _typevar_upper
     _registry.py     # resolve_hint(): get_from_registry's successor over Function.from_mapping
@@ -798,6 +806,29 @@ Measured import surfaces:
   safe_isinstance, safe_issubclass, typeddict_required_keys, unwrap`
 - **magic**: `UnionType`
 
+**Settled `resolve_hint` parity decisions (#19).** Two corners where the
+relation-based lookup first diverged from the summed-distance
+`get_from_registry` are reconciled so the shim preserves consumer behaviour:
+
+1. **MRO tie-break for equally specific class keys.** When several accepting
+   keys are equally specific and the *query* is a class, the tie is broken by
+   the query's MRO — the same RFC §2.2 step-3 refinement the value-dispatch
+   path uses (`mro_index`, now shared from `core`). So `{Enum, str}` resolves
+   `class Color(str, Enum)` to `str`, and the diamond `D(B, C)` resolves
+   `{C, B}` to `B`, both order-independently, matching the old lookup. A tie
+   MRO cannot break — a non-class query, or class keys equidistant in the MRO —
+   still falls to `ambiguity` (warn + registration order, or raise).
+2. **Bare `TypedDict` ⊑ `dict`.** The bare `TypedDict` marker ("any
+   TypedDict") is now a sub-hint of `dict` at the relation level — every
+   TypedDict value is a `dict` — while `dict` is *not* a sub-hint of the
+   marker. `TypedDict` is therefore the unique most-specific key over `dict`
+   for a TypedDict-subclass query, resolved order-independently (this is the
+   nominal hint relation only, distinct from #30/#42's value-level extras).
+3. **Bare `Literal` vs a concrete class stays ambiguous.** A bare `Literal`
+   ("any literal value") is genuinely incomparable with a class (not every
+   literal is an `int`) and MRO does not apply, so `{Literal, int}` vs
+   `Literal[1]` remains an `ambiguity`-handled tie by design.
+
 Keep `MagicHint`/`MagicError`/`MultipleCauses` from `bagof.core.magic`; import
 everything else from `bagof.dispatchers.core` directly. The `get_from_registry(hint,
 registry) or fallback` call sites (`converters/base.py:308`,
@@ -810,7 +841,9 @@ registry is clean. Their registration dicts stay the registration API.
 - non-`runtime_checkable` Protocol answers `False` instead of raising;
 - constrained TypeVar `≡` union of its constraints;
 - `Callable` params contravariant, return covariant;
-- `get_from_registry`'s summed distance → specificity order + MRO refinement;
+- `get_from_registry`'s summed distance → specificity order, with the same
+  MRO refinement for equally specific class keys that value dispatch uses
+  (§2.2, §8.1 #19);
 - `Exact` understood by `issubhint`/`ishintstance`;
 - `eq_safenan` numpy-free at the root.
 
