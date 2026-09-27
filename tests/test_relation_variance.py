@@ -212,8 +212,8 @@ def test_invariant_overloads_are_ambiguous() -> None:
     `list` is invariant, so `List[int]` and `List[bool]` are incomparable: a
     list value matches both and neither is more specific, so the call raises
     `AmbiguousMethodError`. Under the old covariant reading `List[bool]` would
-    have won outright. (Registration itself does not warn -- that clash warning
-    is V4; the tie shows only at call time.)
+    have won outright. Registration now warns of the clash (V4 of #50) -- the
+    tie no longer shows only at call time.
     """
     f = Function("handle")
 
@@ -224,7 +224,8 @@ def test_invariant_overloads_are_ambiguous() -> None:
         return "bools"
 
     f.register(wants_ints)
-    f.register(wants_bools)
+    with pytest.warns(RuntimeWarning, match="ambiguous"):
+        f.register(wants_bools)
     with pytest.raises(AmbiguousMethodError):
         f([True, False])
 

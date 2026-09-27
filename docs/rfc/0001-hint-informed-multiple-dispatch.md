@@ -295,7 +295,10 @@ multiply.
   covariant container (`Sequence`, `frozenset`) keeps its ordering, and a
   contravariant one reverses. Two `List[X]` overloads with subtype-related
   arguments become incomparable → ambiguous (set a priority), where before the
-  narrower one won.
+  narrower one won. Because value dispatch is shallow — any `list` matches every
+  `List[…]` — such a pair also both applies to the same value, so **registration
+  warns** (implemented in V4): the clash is reported when the second overload is
+  registered, not left to surface only when a value first hits it.
 - **Argument positions of a call are covariant.** A parameter *consumes* the
   argument; applicability is `type(v) ⊑ P`; "more specific" is "smaller P". This
   is `Tuple` covariance on the argument tuple — Julia's signatures *are* tuple
@@ -973,6 +976,11 @@ atomic publish · concurrent registration/call → never torn · same name in tw
 modules → distinct `Function`s; reload → replacement with `RuntimeWarning` ·
 bad registrations → `TypeError` · `priority` ties still ambiguous, never
 overrides a strict specificity win · `ambiguities()` lists warned pairs ·
+two parametrisations of one origin (`List[int]`/`List[str]`, invariant
+`List[int]`/`List[bool]`) are incomparable yet both match any list, so
+registration warns (V4, implemented) naming the parameter and that dispatch
+reads a value's type not its type arguments; a covariant `Sequence` /
+contravariant sink pair keeps its strict winner and does not warn ·
 core-magic re-export identity; `get_from_registry` parity.
 
 ---

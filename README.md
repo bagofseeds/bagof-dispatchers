@@ -226,7 +226,9 @@ ambiguous
 ```
 
 Give one overload a higher `priority` (`@handle.register(priority=1)`) to
-break the tie.
+break the tie. Because any list matches both overloads, this clash is reported
+when the second is registered — a `RuntimeWarning` naming the parameter — not
+left to surface only when a value first hits it.
 
 `Sequence`, `frozenset`, `Iterable` and the other read-only containers are
 covariant, so a `Sequence[bool]` overload stays more specific than a
