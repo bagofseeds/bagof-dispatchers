@@ -11,9 +11,6 @@ Every hint is spelled through `typing_extensions`, and every row runs on 3.8
 (the docstring / oldest-supported interpreter), so no `X | Y` or `list[int]`.
 """
 
-# stdlib
-import warnings
-
 # dependencies
 import pytest
 import typing_extensions as tx
@@ -26,6 +23,7 @@ from bagof.dispatchers.core import ishintstance, issubhint
 # --- the variance families ---------------------------------------------
 
 _T = tx.TypeVar("_T")
+_TB = tx.TypeVar("_TB", bound=int)
 _T_co = tx.TypeVar("_T_co", covariant=True)
 _T_contra = tx.TypeVar("_T_contra", contravariant=True)
 
@@ -67,6 +65,13 @@ TRUTH_TABLE = [
     (Box[int], Box[tx.Any], True),
     (Box[_T], Box[int], False),
     (Box[tx.Any], Box[int], False),
+    # A *bounded* `TypeVar` is read as its bound, not as a top: only the exact
+    # bound ties in an invariant slot, so a generic-fallback overload written
+    # `Box[TB]` no longer sits above its specialisations (#50; Fable review).
+    (Box[bool], Box[_TB], False),
+    (Box[int], Box[_TB], True),
+    # A `Literal` in an invariant slot is not equal to its value's type.
+    (tx.List[tx.Literal[1]], tx.List[int], False),
     # a user covariant generic (`Src`).
     (Src[bool], Src[int], True),
     (Src[int], Src[bool], False),
@@ -158,6 +163,25 @@ def test_variance_nested_composition(
     assert issubhint(hint, superhint) is expected
 
 
+# --- mixed-sign generics leave parameterisations incomparable ----------
+
+
+def test_mixed_sign_generic_is_incomparable() -> None:
+    """A generic with positions of different signs can order neither way.
+
+    `Generator[Y_co, S_contra, R_co]` has a covariant yield, a contravariant
+    send and a covariant return. `Any` is the top of a covariant slot but the
+    *bottom* of a contravariant one, so `Generator[int, None, None]` and
+    `Generator[int, Any, Any]` are incomparable -- neither is a sub-hint of the
+    other. Two such overloads are ambiguous, and this is sound: an
+    antisymmetric preorder allows incomparable elements.
+    """
+    a = tx.Generator[int, None, None]
+    b = tx.Generator[int, tx.Any, tx.Any]
+    assert issubhint(a, b) is False
+    assert issubhint(b, a) is False
+
+
 # --- value dispatch: the flipped winner --------------------------------
 
 
@@ -186,8 +210,10 @@ def test_invariant_overloads_are_ambiguous() -> None:
     """Two `List[...]` overloads with subtype-related args are ambiguous.
 
     `list` is invariant, so `List[int]` and `List[bool]` are incomparable: a
-    list value matches both and neither is more specific. Under the old
-    covariant reading `List[bool]` would have won outright.
+    list value matches both and neither is more specific, so the call raises
+    `AmbiguousMethodError`. Under the old covariant reading `List[bool]` would
+    have won outright. (Registration itself does not warn -- that clash warning
+    is V4; the tie shows only at call time.)
     """
     f = Function("handle")
 
@@ -197,10 +223,8 @@ def test_invariant_overloads_are_ambiguous() -> None:
     def wants_bools(x: tx.List[bool]) -> str:
         return "bools"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register(wants_ints)
-        f.register(wants_bools)
+    f.register(wants_ints)
+    f.register(wants_bools)
     with pytest.raises(AmbiguousMethodError):
         f([True, False])
 

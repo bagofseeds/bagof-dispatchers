@@ -313,6 +313,19 @@ multiply.
   Julia's reading. Inside an invariant slot the same consistency reading keeps a
   free `T`/`Any` above every `G[X]`, so a generic-fallback overload stays
   comparable.
+- **Only a *free* `TypeVar`/`Any` is the invariant-slot top.** A *bounded* or
+  *constrained* `TypeVar` is read as its bound (the union of its constraints),
+  not as a top — so a generic-fallback overload written `G[TypeVar(bound=int)]`
+  no longer sits above its specialisations in an invariant slot: `Box[int]` (the
+  bound) *ties* `Box[TB]`, but `Box[bool]` (below the bound) is incomparable to
+  it. Write a free `T`, or `Any`, for a fallback that must stay above everything.
+- **A mixed-sign generic can leave parameterisations incomparable.** When one
+  generic mixes signs across its positions — `Generator[Y_co, S_contra, R_co]`
+  (yield covariant, send contravariant, return covariant) — `Any` is the top of
+  a covariant slot but the *bottom* of a contravariant one, so `Generator[int,
+  None, None]` and `Generator[int, Any, Any]` order neither way. Two such
+  overloads are ambiguous; this is sound and law-preserving (an antisymmetric
+  preorder permits incomparable elements).
 - **The co/contra/inv/infer TypeVars of `bagof-hints`** describe *generic-class*
   variance, and are now **honoured** when such a variable declares a user
   generic's position: `hints.typevars.co.INT` gives a covariant position,

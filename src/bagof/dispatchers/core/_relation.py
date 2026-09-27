@@ -979,16 +979,20 @@ def _issubslot(sub: tx.Any, sup: tx.Any, variance: str) -> bool:
     * **contravariant** -- `sup` must be a sub-hint of `sub`, so a consumer of
       `int` stands in for a consumer of `bool`;
     * **invariant** -- the two must accept the same values, *or* the super side
-      is a top the slot may widen to (`Any`, or a free `TypeVar` equivalent to
-      `Any`). That gradual-consistency exception keeps a free `T`/`Any` above
-      every invariant `G[X]`, so a generic-fallback overload stays comparable.
+      is a top the slot may widen to: `Any`, or a *free* `TypeVar` (one with no
+      bound or constraints, so equivalent to `Any`). That gradual-consistency
+      exception keeps a free `T`/`Any` above every invariant `G[X]`, so a
+      generic-fallback overload stays comparable. A *bounded* / *constrained*
+      `TypeVar` is read as its bound, not as a top, so `G[X]` and `G[TB]` only
+      tie when `X` equals that bound.
     """
     if variance == _COVARIANT:
         return issubhint(sub, sup)
     if variance == _CONTRAVARIANT:
         return issubhint(sup, sub)
-    # Invariant: equal, or the super side is a top via gradual consistency.
-    return _equivalent(sub, sup) or _is_any(sup) or issubhint(tx.Any, sup)
+    # Invariant: equal, or the super side is a top via gradual consistency
+    # (`issubhint(Any, sup)` already answers True when `sup` is `Any`).
+    return _equivalent(sub, sup) or issubhint(tx.Any, sup)
 
 
 def _is_subscripted_tuple(hint: tx.Any) -> bool:
