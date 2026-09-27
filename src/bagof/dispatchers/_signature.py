@@ -1101,8 +1101,11 @@ def _hint_eq(a: tx.Any, b: tx.Any) -> bool:
     (`#!python List["Later"]`, `#!python Optional["Node"]`) the two are
     compared structurally instead -- a generic alias compares by its origin and
     its arguments, and each nested `ForwardRef` by name, so two genuinely
-    different spellings do not collapse to equal. Two fully resolved hints are
-    compared with [`equivalent`][bagof.dispatchers._lattice.equivalent].
+    different spellings do not collapse to equal. A reference's
+    `__forward_module__` is not consulted, so the same name recorded against
+    different modules compares equal, as at the top level. Two fully resolved
+    hints are compared with
+    [`equivalent`][bagof.dispatchers._lattice.equivalent].
     """
     a_name = _forward_name(a)
     b_name = _forward_name(b)
