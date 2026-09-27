@@ -57,6 +57,21 @@ def test_typing_spelling_bridges_builtin_and_typing() -> None:
     assert resolve_hint(typing.List[int], registry) == "ints"
 
 
+def test_bare_tuple_query_does_not_match_the_empty_tuple_key() -> None:
+    """A bare `Tuple` query is not the empty-tuple type `Tuple[()]`.
+
+    `_typing_spelling` used to rewrite a bare `typing.Tuple` to `Tuple[()]`,
+    so the exact-key path matched an `Tuple[()]` entry that the relation does
+    not accept.
+    """
+    # `Tuple[()]` is not an accepting key for a bare `Tuple` query.
+    empty_only = {tx.Tuple[()]: "empty"}
+    assert resolve_hint(tx.Tuple, empty_only, default=None) is None
+    # With a bare `tuple` key present, that is the only accepting one.
+    registry = {tx.Tuple[()]: "empty", tuple: "any"}
+    assert resolve_hint(tx.Tuple, registry, default=None) == "any"
+
+
 def test_unhashable_key_does_not_raise() -> None:
     """A key that cannot be hashed is simply not an exact key."""
     registry = {int: "int"}

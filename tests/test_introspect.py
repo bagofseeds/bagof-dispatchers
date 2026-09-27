@@ -355,6 +355,17 @@ def test_typing_spelling_leaves_others_unchanged() -> None:
     assert _typing_spelling(tx.Annotated[int, "m"]) == tx.Annotated[int, "m"]
 
 
+def test_typing_spelling_leaves_a_bare_tuple_unchanged() -> None:
+    # A bare, unparametrised `Tuple`/`tuple` is not the empty-tuple type, so
+    # it must not be rewritten to `Tuple[()]` -- `get_origin(Tuple) is tuple`
+    # with empty args on every version, which used to trip the rewrite.
+    import typing
+
+    assert _typing_spelling(tx.Tuple) is tx.Tuple
+    assert _typing_spelling(typing.Tuple) is typing.Tuple
+    assert _typing_spelling(tuple) is tuple
+
+
 @pytest.mark.skipif(
     sys.version_info < (3, 9), reason="types.GenericAlias needs 3.9+"
 )

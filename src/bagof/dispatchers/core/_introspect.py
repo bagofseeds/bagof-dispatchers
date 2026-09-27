@@ -178,6 +178,12 @@ _QUALIFIER_FORMS = (
 
 _TYPE_ALIAS_TYPES = spellings("TypeAliasType")
 
+# The bare, unparametrised tuple spellings. Used to tell a bare `Tuple` /
+# `tuple` from a subscripted alias whose arguments happen to be empty -- the
+# empty-tuple type `Tuple[()]` (mirrors `_relation._is_subscripted_tuple`,
+# kept here to avoid importing from `_relation`, which imports this module).
+_BARE_TUPLE_FORMS = spellings("Tuple") + (tuple,)
+
 # A generous cap: each pass either resolves one wrapper (strictly reducing
 # the hint) or leaves it untouched, so a handful of passes always settles.
 _MAX_NORMALISE_STEPS = 100
@@ -826,9 +832,17 @@ def _typing_spelling(hint: tx.Any) -> tx.Any:
     args = tx.get_args(hint)
     try:
         if not args:
-            # `tuple[()]` reports no arguments from Python 3.11 on, but it
-            # is the empty-tuple type and still differs from `Tuple[()]`.
-            return tx.Tuple[()] if origin is tuple else hint
+            # `tuple[()]` / `Tuple[()]` (the empty-tuple type) reports no
+            # arguments from Python 3.11 on, yet still differs from a bare,
+            # unparametrised `Tuple`. Rewrite only the subscripted empty-tuple
+            # form to the `typing` spelling; a bare `Tuple` (a known bare form,
+            # or one carrying no `__args__`) is returned unchanged.
+            subscripted = (
+                origin is tuple
+                and not any(hint is form for form in _BARE_TUPLE_FORMS)
+                and hasattr(hint, "__args__")
+            )
+            return tx.Tuple[()] if subscripted else hint
         if origin is tx.Annotated:
             # `(type, *metadata)`: rewrite the type, keep the metadata.
             inner = _typing_spelling(args[0])
