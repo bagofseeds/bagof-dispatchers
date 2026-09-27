@@ -1,3 +1,7 @@
+---
+icon: fontawesome/solid/file-lines
+---
+
 # RFC 0001 — Hint-informed multiple dispatch for `bagof.dispatchers`
 
 - **Status:** Design proposal (for owner review). No implementation code written yet.
