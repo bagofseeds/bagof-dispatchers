@@ -170,3 +170,16 @@ def test_extra_items_never_rejects_any_extra() -> None:
     assert ishintstance({"a": 1, "b": 2}, TD) is False
     # ...while exactly the declared keys still match.
     assert ishintstance({"a": 1}, TD) is True
+
+
+@EXTRA
+def test_extra_items_unresolvable_forward_ref_is_skipped() -> None:
+    # An `extra_items` type that is an unresolvable forward reference cannot
+    # be read, so an extra key's value is accepted (the field is reported via
+    # a warning) rather than raising -- mirroring an unresolvable declared
+    # field. The declared key is still enforced.
+    class TD(tx.TypedDict, extra_items="Undefined"):
+        a: int
+
+    assert ishintstance({"a": 1, "b": object()}, TD) is True
+    assert ishintstance({"a": "x", "b": object()}, TD) is False
