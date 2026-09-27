@@ -195,9 +195,12 @@ CORPUS = [
     Exact[int],
     Exact[bool],
     Exact[str],
-    # Any / None
+    # Any / None, and the bottom on its own -- below every hint above,
+    # `Exact[C]` included (#54)
     tx.Any,
     type(None),
+    tx.Never,
+    tx.NoReturn,
 ]
 
 
@@ -255,6 +258,13 @@ def test_order_is_transitive() -> None:
             for c in CORPUS:
                 if issubhint(b, c):
                     assert issubhint(a, c) is True, (a, b, c)
+
+
+def test_the_bottom_is_below_every_hint_and_only_a_bottom_below_it() -> None:
+    bottoms = (tx.Never, tx.NoReturn)
+    for hint in CORPUS:
+        assert issubhint(tx.Never, hint) is True, hint
+        assert issubhint(hint, tx.Never) is (hint in bottoms), hint
 
 
 # --- mro_index ---------------------------------------------------------
