@@ -1,6 +1,10 @@
 """The hint-level subtype relation: `issubhint` and `ishintstance`."""
 
 # stdlib
+import dataclasses
+import functools
+import inspect
+import types
 import warnings
 from collections import abc
 
@@ -217,6 +221,14 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
       default) allows them, a `closed=True` one rejects them, and an
       `extra_items=` one checks each against that type. A nested `TypedDict`
       or container field is read recursively.
+    * If `hint` is a [`runtime_checkable`][typing.runtime_checkable]
+      protocol with **data members** (`#!python name: str`), checks the
+      value itself, as [`isinstance`][] does: its class names the protocol
+      among its bases, or every data member is present on the value --
+      set on the instance or defined by its class -- and every method is
+      defined by its class. Members are looked up without running the
+      value's code: a property is not called and `__getattr__` is not
+      asked. A protocol with methods only is checked on the value's type.
     * If `hint` is a parametrised generic (`#!python List[int]`,
       `#!python Box[int]`), checks that `obj` is an instance of its class,
       and checks the type arguments only when `obj` **declares** them: an
@@ -310,7 +322,14 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
         # instance of `class Child(List[int])` is one of `List[int]` by its
         # class. A plain `[1]` declares nothing: `type([1])` is `list`, never
         # `List[int]`, so any list matches every `List[...]`.
-        if not safe_issubclass(type(obj), origin_uw):
+        members = _data_protocol_members(origin_uw)
+        if members is not None:
+            # A runtime-checkable protocol with data members is decided by
+            # what the value holds, which `issubclass` refuses to answer
+            # (#56).
+            if not _ishintstance_protocol(obj, origin_uw, members):
+                return False
+        elif not safe_issubclass(type(obj), origin_uw):
             return False
         if not tx.get_args(hint):
             return True
@@ -351,7 +370,259 @@ def _ishintstance_type(obj: tx.Any, hint: tx.Any) -> bool:
         # hint is `type` (or `tx.Type`), so any type is valid
         return isinstance(obj, type)
     # hint is `type[T]` (or `tx.Type[T]`), so check obj is a subclass of T
-    return isinstance(obj, type) and safe_issubclass(obj, args_uw[0])
+    return isinstance(obj, type) and _issubclass_origin(obj, args_uw[0])
+
+
+# --- runtime-checkable protocols with data members (#56) ---------------
+#
+# Python refuses `issubclass()` against a protocol that declares a data member
+# (`name: str`), because whether a value has one is a property of the
+# instance, not of its class. So such a protocol is read here member by
+# member, in two halves:
+#
+# * the value level (`_ishintstance_protocol`) reads each **data** member off
+#   the value itself, and each **method** off the value's class -- the way a
+#   method-only protocol is already decided, by type. Only the data members
+#   depend on the instance, so the call cache keys such a position on the
+#   value's type and which of those members it has (`_has_data_member`, the
+#   one reader the check and the key share);
+# * the hint level (`_declares_protocol`) asks whether *every* instance of a
+#   class has them, which only what the class itself defines can promise.
+
+
+class _ProtocolMembers(tx.NamedTuple):
+    """A runtime-checkable protocol's members, split by where they are read.
+
+    `data` are read off the value (its instance `__dict__` or its class), and
+    `methods` off the value's class. Both are sorted, so a caller that keys
+    on them always reads them in the same order.
+    """
+
+    data: tx.Tuple[str, ...]
+    methods: tx.Tuple[str, ...]
+
+
+# A marker for "no such attribute", distinct from any value a class can hold
+# (`None` included, which means something to a protocol method).
+_ABSENT = object()
+
+
+def _data_protocol_members(cls: tx.Any) -> tx.Optional[_ProtocolMembers]:
+    """The members of `cls` if it is a runtime protocol with data members.
+
+    Returns `#!python None` for anything else: a class that is not a
+    protocol (a concrete class that merely inherits one included), a protocol
+    that is not [`runtime_checkable`][typing.runtime_checkable] -- Python
+    refuses to instance-check it, and so does the relation -- and a protocol
+    whose members are all methods, which Python decides from the class and
+    the relation keeps reading by type.
+    """
+    if not isinstance(cls, type):
+        return None
+    if not getattr(cls, "_is_runtime_protocol", False):
+        # The flag `runtime_checkable` sets, and the one Python's own
+        # `isinstance` reads: a sub-protocol inherits it.
+        return None
+    return _read_protocol_members(cls)
+
+
+@functools.lru_cache(maxsize=None)
+def _read_protocol_members(cls: type) -> tx.Optional[_ProtocolMembers]:
+    """[`_data_protocol_members`][] for a runtime-checkable class, memoised.
+
+    A member is a method when the protocol holds a callable under its name,
+    and a data member otherwise -- an annotation alone, a property, or a
+    plain default -- the same split Python makes.
+    """
+    if not tx.is_protocol(cls):
+        return None
+    names = sorted(tx.get_protocol_members(cls))
+    data = tuple(
+        name for name in names if not callable(getattr(cls, name, None))
+    )
+    if not data:
+        return None
+    methods = tuple(name for name in names if name not in data)
+    return _ProtocolMembers(data, methods)
+
+
+def _class_attribute(cls: type, name: str) -> tx.Any:
+    """What `cls` defines under `name`, anywhere in its MRO, or `_ABSENT`.
+
+    Read out of each class's own namespace, so a property is found, not
+    called, and nothing of the class's own code runs.
+    """
+    for base in cls.__mro__:
+        namespace = base.__dict__
+        if name in namespace:
+            return namespace[name]
+    return _ABSENT
+
+
+def _has_method(cls: type, name: str) -> bool:
+    """Whether `cls` defines the protocol method `name`.
+
+    A class that sets the name to `#!python None` declares that it does
+    *not* support it, as Python reads a protocol method too.
+    """
+    found = _class_attribute(cls, name)
+    return found is not _ABSENT and found is not None
+
+
+def _has_data_member(obj: tx.Any, name: str) -> bool:
+    """Whether the value `obj` has the attribute `name`.
+
+    Found on the instance's own `__dict__` or anywhere in its class's MRO --
+    a class attribute, a property, a slot -- without running any of the
+    value's code, as [`inspect.getattr_static`][] finds it and as Python's
+    own `isinstance` reads a protocol member from 3.12 on (earlier versions of
+    `typing` call `hasattr`, which runs a property and asks `__getattr__`).
+
+    This is the one reader both the value check and the call cache use, so
+    the key always covers what the check reads. It runs on every call the
+    cache answers at such an argument, so the common case -- an ordinary
+    instance -- reads the two namespaces directly, and everything else takes
+    [`inspect.getattr_static`][] itself.
+    """
+    cls = type(obj)
+    try:
+        direct = _reads_instance_dict(cls)
+    except TypeError:
+        # A class whose metaclass makes it unhashable cannot key the memo.
+        direct = _reads_instance_dict.__wrapped__(cls)
+    if not direct:
+        try:
+            inspect.getattr_static(obj, name)
+        except (AttributeError, TypeError):
+            # Absent -- or, from 3.13, a class `getattr_static` cannot read
+            # because its metaclass makes it unhashable (Python's own
+            # `isinstance` raises there): nothing is found.
+            return False
+        return True
+    try:
+        if name in object.__getattribute__(obj, "__dict__"):
+            return True
+    except AttributeError:
+        # `__slots__` without a `__dict__`: only the class can hold it.
+        pass
+    return _class_attribute(cls, name) is not _ABSENT
+
+
+@functools.lru_cache(maxsize=None)
+def _reads_instance_dict(cls: type) -> bool:
+    """Whether an instance of `cls` has its attributes looked up plainly.
+
+    True for an ordinary class: an instance's attributes are its own
+    `__dict__` -- read through the standard descriptor, which runs no code
+    -- and its class's MRO. False for a metaclass, whose instances are
+    classes (their attributes are their bases' and their own metaclass's),
+    and for a class that redefines `__dict__` (a property, say), which a
+    plain read would run.
+    """
+    if issubclass(cls, type):
+        return False
+    for base in cls.__mro__:
+        entry = base.__dict__.get("__dict__", _ABSENT)
+        if entry is _ABSENT:
+            continue
+        if not (
+            type(entry) is types.GetSetDescriptorType
+            and entry.__objclass__ is base
+        ):
+            return False
+    return True
+
+
+def _ishintstance_protocol(
+    obj: tx.Any, proto: type, members: _ProtocolMembers
+) -> bool:
+    """Whether `obj` is an instance of the data-member protocol `proto`.
+
+    A class that names `proto` among its bases is one, as Python's
+    `isinstance` counts it, whatever its instances hold. Otherwise every
+    method must be defined by the value's class and every data member be
+    present on the value ([`_has_data_member`][]).
+
+    Methods are read off the class, as a method-only protocol is decided,
+    so only the data members depend on the instance -- and those are all
+    the call cache keys on. A method set on the instance alone is therefore
+    not counted, where Python's `isinstance` would count it.
+    """
+    cls = type(obj)
+    if any(base is proto for base in cls.__mro__):
+        return True
+    return all(_has_method(cls, name) for name in members.methods) and all(
+        _has_data_member(obj, name) for name in members.data
+    )
+
+
+def _dataclass_fields(cls: type) -> tx.FrozenSet[str]:
+    """The names of the fields of `cls` if it is a dataclass, else nothing."""
+    if not dataclasses.is_dataclass(cls):
+        return frozenset()
+    return frozenset(field.name for field in dataclasses.fields(cls))
+
+
+def _declares_protocol(
+    cls: tx.Any, proto: type, members: _ProtocolMembers
+) -> bool:
+    """Whether every instance of `cls` is one of the data protocol `proto`.
+
+    The hint-level twin of [`_ishintstance_protocol`][], and deliberately
+    conservative, since it has to hold for every instance and not just one:
+
+    * a class that names `proto` among its bases is below it, a sub-protocol
+      included, as it is at the value level;
+    * another protocol that does not is not, even when it lists the same
+      members -- a protocol stands for what it says it extends;
+    * any other class must define every method (not as `#!python None`), and
+      must define every data member itself -- a class attribute, a property,
+      a slot -- or declare it as a dataclass field.
+
+    A bare annotation on a plain class (`#!python name: str` with no value)
+    does **not** count. It promises nothing at runtime: an instance that
+    never sets the attribute is not an instance of `proto`, so counting it
+    would put the class below `proto` while one of its instances fails the
+    value check -- the one thing the order must never do (a value of a
+    sub-hint is a value of the super-hint). A dataclass field does count,
+    because a dataclass promises every field on every instance: its
+    generated `__init__` sets each one. Only a hand-written `__init__` that
+    skips a field, a `del`, or a call made on `self` from inside `__init__`
+    before the field is set can break that promise; each is breaking the
+    dataclass itself.
+    """
+    if not isinstance(cls, type):
+        return False
+    if any(base is proto for base in cls.__mro__):
+        return True
+    if tx.is_protocol(cls):
+        return False
+    if not all(_has_method(cls, name) for name in members.methods):
+        return False
+    fields = _dataclass_fields(cls)
+    return all(
+        name in fields or _class_attribute(cls, name) is not _ABSENT
+        for name in members.data
+    )
+
+
+def _protocol_below_protocol(
+    sub: type, members: _ProtocolMembers, sup: type
+) -> bool:
+    """Whether the data protocol `sub` is below the method-only protocol `sup`.
+
+    `sup` is runtime-checkable, and `members` are `sub`'s. A protocol that
+    names `sup` among its bases is below it. So is one whose methods cover
+    every member of `sup` -- read the way the value level reads them, off
+    the class, so the class of an instance of `sub` passes Python's check
+    for `sup` too. A data member of `sub` never stands in for a method of
+    `sup` (Python's own `issubclass` would let an annotation do so): it may
+    be set on the instance alone, and then the instance's class does not
+    satisfy `sup`.
+    """
+    if any(base is sup for base in sub.__mro__):
+        return True
+    return set(tx.get_protocol_members(sup)) <= set(members.methods)
 
 
 # A unique marker for "no such attribute". Distinct from any value a
@@ -764,6 +1035,17 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
         This makes them usable as a `#!python BOUND`, and it is why the
         relation is not transitive through a bare `#!python Union`.
 
+    !!! note
+        A class is a sub-hint of a
+        [`runtime_checkable`][typing.runtime_checkable] protocol with data
+        members (`#!python name: str`) only when **every** instance of it
+        has them: the class names the protocol among its bases, or defines
+        each member itself (a class attribute, a property, a method) or as a
+        dataclass field. A bare annotation on a plain class does not count,
+        since an instance may never set it; such instances are matched one
+        by one by
+        [`ishintstance`][bagof.dispatchers.core.ishintstance] instead.
+
     !!! example
         ```pycon
         >>> from typing import List, Sequence, Union
@@ -964,7 +1246,7 @@ def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
     # `type`, so handing either to `safe_issubclass` directly would
     # answer False for every one of them.
     hint_uw = unwrap(hint)
-    if not safe_issubclass(get_origin_uw(hint_uw), origin):
+    if not _issubclass_origin(get_origin_uw(hint_uw), origin):
         return False
 
     if origin is tuple:
@@ -1008,6 +1290,29 @@ def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
     # an arity mismatch, or an origin the table does not cover -- keeps the
     # covariant argument comparison.
     return _issubargs(args, superargs)
+
+
+def _issubclass_origin(sub: tx.Any, origin: tx.Any) -> bool:
+    """Whether the class `sub` is below the class `origin`, for the relation.
+
+    [`safe_issubclass`][], except where a runtime-checkable protocol with
+    data members is involved, which `issubclass` refuses (as the super side)
+    or reads too loosely (as the sub side) -- see [`_declares_protocol`][]
+    and [`_protocol_below_protocol`][].
+    """
+    members = _data_protocol_members(origin)
+    if members is not None:
+        return _declares_protocol(sub, origin, members)
+    # From here on `origin` is not a data protocol: a method-only runtime
+    # protocol is the one case a data protocol `sub` is read member-wise.
+    sub_members = _data_protocol_members(sub)
+    if (
+        sub_members is not None
+        and getattr(origin, "_is_runtime_protocol", False)
+        and tx.is_protocol(origin)
+    ):
+        return _protocol_below_protocol(sub, sub_members, origin)
+    return safe_issubclass(sub, origin)
 
 
 def _issubslot(sub: tx.Any, sup: tx.Any, variance: str) -> bool:
@@ -1539,7 +1844,7 @@ def _issubtype(hint: tx.Any, superhint: tx.Any) -> bool:
     # Check that the hint's arg is a subclass of the superhint's arg
     args = safe_get_args(hint_uw)
     superargs = safe_get_args(superhint_uw)
-    return safe_issubclass(args[0], superargs[0])
+    return _issubclass_origin(args[0], superargs[0])
 
 
 def _issubcallable(hint: tx.Any, superhint: tx.Any) -> bool:

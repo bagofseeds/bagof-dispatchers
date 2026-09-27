@@ -12,6 +12,7 @@ nav = [
     {"When nothing matches" = "guide/no-match.md"},
     {"Exact types" = "guide/exact-types.md"},
     {"Dispatching on numbers" = "guide/numbers.md"},
+    {"Protocols" = "guide/protocols.md"},
     {"Variance" = "guide/variance.md"},
     {"Your own registry" = "guide/registries.md"},
     {"Without a def" = "guide/without-a-def.md"},
