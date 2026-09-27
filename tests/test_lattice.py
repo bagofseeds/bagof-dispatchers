@@ -46,10 +46,28 @@ _TBOUND = tx.TypeVar("_TBOUND", bound=int)
 _TCONSTR = tx.TypeVar("_TCONSTR", int, str)
 _P = tx.ParamSpec("_P")
 _Ts = tx.TypeVarTuple("_Ts")
+_T_co = tx.TypeVar("_T_co", covariant=True)
+_T_contra = tx.TypeVar("_T_contra", contravariant=True)
 
 
 class _Arr(tx.Generic[tx.Unpack[_Ts]]):
     """A user class parametrised by a `TypeVarTuple`, for the corpus laws."""
+
+
+class _Src(tx.Generic[_T_co]):
+    """A covariant user generic, for the variance corpus (#50)."""
+
+
+class _Snk(tx.Generic[_T_contra]):
+    """A contravariant user generic, for the variance corpus (#50)."""
+
+
+class _Box(tx.Generic[_T]):
+    """An invariant (unflagged) user generic, for the variance corpus (#50)."""
+
+
+class _Cell(tx.Generic[_T]):
+    """A second invariant user generic, for the variance corpus (#50)."""
 
 
 class _Movie(tx.TypedDict):
@@ -101,6 +119,32 @@ CORPUS = [
     tx.Dict[str, int],
     tx.Dict[str, bool],
     dict,
+    # variance families (#50): a covariant (`_Src`), contravariant (`_Snk`)
+    # and invariant (`_Box`/`_Cell`) user generic, and stdlib containers of
+    # each variance, over subtype-related arguments and the per-family ends --
+    # a free `T`, `Any`, and the bottom `Never`. Invariance is equality and
+    # contravariance is reversal, both of which preserve the preorder, so the
+    # reflexive / transitive laws must still hold over all of these.
+    _Src[int],
+    _Src[bool],
+    _Src[_T],
+    _Src[tx.Any],
+    _Src[tx.Never],
+    _Snk[int],
+    _Snk[bool],
+    _Snk[_T],
+    _Snk[tx.Any],
+    _Snk[tx.Never],
+    _Box[int],
+    _Box[bool],
+    _Box[_T],
+    _Box[tx.Any],
+    _Box[tx.Never],
+    _Cell[int],
+    tx.Sequence[int],
+    tx.Sequence[bool],
+    tx.Mapping[str, int],
+    tx.Mapping[str, bool],
     # TypedDict rows (#19): the bare marker ("any TypedDict") and a concrete
     # TypedDict both sit strictly below `dict` -- every TypedDict value is a
     # dict, but a plain `dict` is neither. The marker is reduced to `dict` only

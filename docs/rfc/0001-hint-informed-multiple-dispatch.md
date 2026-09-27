@@ -150,7 +150,9 @@ changes it, and the change is called out.
 | `TB ≤ int` / `int ≤ TB` (`bound=int`) | True / True | a bound TypeVar ≡ its bound → cannot mean "exactly" |
 | `int ≤ TC`, `TC ≤ int`, `TC ≤ Union[int,str]`, `Union[int,str] ≤ TC` | T/F/T/**F→T (post-fix)** | constrained TypeVar becomes `≡` the union of its constraints |
 | `list ≤ List`, `List ≤ list`, `List[int] ≤ list`, `list ≤ List[int]` | T/T/T/F | a **preorder** with equivalence classes; `List[int] < list ≡ List` |
-| `List[bool] ≤ List[int]`, `Dict[str,int] ≤ Dict[str,object]` | True | diverges from PEP 483 invariance of mutable containers — deliberate for value dispatch (§2.3) |
+| `List[bool] ≤ List[int]`, `Dict[str,int] ≤ Dict[str,object]` | **False** | `list`/`dict` are invariant (PEP 484): a subtype argument is not a sub-hint (§2.3; #50) |
+| `Sequence[bool] ≤ Sequence[int]`, `Mapping[str,bool] ≤ Mapping[str,int]` | True | `Sequence` covariant; `Mapping` key-invariant, value-covariant (spec table, §2.3; #50) |
+| `Snk[int] ≤ Snk[bool]` (user `contravariant=True`), `Box[bool] ≤ Box[int]` (user unflagged) | True / **False** | user generics read their declared `TypeVar`: contravariant reverses, unflagged is invariant (§2.3; #50) |
 | `Tuple[int] < Tuple[int, ...] < tuple`, `Tuple[int,...] ≤ Tuple[Any,...]` | True chain | covariant `Tuple` |
 | `Tuple[int,str] ≤ Tuple[int,*Ts]`, `Tuple[int] ≤ Tuple[int,*Ts]`, `Tuple[int,*Ts] ≤ Tuple[*Ts]`, `Tuple[int,*Ts,str] ≤ Tuple[int,*Ts]` | True | `*Ts` is an open run of 0+ `Any`: a fixed prefix captures the rest, a longer fixed prefix/suffix is stricter (Phase-8(b), #28) |
 | `Tuple[int,*Ts]` vs `Tuple[*Ts,int]`, `Tuple[int,*Ts]` vs `Tuple[int,...]` | incomparable | a prefix run and a suffix run, or a `*Ts` run and a `...` run, do not order either way |
@@ -263,37 +265,74 @@ applicable; same names/different order → equivalent for keyword calls (ambiguo
 without priority) but not positional, so *not* duplicates at registration;
 positional-only (`p(x, /)`) → `p(x=1)` unbindable → `NoMethodError`.
 
-### 2.3 Where variance enters (reconciled with PEP 483 and `bagof.hints.typevars`)
+### 2.3 Where variance enters (spec-defined; #50)
 
 PEP 483: for `t2 ≤ t1`, `G` is *covariant* if `G[t2] ≤ G[t1]`, *contravariant*
-if `G[t1] ≤ G[t2]`, *invariant* if neither. `Tuple`/`FrozenSet`/`Union`/`Type`
-covariant; mutable containers invariant; `Callable` contravariant in params,
-covariant in return.
+if `G[t1] ≤ G[t2]`, *invariant* if neither. Variance is a property of the
+generic's **parameter position**, defined by the spec — never by the argument.
+The relation reads it per position and applies it slot by slot (`A` sub-side
+arg, `B` super-side arg): covariant `A ⊑ B`, contravariant `B ⊑ A`, invariant
+`A ≡ B` (with `Any`/a free `T` on the super side a top an invariant slot may
+widen to, via gradual consistency). Nesting composes by recursion, so the signs
+multiply.
 
+- **Where each position's variance comes from.** A user generic reads its
+  declared `TypeVar` live off `__parameters__`: `covariant=True` → covariant,
+  `contravariant=True` → contravariant, **neither → invariant** (PEP 484). A
+  PEP 695 `infer_variance` variable is unknowable at runtime and read as
+  invariant. A stdlib generic is looked up in a table vendored from CPython's
+  `typing` (the spec's reference implementation), keyed by runtime origin: `list`
+  / `set` / `dict` / `MutableSequence` / … invariant, `Sequence` / `frozenset` /
+  `Collection` / `Iterable` / `Type[C]` / … covariant, `Mapping` key-invariant
+  value-covariant, `Generator` / `Coroutine` yield-cov send-contra return-cov. A
+  3.8 CI test regenerates the table from the live `typing` and asserts equality,
+  so it stays spec-sourced. `Tuple` and `Callable` are not in the table: they
+  keep their own dedicated paths (tuple shape; contravariant params, covariant
+  return).
+- **The consequence (the reversal).** `List[bool] ⊑ List[int]` is now **False**
+  (`list` invariant), where it was True. Only same-origin pairs whose one
+  argument is a *subtype* of the other in an *invariant* container change; a
+  covariant container (`Sequence`, `frozenset`) keeps its ordering, and a
+  contravariant one reverses. Two `List[X]` overloads with subtype-related
+  arguments become incomparable → ambiguous (set a priority), where before the
+  narrower one won.
 - **Argument positions of a call are covariant.** A parameter *consumes* the
   argument; applicability is `type(v) ⊑ P`; "more specific" is "smaller P". This
   is `Tuple` covariance on the argument tuple — Julia's signatures *are* tuple
-  types.
-- **Inside a hint**, the relation is covariant everywhere, including
-  `List[bool] ⊑ List[int]`, which PEP 483 calls unsound for a *reference*. For
-  dispatch *on a value* the question is "can this value be described by this
-  hint" — values carry no type arguments (`type([True])` is `list`), so
-  covariance is the only reading that yields any order between parametrised
-  hints. Julia can be invariant only because its parametric types are concrete
-  at runtime. **Documented caveat + registration warning:** `List[int]` and
-  `List[str]` are both applicable to any list and incomparable.
-- **Real contravariance** (`Callable` params) is handled in Phase 1 (post-fix).
+  types. This is a separate axis from the per-position variance *inside* a hint.
+- **Value applicability stays shallow.** The spec governs static subtyping; a
+  runtime value carries no type arguments (`type([True])` is `list`), so
+  `ishintstance([1], List[int])` stays True — any list matches every `List[…]`,
+  whatever the container's variance. Variance changes hint **ordering /
+  comparability**, never value applicability.
 - **`Any` / gradual typing [PEP 483, spec].** The spec separates *subtype of*
   from *consistent with*: `Any` is consistent with everything but is neither its
   subtype nor supertype; `object` is the nominal top. A dispatcher must still
   order `(object,)` vs `(Any,)`; the relation answers `object < Any`, so
   `Any`/unannotated is the widest catch-all and an `object` method beats it —
-  Julia's reading. Documented.
+  Julia's reading. Inside an invariant slot the same consistency reading keeps a
+  free `T`/`Any` above every `G[X]`, so a generic-fallback overload stays
+  comparable.
+- **Only a *free* `TypeVar`/`Any` is the invariant-slot top.** A *bounded* or
+  *constrained* `TypeVar` is read as its bound (the union of its constraints),
+  not as a top — so a generic-fallback overload written `G[TypeVar(bound=int)]`
+  no longer sits above its specialisations in an invariant slot: `Box[int]` (the
+  bound) *ties* `Box[TB]`, but `Box[bool]` (below the bound) is incomparable to
+  it. Write a free `T`, or `Any`, for a fallback that must stay above everything.
+- **A mixed-sign generic can leave parameterisations incomparable.** When one
+  generic mixes signs across its positions — `Generator[Y_co, S_contra, R_co]`
+  (yield covariant, send contravariant, return covariant) — `Any` is the top of
+  a covariant slot but the *bottom* of a contravariant one, so `Generator[int,
+  None, None]` and `Generator[int, Any, Any]` order neither way. Two such
+  overloads are ambiguous; this is sound and law-preserving (an antisymmetric
+  preorder permits incomparable elements).
 - **The co/contra/inv/infer TypeVars of `bagof-hints`** describe *generic-class*
-  variance, and PEP 484 / mypy forbid a variance-flagged TypeVar as a function
-  parameter. The dispatcher reads `__bound__`/`__constraints__` only and
-  **ignores the variance flags**: `hints.typevars.co.INT` and `inv.INT` dispatch
-  identically. Docs say so and point at `Exact[int]` for exactness.
+  variance, and are now **honoured** when such a variable declares a user
+  generic's position: `hints.typevars.co.INT` gives a covariant position,
+  `contra.INT` a contravariant one, `inv.INT` (and `infer`) an invariant one.
+  PEP 484 / mypy forbid a variance-flagged `TypeVar` as a function *parameter*;
+  used there (as an argument), it is read as its bound, and `Exact[int]` remains
+  the way to ask for exactness.
 - **Structural vs nominal: `ishintstance(v, H)` is deliberately not
   `issubhint(type(v), H)`.** The value-level check asks whether the value
   itself satisfies `H` — for a runtime `Protocol`, `Hashable`, or `Callable`
@@ -1100,7 +1139,7 @@ is uniform across spellings and forward-tolerant. Two measured facts shape this:
 | **`Annotated`/`Doc` (PEP 727)** | 3.9/typing_extensions | 4.x/4.9+ | transparent except `EXACT`; `Annotated` is a class ≤3.12, not 3.13 (pinned). **Support** |
 | **PEP 604 `X \| Y`** | 3.10 | — | `types.UnionType` in `UNION_TYPES`; 3.14 `types.UnionType is typing.Union` (pinned; verify). **Support** |
 | **PEP 585 `list[int]`** | 3.9 | — | `isinstance(list[int], type)` is True on 3.9/3.10 → guard with `get_origin(x) is None` before treating as a class; `≡ List[int]`. **Support** |
-| **User `Generic[T]`** | 3.8 | — | origin `isinstance`, args covariant regardless of declared variance (documented value-dispatch divergence). **Support** |
+| **User `Generic[T]`** | 3.8 | — | origin `isinstance`; args compared by the position's declared variance, read live off `__parameters__` (`covariant`/`contravariant`/unflagged→invariant, `infer_variance`→invariant); value check shallow (§2.3; #50). **Support** |
 | **Unknown / future form** | — | typing_extensions first | opaque rule (§11.2). **Degrade** |
 
 Numeric-tower note (docs): `issubhint(int, T_bound_float)` is False — the spec's

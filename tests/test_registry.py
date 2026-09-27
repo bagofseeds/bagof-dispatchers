@@ -45,9 +45,17 @@ def test_union_key_matches_a_member() -> None:
 
 
 def test_covariant_generic_key() -> None:
-    """A `List[int]` key matches a `List[bool]` query (covariant)."""
-    registry = {typing.List[int]: "ints"}
-    assert resolve_hint(typing.List[bool], registry) == "ints"
+    """A covariant container's key matches a subtype-argument query (#50).
+
+    `Sequence` is covariant, so a `Sequence[int]` key is reached by a
+    `Sequence[bool]` query. `list` is invariant, so a `List[int]` key is
+    **not** reached by a `List[bool]` query -- the two describe incomparable
+    lists (the spec-variance reversal of #50).
+    """
+    covariant = {typing.Sequence[int]: "ints"}
+    assert resolve_hint(typing.Sequence[bool], covariant) == "ints"
+    invariant = {typing.List[int]: "ints"}
+    assert resolve_hint(typing.List[bool], invariant, default=None) is None
 
 
 def test_typing_spelling_bridges_builtin_and_typing() -> None:
