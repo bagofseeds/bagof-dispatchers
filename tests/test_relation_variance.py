@@ -11,6 +11,9 @@ Every hint is spelled through `typing_extensions`, and every row runs on 3.8
 (the docstring / oldest-supported interpreter), so no `X | Y` or `list[int]`.
 """
 
+# stdlib
+import warnings
+
 # dependencies
 import pytest
 import typing_extensions as tx
@@ -212,8 +215,10 @@ def test_invariant_overloads_are_ambiguous() -> None:
     `list` is invariant, so `List[int]` and `List[bool]` are incomparable: a
     list value matches both and neither is more specific, so the call raises
     `AmbiguousMethodError`. Under the old covariant reading `List[bool]` would
-    have won outright. Registration now warns of the clash (V4 of #50) -- the
-    tie no longer shows only at call time.
+    have won outright. Registration does *not* warn -- registering both is
+    legitimate (a `class Child(List[int])` is dispatched precisely under
+    base-parameter substitution); the tie shows only at call time, where a
+    `priority` resolves it.
     """
     f = Function("handle")
 
@@ -223,9 +228,11 @@ def test_invariant_overloads_are_ambiguous() -> None:
     def wants_bools(x: tx.List[bool]) -> str:
         return "bools"
 
-    f.register(wants_ints)
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        f.register(wants_ints)
         f.register(wants_bools)
+    assert not [w for w in caught if issubclass(w.category, RuntimeWarning)]
     with pytest.raises(AmbiguousMethodError):
         f([True, False])
 

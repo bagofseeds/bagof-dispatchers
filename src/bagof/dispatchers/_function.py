@@ -51,18 +51,14 @@ from ._signature import (
 )
 from .core import (
     UNSET,
-    get_args_uw,
-    get_origin_uw,
     ishintstance,
     issubhint,
     mro_index,
     normalise_hint,
     safe_get_origin,
-    safe_issubclass,
 )
 from .core._compat import is_plausible_hint
 from .core._exact import exact_target, is_exact
-from .core._introspect import _generic_variances
 
 __all__ = ["Function"]
 
@@ -343,25 +339,27 @@ class Function:
         """Warn when `method` is guaranteed to be ambiguous with another.
 
         Only guaranteed ambiguities are warned (RFC 0001 §5): a pair that
-        binds the same shape, is incomparable, and whose landed hints overlap
-        by value at every argument -- so some call matches both. That includes
-        two parametrisations of one origin (`List[int]` and `List[str]`), which
-        are incomparable yet both apply to any list, because dispatch reads a
-        value's type, not its type arguments. A pair that only clashes for a
-        value neither is written for (a diamond subclass yet to exist) is left
-        for the call to surface.
+        binds the same shape, is incomparable at equal priority, and whose
+        landed hints are comparable at every argument -- so some call matches
+        both. A pair split by a differing `priority` is resolved
+        deterministically at the call, so it is not warned; and a pair that
+        only clashes for a value neither is written for (a diamond subclass yet
+        to exist) is left for the call to surface.
         """
         for other in methods:
             if other is method:
                 continue
-            for shape in _shapes_for_pair(method, other):
-                if _pair_ambiguous(method, other, shape):
-                    warnings.warn(
-                        _ambiguity_warning(method, other, shape),
-                        RuntimeWarning,
-                        stacklevel=4,
-                    )
-                    return
+            shapes = _shapes_for_pair(method, other)
+            if any(_pair_ambiguous(method, other, shape) for shape in shapes):
+                warnings.warn(
+                    f"{method.describe()} is ambiguous with "
+                    f"{other.describe()}: a call matching both has no most "
+                    f"specific method. Give one a higher priority, or make "
+                    f"one more specific.",
+                    RuntimeWarning,
+                    stacklevel=4,
+                )
+                return
 
     # -- calling --------------------------------------------------------
 
@@ -496,13 +494,14 @@ class Function:
     def ambiguities(self) -> tx.List[tx.Tuple[Method, Method]]:
         """The pairs of methods that could dispatch ambiguously.
 
-        Each pair binds a common call shape, is incomparable, and has
-        comparable hints at every argument of that shape -- so some call
-        matches both with no most specific method. This is a heuristic over
-        each method's own fully-applied shape (RFC 0001 §5): it finds the
-        ambiguities a call written straightforwardly would hit, not every
-        ambiguity reachable through `#!python *args` spreading or an
-        unforeseen subclass.
+        Each pair binds a common call shape, is incomparable at equal priority,
+        and has comparable hints at every argument of that shape -- so some
+        call matches both with no most specific method. A pair split by a
+        differing `priority` is resolved deterministically at the call, so it
+        is not listed. This is a heuristic over each method's own fully-applied
+        shape (RFC 0001 §5): it finds the ambiguities a call written
+        straightforwardly would hit, not every ambiguity reachable through
+        `#!python *args` spreading or an unforeseen subclass.
 
         !!! example
             ```pycon
@@ -1004,82 +1003,14 @@ def _shapes_for_pair(
     return frozenset(shapes)
 
 
-def _ambiguity_warning(first: Method, second: Method, shape: tx.Any) -> str:
-    """The registration warning for a guaranteed-ambiguous pair.
-
-    Names both methods. When the clash is between parametrisations of one
-    origin that differ only in their type arguments, it marks the offending
-    parameters and says why a value reaches both -- dispatch reads a value's
-    type, not its type arguments -- and otherwise gives the plain
-    no-most-specific message.
-    """
-    first_slots, second_slots, labels = _shallow_overlap_slots(
-        first, second, shape
-    )
-    if labels:
-        where = _join_labels(labels)
-        return (
-            f"{first.describe(first_slots)} is ambiguous with "
-            f"{second.describe(second_slots)}: a value matches both at "
-            f"{where}, because dispatch reads a value's type, not its type "
-            f"arguments. Give one a higher priority, or register a more "
-            f"specific overload."
-        )
-    return (
-        f"{first.describe()} is ambiguous with {second.describe()}: a call "
-        f"matching both has no most specific method. Give one a higher "
-        f"priority, or make one more specific."
-    )
-
-
-def _shallow_overlap_slots(
-    first: Method, second: Method, shape: tx.Any
-) -> tx.Tuple[tx.List[tx.Any], tx.List[tx.Any], tx.List[str]]:
-    """Each method's slots where the pair's landed hints overlap only by value.
-
-    A slot is offending when its two hints are incomparable yet a value matches
-    both (two parametrisations of one origin). Returns the slots to mark on
-    each method and a readable label per offending parameter, all empty when
-    every landed pair is comparable -- an ambiguity between comparable hints
-    rather than one the shallow value rule creates.
-    """
-    first_binding = _bind_shape(first.signature, shape)
-    second_binding = _bind_shape(second.signature, shape)
-    first_landed = _landed_hints(first.signature, first_binding)
-    second_landed = _landed_hints(second.signature, second_binding)
-    first_slots = []  # type: tx.List[tx.Any]
-    second_slots = []  # type: tx.List[tx.Any]
-    labels = []  # type: tx.List[str]
-    for key in first_landed:
-        here, there = first_landed[key], second_landed[key]
-        if issubhint(here, there) or issubhint(there, here):
-            continue
-        first_slots.append(first_binding.slots[key])
-        second_slots.append(second_binding.slots[key])
-        # A bound slot at a fully-applied shape is always a named parameter;
-        # a `*args` / `**kwargs` catch-all binds nothing there, so it never
-        # reaches this value-overlap path.
-        labels.append(f"parameter {first_binding.slots[key]!r}")
-    return first_slots, second_slots, labels
-
-
-def _join_labels(labels: tx.Sequence[str]) -> str:
-    """Join labels for a message: `a`, `a and b`, `a, b and c`."""
-    if len(labels) == 1:
-        return labels[0]
-    return ", ".join(labels[:-1]) + " and " + labels[-1]
-
-
 def _pair_ambiguous(first: Method, second: Method, shape: tx.Any) -> bool:
     """Whether two methods are guaranteed ambiguous for `shape`.
 
-    Both must bind the shape, be incomparable, land their arguments on the
-    same keys, and have every argument overlap by value -- so some call matches
-    both. Two hints overlap when they are comparable, or when they are
-    parametrisations of one origin (`List[int]` and `List[str]`): value
-    dispatch reads a value's type, not its type arguments, so any list matches
-    both. A method with a hint still unresolved cannot be compared, so the pair
-    is treated as not (yet) ambiguous.
+    Both must bind the shape, be incomparable at equal priority, land their
+    arguments on the same keys, and have comparable hints at every argument --
+    so the tuple that is most specific at each position matches both. A method
+    with a hint still unresolved cannot be compared, so the pair is treated as
+    not (yet) ambiguous.
     """
     try:
         return _pair_ambiguous_resolved(first, second, shape)
@@ -1094,6 +1025,11 @@ def _pair_ambiguous_resolved(
     first_binding = _bind_shape(first.signature, shape)
     second_binding = _bind_shape(second.signature, shape)
     if first_binding is None or second_binding is None:
+        return False
+    # A differing `priority` breaks the tie deterministically at dispatch (the
+    # higher one wins, RFC 0001 §2.2/§5), so the pair is never ambiguous at a
+    # call -- do not warn or list it.
+    if first.priority != second.priority:
         return False
     a_le = first.signature.le(second.signature, shape)
     b_le = second.signature.le(first.signature, shape)
@@ -1121,7 +1057,7 @@ def _pair_ambiguous_resolved(
         return False
     for key in first_landed:
         here, there = first_landed[key], second_landed[key]
-        if not _value_overlap(here, there):
+        if not (issubhint(here, there) or issubhint(there, here)):
             return False
     # The repeated-TypeVar tie-break (RFC 0001 §3) settles some otherwise-tied
     # pairs: when one method's repeated TypeVars constrain strictly more
@@ -1137,55 +1073,6 @@ def _pair_ambiguous_resolved(
     ):
         return False
     return True
-
-
-def _value_overlap(here: tx.Any, there: tx.Any) -> bool:
-    """Whether one runtime value can match both hints at a shared argument.
-
-    True when the two hints are comparable either way under
-    [`issubhint`][bagof.dispatchers.core.issubhint] -- so a value under the
-    narrower one satisfies both -- or when both are parametrisations of one
-    origin, the same class or one a subclass of the other. Value dispatch is
-    shallow: a value carries no type arguments, so any `#!python list` matches
-    every `#!python List[...]`. Two incomparable parametrisations of one origin
-    (`#!python List[int]` and `#!python List[str]`, or the invariant
-    `#!python List[int]` and `#!python List[bool]`) therefore both apply to the
-    same value with neither more specific.
-
-    A hint with no readable per-position variance -- a union, a literal, a bare
-    `#!python TypeVar`, `#!python Any`, a tuple or a callable -- stays on the
-    comparable-only reading, so this does not over-report.
-    """
-    if issubhint(here, there) or issubhint(there, here):
-        return True
-    here_origin = _readable_generic_origin(here)
-    there_origin = _readable_generic_origin(there)
-    if here_origin is None or there_origin is None:
-        return False
-    return (
-        here_origin is there_origin
-        or safe_issubclass(here_origin, there_origin)
-        or safe_issubclass(there_origin, here_origin)
-    )
-
-
-def _readable_generic_origin(hint: tx.Any) -> tx.Any:
-    """A parametrised generic hint's class origin, when its variance is known.
-
-    Returns the origin only for a parametrised generic whose origin is a class
-    with a readable per-position variance -- the same generics the sub-hint
-    relation compares slot by slot. A union, literal, bare `#!python TypeVar`,
-    `#!python Any`, tuple or callable returns `#!python None`, so the caller
-    leaves it to the comparable-only overlap reading.
-    """
-    origin = get_origin_uw(hint)
-    args = get_args_uw(hint)
-    if not args or not isinstance(origin, type):
-        return None
-    variances = _generic_variances(origin)
-    if variances is None or len(variances) != len(args):
-        return None
-    return origin
 
 
 def _bind_shape(signature: Signature, shape: tx.Any) -> tx.Any:
