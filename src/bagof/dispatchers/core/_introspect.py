@@ -31,6 +31,7 @@ from ._compat import (
     is_typeddict_marker,
     spellings,
 )
+from ._exact import exact_target, is_exact
 from ._sentinels import UNSET
 
 
@@ -1033,3 +1034,75 @@ def _typing_spelling(hint: tx.Any) -> tx.Any:
         # no `__class_getitem__`), an exotic `Callable` form -- leaves the
         # hint as it was, to be matched by its origin instead.
         return hint
+
+
+# --- MRO refinement ----------------------------------------------------
+
+
+def mro_index(hint: tx.Any, value_type: type) -> tx.Optional[int]:
+    """Where `hint`'s class sits in `value_type`'s MRO, or `None`.
+
+    This drives the MRO tie-break (RFC 0001 §2.2): when two hints are
+    otherwise incomparable, the one whose class names a *more derived* base
+    of `value_type` wins -- the diamond `#!python D(B, C)` resolves to `B`,
+    exactly as [`functools.singledispatch`][functools.singledispatch] does.
+    Value dispatch reads it against an argument's runtime type;
+    [`resolve_hint`][bagof.dispatchers.core.resolve_hint] reads it against a
+    class *query* to break a tie between equally specific class keys.
+
+    A refinement is only defined when the hint names a single ordinary
+    class that is a nominal base of `value_type`:
+
+    * an [`Exact`][bagof.dispatchers.Exact]`[C]` hint counts as `C`;
+    * a bare class returns its index in
+      `#!python value_type.__mro__`;
+    * a bare, unparametrised alias counts as its origin class, in whichever
+      spelling it was written -- `#!python List` and `#!python list` name
+      the same position, as do `#!python Sequence` and
+      `#!python collections.abc.Sequence`;
+    * a class that is *not* in the MRO -- a `#!python Protocol` or ABC
+      satisfied structurally or by registration rather than inheritance --
+      gives no refinement (`#!python None`);
+    * a `#!python Union`, `#!python Literal`, `#!python type[...]` or any
+      other parametrised generic gives no refinement either.
+
+    Returns
+    -------
+    int or None
+        The index of the hint's class in `#!python value_type.__mro__`
+        (`0` is `value_type` itself), or `#!python None` when no
+        refinement applies.
+
+    !!! example
+        ```pycon
+        >>> class B: pass
+        >>> class C: pass
+        >>> class D(B, C): pass
+        >>> mro_index(B, D) < mro_index(C, D)   # D resolves to B
+        True
+        ```
+    """
+    hint = normalise_hint(hint)
+    if is_exact(hint):
+        cls = normalise_hint(exact_target(hint))
+    else:
+        cls = unwrap(hint, tx.Annotated)
+    # Only a bare class names a position in the MRO. A `TypeVar` or any
+    # non-class does not refine at all.
+    if not _looks_like_class(cls):
+        # A bare typing alias with no arguments is equivalent to its origin
+        # class, whichever spelling it was written in -- `typing.Sequence`
+        # and `collections.abc.Sequence` name the same MRO position. A
+        # *parametrised* generic (`List[int]`, `type[C]`) carries arguments
+        # that constrain more than the class does, so it names no position.
+        if get_args_uw(cls):
+            return None
+        cls = get_origin_uw(cls)
+        if not _looks_like_class(cls):
+            # A union, literal or bare `Callable` has no plain-class origin.
+            return None
+    mro = getattr(value_type, "__mro__", ())
+    for index, base in enumerate(mro):
+        if base is cls:
+            return index
+    return None

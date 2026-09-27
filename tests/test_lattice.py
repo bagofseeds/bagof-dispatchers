@@ -15,11 +15,15 @@ from bagof.dispatchers import Exact
 from bagof.dispatchers._lattice import (
     equivalent,
     is_value_dependent,
-    mro_index,
     solve_typevar,
     typevar_consistent,
 )
-from bagof.dispatchers.core import UNSET, UnknownHintWarning, issubhint
+from bagof.dispatchers.core import (
+    UNSET,
+    UnknownHintWarning,
+    issubhint,
+    mro_index,
+)
 
 # --- a shared corpus for the preorder / equivalence laws ---------------
 
@@ -64,6 +68,13 @@ class _Box(tx.Generic[_T]):
 
 class _Cell(tx.Generic[_T]):
     """A second invariant user generic, for the variance corpus (#50)."""
+
+
+class _Movie(tx.TypedDict):
+    """A concrete TypedDict, for the `TypedDict <= dict` corpus rows (#19)."""
+
+    title: str
+    year: int
 
 # ~40 hints spanning classes, ABCs, unions, optionals, literals, the tuple /
 # list / dict families, `Callable` pairs, `TypeVar`s and `Exact`. It
@@ -134,6 +145,17 @@ CORPUS = [
     tx.Sequence[bool],
     tx.Mapping[str, int],
     tx.Mapping[str, bool],
+    # TypedDict rows (#19): the bare marker ("any TypedDict") and a concrete
+    # TypedDict both sit strictly below `dict` -- every TypedDict value is a
+    # dict, but a plain `dict` is neither. The marker is reduced to `dict` only
+    # against a plain-class super-hint, so it must still be ordered correctly
+    # when merely *contained* in one (a union member, an `Annotated` wrapper)
+    # or written in the other spelling -- these rows are that regression.
+    tx.TypedDict,
+    typing.TypedDict,
+    tx.Optional[tx.TypedDict],
+    tx.Annotated[tx.TypedDict, "m"],
+    _Movie,
     tx.Tuple[int],
     tx.Tuple[int, str],
     tx.Tuple[int, ...],
