@@ -288,6 +288,20 @@ covariant in return.
   parameter. The dispatcher reads `__bound__`/`__constraints__` only and
   **ignores the variance flags**: `hints.typevars.co.INT` and `inv.INT` dispatch
   identically. Docs say so and point at `Exact[int]` for exactness.
+- **Structural vs nominal: `ishintstance(v, H)` is deliberately not
+  `issubhint(type(v), H)`.** The value-level check asks whether the value
+  itself satisfies `H` — for a runtime `Protocol`, `Hashable`, or `Callable`
+  that is answered *structurally*, from the value's own capabilities — while the
+  hint-level relation asks a *nominal* question about the type. So
+  `ishintstance(object(), Hashable)` is True (an `object` has `__hash__`) even
+  though `issubhint(object, Hashable)` is False; a `Mapping` subclass that sets
+  `__hash__ = None` is why the nominal answer is the safe one for the relation.
+  The two are the two query modes on purpose — `f(value)` is structural,
+  `f.resolve(hint)` is nominal — and collapsing them would make value dispatch
+  miss a structurally-satisfied protocol. This is a gradual-typing corner (the
+  same family as `Callable[...]`'s `...` wildcard): the affected rows —
+  `Hashable` reached via `object`, and the `Callable[...]` wildcard — are kept
+  out of the preorder-law corpus rather than special-cased.
 
 ---
 
