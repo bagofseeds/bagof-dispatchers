@@ -25,8 +25,8 @@ from ._introspect import (
     _all_orig_bases,
     _generic_variances,
     _is_plain_typevar,
-    _is_user_generic,
     _looks_like_class,
+    _reads_declared_arguments,
     eq_safenan,
     get_args_uw,
     get_origin_uw,
@@ -1015,24 +1015,78 @@ def _issubslot(sub: tx.Any, sup: tx.Any, variance: str) -> bool:
     PEP 484:
 
     * **covariant** -- `sub` must be a sub-hint of `sup`, so a covariant
-      container narrows with its item (`Sequence[bool] <= Sequence[int]`);
+      container narrows with its item (`Sequence[bool] <= Sequence[int]`). A
+      `TypeVar` is read as its bound (or its constraints), which is already
+      what solving it would give: `G[A] <= G[T]` for some `T <= B` exactly
+      when `A <= B`.
     * **contravariant** -- `sup` must be a sub-hint of `sub`, so a consumer of
-      `int` stands in for a consumer of `bool`;
-    * **invariant** -- the two must accept the same values, *or* the super side
-      is a top the slot may widen to: `Any`, or a *free* `TypeVar` (one with no
-      bound or constraints, so equivalent to `Any`). That gradual-consistency
-      exception keeps a free `T`/`Any` above every invariant `G[X]`, so a
-      generic-fallback overload stays comparable. A *bounded* / *constrained*
-      `TypeVar` is read as its bound, not as a top, so `G[X]` and `G[TB]` only
-      tie when `X` equals that bound.
+      `int` stands in for a consumer of `bool`. A `TypeVar` is read as its
+      bound here too; see [`_issubslot_invariant`][] for why it is not solved.
+    * **invariant** -- see [`_issubslot_invariant`][]: the two must accept the
+      same values, or the super side is a `TypeVar` that can be solved to the
+      sub side, or a top (`Any`, a free `TypeVar`).
     """
     if variance == _COVARIANT:
         return issubhint(sub, sup)
     if variance == _CONTRAVARIANT:
+        # Solving a `TypeVar` here would ask whether the two sides *overlap*
+        # (`Snk[bool] <= Snk[T <= int]` needs some `T` below both `bool` and
+        # `int`), which is not transitive -- `D(B, C)` is below both `B` and
+        # `C`, which are not related -- and cannot be decided over an open
+        # class hierarchy. So a contravariant slot keeps reading a `TypeVar`
+        # as its bound, which keeps the order a preorder (#50, V5).
         return issubhint(sup, sub)
-    # Invariant: equal, or the super side is a top via gradual consistency
-    # (`issubhint(Any, sup)` already answers True when `sup` is `Any`).
-    return _equivalent(sub, sup) or issubhint(tx.Any, sup)
+    return _issubslot_invariant(sub, sup)
+
+
+def _issubslot_invariant(sub: tx.Any, sup: tx.Any) -> bool:
+    """Whether `G[sub] <= G[sup]` at an invariant slot (#50, V5).
+
+    A `TypeVar` on the super side stands for *some* type within its bound or
+    constraints, as a type checker solves it; on the sub side it stands for a
+    whole family, which a single type cannot contain:
+
+    * `sup` is `Any` or a free `TypeVar` -- the top the slot may widen to
+      (gradual consistency), so a generic-fallback overload stays above every
+      specialisation;
+    * `sup` is a bounded `TypeVar` `T <= B` -- `T` can be solved to `sub`
+      exactly when `sub <= B` (a `TypeVar` `sub` read by its own bound), so
+      `Box[bool] <= Box[T <= int]`, and `Box[T1 <= B1] <= Box[T2 <= B2]` iff
+      `B1 <= B2`;
+    * `sup` is a constrained `TypeVar` -- `T` is solved to one constraint, so
+      `sub` must be equivalent to one of them (a constrained `sub`: each of its
+      constraints to one of them);
+    * otherwise `sup` is a concrete type, and `sub` must be equivalent to it.
+      A `TypeVar` `sub` never is: `Box[T <= int]` is not a `Box[int]`, since
+      `T` may be `bool`.
+
+    This is transitive: each rule reduces to `<=` or to equivalence against
+    the super side's bound or constraints, which chain.
+    """
+    if sub is sup or issubhint(tx.Any, sup):
+        return True
+    sub_uw = unwrap(normalise_hint(sub), tx.Annotated)
+    sup_uw = unwrap(normalise_hint(sup), tx.Annotated)
+    sub_is_typevar = isinstance(sub_uw, tx.TypeVar)
+    if isinstance(sup_uw, tx.TypeVar):
+        constraints = getattr(sup_uw, "__constraints__", ())
+        if not constraints:
+            # Bounded (a free one is the top, above): `sub` within the bound.
+            return issubhint(sub, sup)
+        if sub_is_typevar:
+            members = getattr(sub_uw, "__constraints__", ())
+            if not members:
+                # A bounded or free family is not one constraint.
+                return False
+        else:
+            members = (sub,)
+        return all(
+            any(_equivalent(member, each) for each in constraints)
+            for member in members
+        )
+    if sub_is_typevar:
+        return False
+    return _equivalent(sub, sup)
 
 
 # --- declared parametrisations (#50, V5) -------------------------------
@@ -1243,23 +1297,26 @@ def _declared_parametrisation(obj: tx.Any, origin: type) -> tx.Any:
     to compare with `G[args]` through the relation. Returns, in order:
 
     1. the instance's `__orig_class__` (`Box[int]` for `Box[int]()`), when
-       `origin` is a user generic and it declares every argument of `origin`;
+       `obj` is an instance of a `Generic` subclass and the record declares
+       every argument of `origin` -- against a user generic or a
+       standard-library one alike (`Row[int]()` for `class Row(Sequence[T])`
+       is a `Sequence[int]`);
     2. else `type(obj)`, when the class declares every argument of `origin`
        through its bases (`class Child(List[int])`);
     3. else `#!python None`: the value declares nothing, and only its origin
        can be checked.
 
-    Only an origin with one readable argument per parameter is read: `Tuple`
-    and `Callable` (whose argument lists are shapes), a `ParamSpec` /
-    `TypeVarTuple` generic (`Hook[[int]]`), and any origin whose parameters
-    cannot be read keep the shallow check.
+    Only an origin with one readable argument per parameter is read
+    ([`_reads_declared_arguments`][]): `Tuple` and `Callable` (whose argument
+    lists are shapes), a `ParamSpec` / `TypeVarTuple` generic (`Hook[[int]]`),
+    and any origin whose parameters cannot be read keep the shallow check.
     """
-    if _generic_variances(origin) is None:
+    if not _reads_declared_arguments(origin):
         return None
-    if _is_user_generic(origin):
-        # Only a user generic's instances carry `__orig_class__`; restricting
-        # the read to them is what lets the call cache key such a position on
-        # it and leave every other position keyed on the type alone.
+    if isinstance(obj, tx.Generic):
+        # Only a `Generic` instance can carry `__orig_class__`, and only one
+        # is asked -- the same gate the call cache applies before reading it
+        # (`_declared_key`), so the key always covers what the check reads.
         declared = _orig_class(obj)
         if declared is not None and _is_fully_declared(
             _as_base_args(declared, origin)

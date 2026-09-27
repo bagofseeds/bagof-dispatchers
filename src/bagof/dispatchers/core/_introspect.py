@@ -797,26 +797,6 @@ _STDLIB_VARIANCE = {
 }  # type: tx.Dict[tx.Any, tx.Tuple[str, ...]]
 
 
-def _is_user_generic(origin: tx.Any) -> bool:
-    """Whether instances of `origin` can record their parametrisation.
-
-    Calling a subscripted [`Generic`][typing.Generic] subclass -- `#!python
-    Box[int]()` -- records `#!python Box[int]` on the new instance as
-    `__orig_class__`. A builtin or standard-library container (`#!python
-    list`, [`collections.abc.Sequence`][]) is not such a class, so its
-    parametrisations (`#!python List[int]`) are never read off an instance.
-
-    !!! example
-        ```pycon
-        >>> T = tx.TypeVar("T")
-        >>> class Box(tx.Generic[T]): pass
-        >>> _is_user_generic(Box), _is_user_generic(list)
-        (True, False)
-        ```
-    """
-    return _looks_like_class(origin) and issubclass(origin, tx.Generic)
-
-
 @functools.lru_cache(maxsize=None)
 def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
     """The per-position variance of a generic's origin, or `#!python None`.
@@ -858,6 +838,38 @@ def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
     ):
         return tuple(_typevar_variance(param) for param in params)
     return None
+
+
+def _reads_declared_arguments(origin: tx.Any) -> bool:
+    """Whether a value's declared arguments are read against `origin[...]`.
+
+    A parametrisation of a class whose parameters line up one per argument
+    with a readable variance -- a user generic (`#!python Box[int]`) or a
+    standard-library one (`#!python List[int]`, `#!python Sequence[int]`) --
+    is checked against what a value declares: the parametrisation an instance
+    of a [`Generic`][typing.Generic] subclass was built from, or the one its
+    class was written against. `#!python Type[C]`, a `TypedDict`, and the
+    shape-typed `Tuple` and `Callable` keep their own checks, and so does a
+    `ParamSpec` / `TypeVarTuple` generic.
+
+    The value check and the call cache both ask this, so they always agree on
+    which arguments can depend on a declaration.
+
+    !!! example
+        ```pycon
+        >>> import collections.abc
+        >>> _reads_declared_arguments(collections.abc.Sequence)
+        True
+        >>> _reads_declared_arguments(tuple), _reads_declared_arguments(type)
+        (False, False)
+        ```
+    """
+    return (
+        _looks_like_class(origin)
+        and origin is not type
+        and not is_typeddict(origin)
+        and _generic_variances(origin) is not None
+    )
 
 
 # --- eq_safenan --------------------------------------------------------

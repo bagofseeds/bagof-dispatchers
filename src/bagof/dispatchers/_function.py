@@ -1249,11 +1249,11 @@ def _call_key(
     The type of each argument keys it, plus the value itself where the shape's
     hints read a value rather than a type (a `#!python Literal`, a
     `#!python type[...]`), or the parametrisation the value declares where
-    they read that (a user generic, `#!python Box[int]`). The key tuple is
-    always built; a value-dependent argument whose value is unhashable is
-    wrapped so the tuple builds fine and the [`TypeError`][] surfaces only when
-    the key is hashed (on a `dict` access), where the caller catches it and
-    leaves the call uncached.
+    they read that (a parametrised generic, `#!python Box[int]`). The key
+    tuple is always built; a value-dependent argument whose value is
+    unhashable is wrapped so the tuple builds fine and the [`TypeError`][]
+    surfaces only when the key is hashed (on a `dict` access), where the
+    caller catches it and leaves the call uncached.
     """
     value_dependent = plan.value_dependent
     declared = plan.declared
@@ -1301,11 +1301,11 @@ def _declared_key(value: tx.Any) -> tx.Any:
     recorded none -- never the instance itself, so every instance built from
     one parametrisation shares a cache entry.
 
-    Only an instance of a `Generic` subclass is asked: the value check reads
-    the record only after checking the value's class against a user generic,
-    so the two stay in step, and any other value -- a `str` at a
-    `#!python Union[Box[int], str]` argument, a lazy proxy whose `__getattr__`
-    does work -- is never probed.
+    Only an instance of a `Generic` subclass is asked, the same gate the value
+    check applies before reading the record, so the two stay in step. Any
+    other value -- a plain `#!python list` at a `#!python List[int]` argument,
+    a `str` at a `#!python Union[Box[int], str]` one, a lazy proxy whose
+    `__getattr__` does work -- is never probed.
     """
     if not isinstance(value, tx.Generic):
         return None

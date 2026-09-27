@@ -43,6 +43,7 @@ class _Sized(tx.Protocol):
 
 _T = tx.TypeVar("_T")
 _TBOUND = tx.TypeVar("_TBOUND", bound=int)
+_TBOUND_OBJ = tx.TypeVar("_TBOUND_OBJ", bound=object)
 _TCONSTR = tx.TypeVar("_TCONSTR", int, str)
 _P = tx.ParamSpec("_P")
 _Ts = tx.TypeVarTuple("_Ts")
@@ -164,6 +165,16 @@ CORPUS = [
     _Box[_T],
     _Box[tx.Any],
     _Box[tx.Never],
+    # bounded / constrained `TypeVar` slots (#50, V5): solved on the super
+    # side at an invariant slot, read by the bound at a covariant or
+    # contravariant one.
+    _Box[_TBOUND],
+    _Box[_TBOUND_OBJ],
+    _Box[_TCONSTR],
+    _Box[tx.Union[int, str]],
+    _Box[str],
+    _Src[_TBOUND],
+    _Snk[_TBOUND],
     _Cell[int],
     tx.Sequence[int],
     tx.Sequence[bool],

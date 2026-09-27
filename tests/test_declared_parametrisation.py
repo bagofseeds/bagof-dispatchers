@@ -314,12 +314,14 @@ def test_value_that_declares_nothing_stays_shallow(
     assert ishintstance(f.Sub[str](), f.Box) is True
 
 
-def test_a_standard_library_hint_never_reads_the_record() -> None:
-    """An instance's record is read only against a user-generic hint.
+def test_a_standard_library_hint_reads_the_record_too() -> None:
+    """A `Generic` instance's record is read against a stdlib hint as well.
 
-    That is what lets a `Sequence[int]` position keep its type-only cache
-    key: two instances of one class then always match it alike. What the
-    class declares through its bases is still read.
+    An earlier cut read the record only against a user-generic hint (so
+    `Row[int]()` matched `Sequence[str]`); the owner chose to read it against
+    any parametrised class hint, gated on the value being a `Generic`
+    instance, with the cache keyed to match (#50, V5). What the class
+    declares through its bases is read as before.
     """
     T = tx.TypeVar("T")
 
@@ -333,7 +335,15 @@ def test_a_standard_library_hint_never_reads_the_record() -> None:
     class IntRow(Row[int]):
         pass
 
-    assert ishintstance(Row[int](), tx.Sequence[str]) is True
+    class GenericList(tx.List[T]):
+        pass
+
+    assert ishintstance(Row[int](), tx.Sequence[str]) is False
+    assert ishintstance(Row[int](), tx.Sequence[int]) is True
+    assert ishintstance(Row[int](), tx.Iterable[object]) is True
+    # A `Generic` subclass of `list` declares through its record too.
+    assert ishintstance(GenericList[int](), tx.List[str]) is False
+    assert ishintstance(GenericList[int](), tx.List[int]) is True
     assert ishintstance(IntRow(), tx.Sequence[str]) is False
     assert ishintstance(IntRow(), tx.Sequence[int]) is True
 
@@ -497,15 +507,23 @@ def test_declaration_dependence_truth_table() -> None:
         tx.Optional[Box[int]],
         tx.Annotated[Box[int], "m"],
         tx.TypeVar("TB", bound=Box[int]),
+        # A stdlib generic too: a `Generic` instance's record is read against
+        # it (#50, V5 -- owner decision).
+        tx.List[int],
+        tx.Sequence[int],
+        tx.Optional[tx.List[int]],
     ]
     independent = [
         Box,
         int,
-        tx.List[int],
-        tx.Sequence[int],
-        tx.Optional[tx.List[int]],
+        list,
         Exact[int],
         tx.TypeVar("TI", bound=int),
+        # The shapes and forms with checks of their own.
+        tx.Tuple[int],
+        tx.Callable[[int], str],
+        tx.Type[int],
+        tx.Literal[1],
     ]
     for hint in dependent:
         assert is_declaration_dependent(hint) is True, hint
@@ -560,15 +578,25 @@ def test_a_new_parametrisation_is_never_served_a_stale_method() -> None:
     assert g(b=Box[int]()) == "int"
 
 
-def test_a_standard_library_position_keeps_its_type_only_key() -> None:
+def test_a_plain_value_at_a_standard_library_position_is_not_probed() -> None:
+    """A `List[int]` position is declaration-dependent (#50, V5).
+
+    A plain list is not a `Generic` instance, so it is never asked for a
+    record and keys as its type and `None`; a tuple-only position keeps the
+    bare type key.
+    """
     f = Function("f")
     f.register((tx.List[int],))(lambda xs: "ints")
     f.register((tx.Tuple[str, ...],))(lambda xs: "strs")
     assert f([1]) == "ints"
     plan = _plan_of(f, (1, ()))
-    assert plan.declared == frozenset()
+    assert plan.declared == frozenset({0})
     assert plan.value_dependent == frozenset()
-    assert _call_key(([1],), {}, plan) == (1, list)
+    assert _call_key(([1],), {}, plan) == (1, (list, None))
+    g = Function("g")
+    g.register((tx.Tuple[str, ...],))(lambda xs: "strs")
+    assert g(("a",)) == "strs"
+    assert _call_key((("a",),), {}, _plan_of(g, (1, ()))) == (1, tuple)
 
 
 def test_a_position_that_is_both_keys_on_value_and_record() -> None:
@@ -760,3 +788,56 @@ def test_a_diamond_takes_the_first_listed_base() -> None:
 
     assert issubhint(Both, Box[int]) is True
     assert issubhint(Both, Box[str]) is False
+
+
+# --- owner round 2: solved TypeVar slots, stdlib hints read the record -
+
+
+def test_a_declared_value_solves_a_typevar_slot() -> None:
+    """An invariant `TypeVar` slot is solved, as a type checker does."""
+    import numbers
+
+    T = tx.TypeVar("T")
+
+    class Box(tx.Generic[T]):
+        pass
+
+    to_object = tx.TypeVar("to_object", bound=object)
+    int_or_str = tx.TypeVar("int_or_str", int, str)
+    real = tx.TypeVar("real", bound=numbers.Real)
+    to_float = tx.TypeVar("to_float", bound=float)
+    value = Box[int]()
+    assert ishintstance(value, Box[to_object]) is True
+    assert ishintstance(value, Box[int_or_str]) is True
+    assert ishintstance(value, Box[real]) is True
+    # No numeric tower: `int` is not below `float`.
+    assert ishintstance(value, Box[to_float]) is False
+    assert ishintstance(Box[bytes](), Box[int_or_str]) is False
+    f = Function("f")
+    f.register((Box[int_or_str],))(lambda b: "int or str")
+    f.register((Box[to_object],))(lambda b: "anything")
+    assert f(Box[int]()) == "int or str"
+    assert f(Box[bytes]()) == "anything"
+
+
+def test_a_row_dispatches_on_its_recorded_argument() -> None:
+    T = tx.TypeVar("T")
+
+    class Row(tx.Sequence[T]):
+        def __getitem__(self, index: tx.Any) -> tx.Any:
+            raise IndexError(index)
+
+        def __len__(self) -> int:
+            return 0
+
+    h = Function("h")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        h.register((tx.Sequence[int],))(lambda s: "ints")
+        h.register((tx.Sequence[str],))(lambda s: "strs")
+    assert h(Row[int]()) == "ints"
+    for _ in range(2):
+        assert h(Row[str]()) == "strs"
+        assert h(Row[int]()) == "ints"
+    with pytest.raises(AmbiguousMethodError):
+        h([1])

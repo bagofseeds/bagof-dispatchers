@@ -154,6 +154,7 @@ changes it, and the change is called out.
 | `Sequence[bool] ≤ Sequence[int]`, `Mapping[str,bool] ≤ Mapping[str,int]` | True | `Sequence` covariant; `Mapping` key-invariant, value-covariant (spec table, §2.3; #50) |
 | `Snk[int] ≤ Snk[bool]` (user `contravariant=True`), `Box[bool] ≤ Box[int]` (user unflagged) | True / **False** | user generics read their declared `TypeVar`: contravariant reverses, unflagged is invariant (§2.3; #50) |
 | `IntBox ≤ Box[int]`, `Sub[bool] ≤ Box[bool]`, `Flip[int,str] ≤ Pair[str,int]`, `IntBox ≤ Box[str]` | **True** / T / T / F | differing origins: the sub-hint is re-expressed through the bases its class was written with — `class IntBox(Box[int])`, `class Sub(Box[T])`, `class Flip(Pair[B, A], Generic[A, B])` — then compared slot by slot (§2.3; V5 of #50) |
+| `Box[bool] ≤ Box[TB]`, `Box[TB] ≤ Box[int]`, `Box[int] ≤ Box[TC]` (`TB` bound=int, `TC(int, str)`), `Snk[bool] ≤ Snk[TB]` | **True** / **False** / True / False | a `TypeVar` in an invariant slot is solved on the super side and a family on the sub side (V3 read it as exactly its bound: F / T / F); a contravariant slot keeps the bound reading (§2.3; V5 of #50) |
 | `Child ≤ List[int]`, `Child ≤ List[float]`, `Child ≤ List[object]`, `Child ≤ Sequence[object]` (`class Child(List[int])`) | **True** / F / F / T | `Child` is `List[int]` nominally; invariance governs comparing that with another `list` parametrisation, covariance lets it widen through `Sequence` (V5 of #50) |
 | `Tuple[int] < Tuple[int, ...] < tuple`, `Tuple[int,...] ≤ Tuple[Any,...]` | True chain | covariant `Tuple` |
 | `Tuple[int,str] ≤ Tuple[int,*Ts]`, `Tuple[int] ≤ Tuple[int,*Ts]`, `Tuple[int,*Ts] ≤ Tuple[*Ts]`, `Tuple[int,*Ts,str] ≤ Tuple[int,*Ts]` | True | `*Ts` is an open run of 0+ `Any`: a fixed prefix captures the rest, a longer fixed prefix/suffix is stricter (Phase-8(b), #28) |
@@ -338,9 +339,11 @@ multiply.
   `List[…]`, whatever the container's variance. But when the value itself
   *declares* its parametrisation, `ishintstance(v, G[args])` uses it (V5),
   looking in order at (1) the instance's `__orig_class__` — set by typing when
-  `Box[int]()` is called — read only when `G` is a **user** generic (a
-  `Generic` subclass), and used when it re-expresses as a parametrisation of
-  `G`; then (2) the class's written bases, when `type(v)` re-expresses as a
+  `Box[int]()` is called — read only off an instance of a `Generic` subclass,
+  against any parametrised class hint (a user generic or a stdlib one, so
+  `Row[int]()` for `class Row(Sequence[T])` is a `Sequence[int]` and not a
+  `Sequence[str]`), and used when it re-expresses as a parametrisation of `G`;
+  then (2) the class's written bases, when `type(v)` re-expresses as a
   parametrisation of `G` (`class Child(List[int])`). Either decides by
   `issubhint(declared, G[args])`. Otherwise the check stays shallow: a builtin
   instance (and `list[int]([1])`, which is a plain list), an instance built
@@ -355,11 +358,11 @@ multiply.
   an invariant position tightens what used to match shallowly: `Box[int]()` no
   longer matches `Box[object]`, `Box[Union[int, str]]` or `Box[Optional[int]]`,
   and a `class Strs(List[str])` instance no longer matches `List[object]` —
-  it still matches `List[Any]`, `list` and `Sequence[object]`.
-  A standard-library `G` (`Sequence[int]`) never reads the instance record,
-  only the class's bases — so `class Row(Sequence[T])`'s `Row[int]()` still
-  matches `Sequence[str]`; that keeps every stdlib-origin position keyed on the
-  type alone (§6). `Tuple` and `Callable` keep their shallow value checks.
+  it still matches `List[Any]`, `list` and `Sequence[object]`. A `TypeVar` in
+  the hint's invariant slot is solved (next bullets), so `Box[int]()` matches
+  `Box[T ≤ object]`, `Box[TC(int, str)]` and `Box[T ≤ numbers.Real]`, though
+  not `Box[T ≤ float]` (no numeric tower). `Tuple`, `Callable`, `Type[C]` and a
+  `TypedDict` keep their own value checks.
 - **`Any` / gradual typing [PEP 483, spec].** The spec separates *subtype of*
   from *consistent with*: `Any` is consistent with everything but is neither its
   subtype nor supertype; `object` is the nominal top. A dispatcher must still
@@ -368,12 +371,27 @@ multiply.
   Julia's reading. Inside an invariant slot the same consistency reading keeps a
   free `T`/`Any` above every `G[X]`, so a generic-fallback overload stays
   comparable.
-- **Only a *free* `TypeVar`/`Any` is the invariant-slot top.** A *bounded* or
-  *constrained* `TypeVar` is read as its bound (the union of its constraints),
-  not as a top — so a generic-fallback overload written `G[TypeVar(bound=int)]`
-  no longer sits above its specialisations in an invariant slot: `Box[int]` (the
-  bound) *ties* `Box[TB]`, but `Box[bool]` (below the bound) is incomparable to
-  it. Write a free `T`, or `Any`, for a fallback that must stay above everything.
+- **A `TypeVar` in an invariant slot is solved (V5; owner decision).** On the
+  super side it stands for *some* type within its bound or constraints, as a
+  type checker solves it; on the sub side it stands for the whole family,
+  which no single type contains. A free `T`/`Any` is the top, as above. A
+  bounded `T ≤ B`: `G[A] ⊑ G[T]` iff `A ⊑ B` (a `TypeVar` `A` read by its own
+  bound), so `Box[bool] ⊑ Box[TB ≤ int]` and a `Box[TB]` fallback sits above its
+  specialisations; two bounded ones order by their bounds. A constrained
+  `TC(C1, …, Cn)`: `A` must be equivalent to one `Ci` (a constrained `A`: each of
+  its constraints to one). A `TypeVar` on the sub side against a concrete super
+  side is never below it: `Box[TB] ⋢ Box[int]`, so `Box[int]` is strictly below
+  `Box[TB]` (V3 read `TB` as exactly its bound: `Box[bool] ⋢ Box[TB]` and
+  `Box[TB] ≡ Box[int]`). Each rule reduces to `⊑` or `≡` against the super
+  side's bound or constraints, so the order stays a preorder (the law corpus
+  holds `Box[TB]`, `Box[TC]`, `Src[TB]`, `Snk[TB]`). A **covariant** slot already
+  read a `TypeVar` by its bound, which is what solving it gives. A
+  **contravariant** slot keeps the bound reading: solving there asks whether
+  the two sides *overlap* (`Snk[bool]` against `Snk[T ≤ int]` needs some `T`
+  below both), which is not transitive — in a diamond `D(B, C)`, `B` and `C`
+  both overlap `D` but not each other — and cannot be decided over an open
+  class hierarchy. So `Snk[bool]()` does not match `Snk[T ≤ int]`, though a
+  checker would accept it (a documented limitation).
 - **A mixed-sign generic can leave parameterisations incomparable.** When one
   generic mixes signs across its positions — `Generator[Y_co, S_contra, R_co]`
   (yield covariant, send contravariant, return covariant) — `Any` is the top of
@@ -747,9 +765,11 @@ Caching & thread-safety — **two levels**, because the order is per shape:
    whose members or upper bound include one — a concrete TypedDict is now in
    this set too, since its value-level shape check reads the mapping's keys and
    value types, not the argument's type alone), and, short of that, which are
-   *declaration-dependent* (any method's hint there is a parametrised **user**
-   generic, `Box[int]`, directly or through a `Union`/`TypeVar`/`Annotated`:
-   its value check reads the instance's `__orig_class__`, V5). Bounded LRU over
+   *declaration-dependent* (any method's hint there is a parametrised class
+   generic, user or stdlib — `Box[int]`, `Sequence[int]` — directly or through
+   a `Union`/`TypeVar`/`Annotated`, but not `Tuple`/`Callable`/`Type[C]`/a
+   `TypedDict`: its value check reads a `Generic` instance's `__orig_class__`,
+   V5). Bounded LRU over
    shapes; rebuilt on `register`.
 2. Under each plan, a **call cache** keyed by `tuple(type(v_i)) + tuple((k,
    type(w_k)) for k in sorted keywords)`, with `(type, value)` at value-dependent
@@ -762,10 +782,10 @@ Caching & thread-safety — **two levels**, because the order is per shape:
    record is read only off an instance of a `Generic` subclass, as the value
    check does, so no other value is probed. Typing's subscription cache is a
    bounded LRU, so after churn a fresh `Box[int]` object is a new entry: a
-   missed hit, never a wrong method. A
-   stdlib-origin generic (`List[int]`) costs nothing: what a value declares for
-   it comes from its class, which the type already keys. An unhashable value at
-   a value-dependent argument → uncached.
+   missed hit, never a wrong method. A value that is not a `Generic` instance —
+   a plain list at a `List[int]` argument — is not probed and keys as
+   `(type, None)`, a few tens of nanoseconds over the bare type. An unhashable
+   value at a value-dependent argument → uncached.
    Positional and keyword spellings of "the same" call are different shapes and
    therefore different keys (they can bind differently — required, not
    incidental).
