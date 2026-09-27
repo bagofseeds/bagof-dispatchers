@@ -50,6 +50,7 @@ from .core._introspect import _looks_like_class, is_typeddict
 from .core._relation import (
     _callable_param_shape,
     _is_literal,
+    _is_subscripted_tuple,
     _issubparams,
     _issubtupleshape,
     _match_params,
@@ -386,10 +387,13 @@ def typevartuple_captures(
         return
     if get_origin_uw(hint) is not tuple:
         return
-    query_args = get_args_uw(query)
     hint_args = get_args_uw(hint)
-    if not query_args or not hint_args:
+    if not hint_args or not _is_subscripted_tuple(query):
+        # A bare `Tuple`/`tuple` query defines no run to capture; the
+        # empty-tuple type `Tuple[()]` (empty arguments on 3.11+) does, and
+        # captures the empty run.
         return
+    query_args = get_args_uw(query)
     hint_shape = _tuple_shape(hint_args)
     if hint_shape.var is None:
         # Only a slot with an unpacked `TypeVarTuple` run captures anything; a

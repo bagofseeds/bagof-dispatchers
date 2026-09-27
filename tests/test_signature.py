@@ -1228,6 +1228,25 @@ def test_same_as_distinguishes_generic_arity() -> None:
     )
 
 
+def test_same_as_distinguishes_empty_tuple_from_bare_tuple() -> None:
+    """`Tuple[()]` and a bare `Tuple` are distinct spellings (issue #36).
+
+    Both report no arguments on 3.11+, so the structural check must fall
+    back on their subscripted-ness rather than arity alone.
+    """
+
+    def bare(x: tx.Tuple) -> None: ...
+
+    def empty(x: tx.Tuple[()]) -> None: ...
+
+    bare_sig = Signature.from_callable(bare)
+    empty_sig = Signature.from_callable(empty)
+    assert not bare_sig.same_as(empty_sig)
+    assert not empty_sig.same_as(bare_sig)
+    assert empty_sig.same_as(Signature.from_callable(empty))
+    assert bare_sig.same_as(Signature.from_callable(bare))
+
+
 def test_same_as_compares_varargs_and_varkw() -> None:
     """`same_as` compares the `*args`/`**kwargs` hints structurally."""
 

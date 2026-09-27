@@ -52,6 +52,11 @@ _CONCATENATE_FORMS = spellings("Concatenate")
 _ANY_FORMS = spellings("Any")
 _LITERAL_FORMS = spellings("Literal")
 
+# Bare, unparametrised tuple spellings: the plain `tuple` class and every
+# `Tuple` special-form object. Used to tell a bare tuple (which accepts any
+# parametrisation) from the empty-tuple type `Tuple[()]`, which does not.
+_BARE_TUPLE_FORMS = spellings("Tuple") + (tuple,)
+
 
 def _is_any(hint: tx.Any) -> bool:
     """Whether `hint` is `Any`, in any spelling."""
@@ -571,6 +576,14 @@ def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
     if not safe_issubclass(get_origin_uw(hint_uw), origin):
         return False
 
+    if origin is tuple:
+        # A tuple superhint reads its arguments as a shape, and the empty-tuple
+        # type `Tuple[()]` must be told from a bare, unparametrised
+        # `Tuple`/`tuple`: the two report the same empty arguments on 3.11+, so
+        # the "no arguments constrains nothing" rule below would wrongly accept
+        # every tuple as a sub-hint of `Tuple[()]`.
+        return _issubtuplehint(hint_uw, unwrap(superhint))
+
     superargs = safe_get_args(unwrap(superhint))
     if not superargs:
         # An unparametrised superhint constrains nothing further.
@@ -582,6 +595,40 @@ def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
         return False
 
     return _issubargs(args, superargs)
+
+
+def _is_subscripted_tuple(hint: tx.Any) -> bool:
+    """Whether a tuple hint is subscripted (`Tuple[int]`, `Tuple[()]`).
+
+    Told apart from a bare, unparametrised `Tuple`/`tuple`. The empty-tuple
+    type `Tuple[()]` reports its arguments as the phantom `#!python ((),)` on
+    Python 3.8-3.10 and as genuinely empty `#!python ()` on 3.11+, so an empty
+    argument list alone cannot distinguish it from a bare `Tuple`. A
+    subscripted alias with no arguments still carries an `__args__` attribute
+    where a bare form does not -- the load-bearing fallback for a genuinely
+    empty argument list, which includes the PEP 585 `#!python tuple[()]`
+    spelling on 3.9-3.10 as well as every empty-args form on 3.11+.
+    """
+    if any(hint is form for form in _BARE_TUPLE_FORMS):
+        return False
+    if tx.get_args(hint):
+        # `Tuple[int]`, or the `Tuple[()]` phantom `((),)` on 3.8-3.10.
+        return True
+    # A genuinely empty `Tuple[()]` carries `__args__` on 3.11+; a bare `Tuple`
+    # (excluded by identity above) does not.
+    return hasattr(hint, "__args__")
+
+
+def _issubtuplehint(hint_uw: tx.Any, superhint_uw: tx.Any) -> bool:
+    """Whether a tuple hint is a sub-hint of a tuple superhint."""
+    if not _is_subscripted_tuple(superhint_uw):
+        # A bare `Tuple`/`tuple` constrains nothing: any tuple is a sub-hint.
+        return True
+    if not _is_subscripted_tuple(hint_uw):
+        # A bare `tuple` may hold anything, so it cannot stand for a
+        # parametrised tuple (including the empty-tuple type `Tuple[()]`).
+        return False
+    return _issubargs(safe_get_args(hint_uw), safe_get_args(superhint_uw))
 
 
 def _issubargs(
@@ -951,8 +998,8 @@ def _tuple_shape(args: tx.Tuple[tx.Any, ...]) -> _TupleShape:
     """Classify a tuple's arguments into a `_TupleShape`.
 
     `Tuple[()]` on 3.8-3.10 reports its arguments as the phantom `#!python
-    ((),)`; it is normalised here to no elements (the empty-tuple bug #36 is
-    tracked separately and untouched). A second open run in one tuple is
+    ((),)`; it is normalised here to no elements, so the empty-tuple type is
+    read the same way on every version. A second open run in one tuple is
     refused (PEP 646 allows a single unpack; `typing` does not enforce it at
     runtime, so the relation does).
     """

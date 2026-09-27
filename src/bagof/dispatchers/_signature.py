@@ -45,7 +45,11 @@ from .core import (
 )
 from .core._compat import _UNPACK_FORMS, spellings
 from .core._exact import exact_target, is_exact
-from .core._relation import _is_unpacked_typevartuple, _TupleShape
+from .core._relation import (
+    _is_subscripted_tuple,
+    _is_unpacked_typevartuple,
+    _TupleShape,
+)
 
 __all__ = ["Parameter", "Signature", "Binding"]
 
@@ -1164,6 +1168,13 @@ def _structural_hint_eq(a: tx.Any, b: tx.Any) -> bool:
             # Defensive: a metadata object or literal member whose `==` raises.
             return a is b
     if safe_get_origin(a) is not safe_get_origin(b):
+        return False
+    if safe_get_origin(a) is tuple and (
+        _is_subscripted_tuple(a) != _is_subscripted_tuple(b)
+    ):
+        # `Tuple[()]` (the empty-tuple type) and a bare `Tuple` both report
+        # no arguments on 3.11+, so the arity check below cannot tell them
+        # apart. Different signatures -- their subscripted-ness must agree.
         return False
     args_a = tx.get_args(a)
     args_b = tx.get_args(b)
