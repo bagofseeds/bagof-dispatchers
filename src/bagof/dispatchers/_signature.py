@@ -1189,6 +1189,20 @@ def _structural_hint_eq(a: tx.Any, b: tx.Any) -> bool:
         # A TypeVar is the same only as itself: two variables with identical
         # bounds are still distinct positions in a signature.
         return a is b
+    if isinstance(a, list) or isinstance(b, list):
+        # A `Callable`'s parameter list arrives from `get_args` as a plain
+        # `list` of parameter hints (`Callable[[int], str]` -> `([int], str)`).
+        # Compare it element by element, canonicalising each element's spelling
+        # so `Callable[[list[int]], int]` and `Callable[[List[int]], int]` are
+        # the same as written. A `...`, `ParamSpec` or `Concatenate` parameter
+        # list is not a `list`, so a list never matches one of those.
+        if not (isinstance(a, list) and isinstance(b, list)):
+            return False
+        if len(a) != len(b):
+            return False
+        return all(
+            _structural_hint_eq(x, y) for x, y in zip(a, b)
+        )
     a_generic = tx.get_origin(a) is not None
     b_generic = tx.get_origin(b) is not None
     if a_generic != b_generic:
