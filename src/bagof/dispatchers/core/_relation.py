@@ -278,16 +278,22 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
     return issubhint(type(obj), hint)
 
 
+def _literal_value_eq(a: tx.Any, b: tx.Any) -> bool:
+    """Type-aware equality of two Literal values (PEP 586).
+
+    ``1 == True`` and ``1 == 1.0`` are True in Python but denote different
+    literal values, so the types must match too. ``eq_safenan`` keeps a NaN
+    literal equal to itself.
+    """
+    return type(a) is type(b) and eq_safenan(a) == eq_safenan(b)
+
+
 def _ishintstance_literal(obj: tx.Any, hint: tx.Any) -> bool:
     """Check that a value is one of a `Literal`'s values."""
     # Both the type and the value must match. Python compares `True == 1`
     # and `1 == 1.0` as equal, but PEP 586 makes literal matching
     # type-aware, so `Literal[1]` must reject `True` and `1.0`.
-    # `eq_safenan` keeps a NaN literal comparable with itself.
-    return any(
-        type(arg) is type(obj) and eq_safenan(arg) == eq_safenan(obj)
-        for arg in get_args_uw(hint)
-    )
+    return any(_literal_value_eq(arg, obj) for arg in get_args_uw(hint))
 
 
 def _ishintstance_type(obj: tx.Any, hint: tx.Any) -> bool:
@@ -620,10 +626,14 @@ def _issubliteral(hint: tx.Any, superhint: tx.Any) -> bool:
     if not tx.get_origin(hint_uw):
         # tx.Literal is not a subhint of tx.Literal[...]
         return False
-    # Check that all args of hint are in superhint
+    # Check that every arg of hint matches one of superhint's, type-aware:
+    # `Literal[1]` is not a sub-hint of `Literal[True]` or `Literal[1.0]`
+    # even though `1 == True == 1.0` in Python (PEP 586).
     args = safe_get_args(hint_uw)
     superargs = safe_get_args(superhint_uw)
-    return all(arg in superargs for arg in args)
+    return all(
+        any(_literal_value_eq(a, s) for s in superargs) for a in args
+    )
 
 
 def _issubtypevar(hint: tx.Any, superhint: tx.Any) -> bool:

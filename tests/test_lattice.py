@@ -49,9 +49,10 @@ class _Arr(tx.Generic[tx.Unpack[_Ts]]):
 
 # ~40 hints spanning classes, ABCs, unions, optionals, literals, the tuple /
 # list / dict families, `Callable` pairs, `TypeVar`s and `Exact`. It
-# deliberately leaves out the two documented quirks so the laws stay clean:
-# no `Literal[True]` beside `Literal[1]` (issue #6), and no `TypeVar` bounded
-# by `Exact[...]` used as a sub-hint (issue #7).
+# deliberately leaves out one documented quirk so the laws stay clean: no
+# `TypeVar` bounded by `Exact[...]` used as a sub-hint (issue #7). The
+# `Literal[True]`/`Literal[1]` overlap is included now that the value
+# comparison is type-aware.
 CORPUS = [
     # plain classes and the diamond of ABCs / nominal bases
     object,
@@ -72,9 +73,13 @@ CORPUS = [
     tx.Union[int, str, bytes],
     tx.Optional[int],
     tx.Union[tx.List[int], tx.List[str]],
-    # literals (no bool/int collision -- issue #6)
+    # literals, including the bool/int value overlap: a type-aware compare
+    # keeps `Literal[True]` and `Literal[1]` distinct, so the laws hold.
     tx.Literal[1],
     tx.Literal[1, 2],
+    tx.Literal[True],
+    tx.Literal[False],
+    tx.Literal[True, False],
     tx.Literal["a"],
     tx.Literal["a", "b"],
     # the tuple / list / dict families
@@ -121,6 +126,7 @@ CORPUS = [
     _TCONSTR,
     # Exact leaves
     Exact[int],
+    Exact[bool],
     Exact[str],
     # Any / None
     tx.Any,
