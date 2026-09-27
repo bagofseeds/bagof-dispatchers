@@ -17,11 +17,12 @@ is not the same as what a type checker enforces:
 3. widens a base's `extra_items`;
 4. reopens a closed base (with `extra_items=` or `closed=False`).
 
-Two deviations from a type checker follow from resting on this library's
-relation: an `Any`-typed key or `extra_items` is accepted (lenient), and there
-is no numeric-tower promotion, so a key typed `int` under `extra_items=float`
-*is* rejected (stricter). Some PEP-illegal but dispatch-safe shapes are
-likewise accepted.
+Top-level `Any` and the PEP 484 numeric tower are read as consistent, matching
+a type checker: an `Any`-typed key or `extra_items` is accepted, and a key
+typed `int` under `extra_items=float` is accepted (numeric promotion). The
+deeper gradual-consistency cases -- nested `Any`, a `Callable[..., R]` argument
+list, non-runtime protocols -- stay strict. Some PEP-illegal but dispatch-safe
+shapes are likewise accepted.
 
 The `closed=` / `extra_items=` keywords exist only on new-enough
 `typing_extensions`; tests that need them are skipped where they cannot be
@@ -370,19 +371,51 @@ def test_any_extra_items_is_accepted_lenient() -> None:
     _register_param(Widens)
 
 
-# --- no numeric-tower promotion (stricter than a type checker) -----------
+# --- numeric-tower promotion (type-checking parity, F2) -----------------
 
 
 @EXTRA
-def test_int_key_under_float_extra_items_is_rejected_no_promotion() -> None:
-    # `issubhint(int, float)` is False -- this library has no numeric-tower
-    # promotion -- so a value-level check would genuinely mis-dispatch, and the
-    # key is rejected (stricter than a type checker, which accepts it).
+def test_int_key_under_float_extra_items_is_accepted_numeric_tower() -> None:
+    # PEP 484 §Numeric: `int` promotes to `float`, so a type checker accepts
+    # it. The gate matches that -- rejecting it would be surprising -- even
+    # though `issubhint(int, float)` is False.
     class Typed(tx.TypedDict, extra_items=float):
         a: int
 
     class Adds(Typed):
         b: int
+
+    # Registration must not raise, and nothing is judged malformed.
+    _register_param(Adds)
+    assert _malformed_typeddict_reason(Adds) is None
+
+
+@EXTRA
+def test_int_and_float_keys_under_complex_extra_items_are_accepted() -> None:
+    # `int` and `float` both promote to `complex`.
+    class Typed(tx.TypedDict, extra_items=complex):
+        a: int
+
+    class AddsInt(Typed):
+        b: int
+
+    class AddsFloat(Typed):
+        c: float
+
+    _register_param(AddsInt)
+    _register_param(AddsFloat)
+    assert _malformed_typeddict_reason(AddsInt) is None
+    assert _malformed_typeddict_reason(AddsFloat) is None
+
+
+@EXTRA
+def test_str_key_under_int_extra_items_is_still_rejected() -> None:
+    # `str` is not in the numeric tower, so the gate still rejects it.
+    class Typed(tx.TypedDict, extra_items=int):
+        a: int
+
+    class Adds(Typed):
+        b: str
 
     with pytest.raises(TypeError) as info:
         _register_param(Adds)

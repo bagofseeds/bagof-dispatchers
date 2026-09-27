@@ -392,6 +392,32 @@ def _is_any_hint(hint: tx.Any) -> bool:
     return _is_any(unwrap(normalise_hint(hint), tx.Annotated))
 
 
+# PEP 484 §Numeric numeric tower: `bool` promotes to `int`, `int` to `float`,
+# `float` to `complex`. A type checker treats a lower type as assignable to a
+# wider one, and `_numeric_consistent` reads a hint to its rank here.
+_NUMERIC_RANK = {bool: 0, int: 1, float: 2, complex: 3}
+
+
+def _numeric_consistent(sub: tx.Any, sup: tx.Any) -> bool:
+    """Whether `sub` promotes to `sup` under the PEP 484 numeric tower.
+
+    `bool`, `int`, `float` and `complex` form a promotion chain, and a type
+    checker treats each as assignable to any wider one (`int` where `float` is
+    expected). Both hints are read to their bare builtin type (through
+    `normalise_hint` and any `Annotated` wrapper); the result is `#!python
+    True` only when both are numeric and `sub` sits at or below `sup` in that
+    chain. `bool` -> `int` is a real subclass and already consistent; listing
+    it keeps the check self-contained.
+    """
+    sub = unwrap(normalise_hint(sub), tx.Annotated)
+    sup = unwrap(normalise_hint(sup), tx.Annotated)
+    return (
+        sub in _NUMERIC_RANK
+        and sup in _NUMERIC_RANK
+        and _NUMERIC_RANK[sub] <= _NUMERIC_RANK[sup]
+    )
+
+
 def _own_extra_policy(cls: tx.Any) -> tx.Tuple[str, tx.Any]:
     """The policy a class declares *itself*, ignoring what it inherits.
 
@@ -505,7 +531,14 @@ def _malformed_class_reason(cls: tx.Any) -> tx.Optional[str]:
         key_hint = field_hints.get(key)
         if _skippable_extra_hint(key_hint) or _is_any_hint(key_hint):
             continue
-        if not issubhint(key_hint, inherited_extra):
+        # The added key's value type must be assignable to the base's
+        # `extra_items` type: the nominal relation, plus numeric-tower
+        # promotion (`int` under `extra_items=float`), which a type checker
+        # accepts under PEP 484 §Numeric.
+        compatible = issubhint(
+            key_hint, inherited_extra
+        ) or _numeric_consistent(key_hint, inherited_extra)
+        if not compatible:
             if inherited == "closed":
                 return (
                     f"{cname} is a malformed TypedDict: adds key {key!r} to "
@@ -551,16 +584,21 @@ def _malformed_typeddict_reason(td: tx.Any) -> tx.Optional[str]:
     from a sibling open base in a diamond), a widened `extra_items`, and a
     reopened closed base (`extra_items=` or `closed=False`).
 
-    Two deviations from a type checker follow from resting on this library's
-    relation rather than PEP 728:
+    For the added-key / `extra_items` compatibility check, two cases are read
+    as consistent to match a type checker rather than resting purely on this
+    library's nominal relation:
 
-    * **`Any` keys are accepted** -- an `Any`-typed key or `extra_items` admits
-      every value, so it can never carry something a base refuses (lenient
-      where a type checker may still object).
-    * **there is no numeric-tower promotion** -- `issubhint(int, float)` is
-      `#!python False`, so a key typed `int` under `extra_items=float` *is*
-      rejected, because a value-level check would genuinely mis-dispatch it
-      (stricter than a type checker, which accepts it under PEP 484 §Numeric).
+    * **top-level `Any` is accepted** -- an `Any`-typed key or `extra_items`
+      admits every value, so it can never carry something a base refuses.
+    * **the numeric tower is accepted** -- a key typed `int` under
+      `extra_items=float` (or `int` / `float` under `complex`) is consistent,
+      because a type checker promotes it under PEP 484 §Numeric and rejecting
+      it would be surprising.
+
+    The deeper gradual-consistency cases a type checker also accepts stay
+    strict here, as a documented residual: nested `Any` (`List[Any]` under
+    `List[int]`), a `Callable[..., R]` argument list, and non-runtime
+    protocols are all judged by the nominal relation.
 
     A well-formed `TypedDict` -- a plain subclass of a closed base, one that
     narrows `extra_items`, or a subclass of an open base -- returns `#!python
