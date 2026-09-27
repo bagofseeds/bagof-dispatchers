@@ -202,6 +202,30 @@ def test_mro_tiebreak_does_not_apply_to_non_class_keys() -> None:
         resolve_hint(int, a_first)
 
 
+def test_mro_tiebreak_equidistant_class_keys_stay_ambiguous() -> None:
+    """Class keys at the same MRO position leave the tie unbroken.
+
+    `typing.Sequence` and `collections.abc.Sequence` name the *same* position
+    in the query's MRO, so MRO cannot separate them -- the lookup keeps the
+    order fallback and still warns, either registration order.
+    """
+    class _Seq(abc.Sequence):
+        def __getitem__(self, index: int) -> int:
+            raise IndexError
+
+        def __len__(self) -> int:
+            return 0
+
+    abc_first = {abc.Sequence: "abc", typing.Sequence: "typing"}
+    typing_first = {typing.Sequence: "typing", abc.Sequence: "abc"}
+    with pytest.warns(RuntimeWarning):
+        assert resolve_hint(_Seq, abc_first, ambiguity="warn") == "abc"
+    with pytest.warns(RuntimeWarning):
+        assert resolve_hint(_Seq, typing_first, ambiguity="warn") == "typing"
+    with pytest.raises(AmbiguousMethodError):
+        resolve_hint(_Seq, abc_first)
+
+
 def test_exact_key_convenience() -> None:
     """An `Exact[C]` key answers a plain-`C` query (RFC §4 convenience)."""
     registry = {Exact[int]: "exactly int"}
