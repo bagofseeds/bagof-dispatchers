@@ -6,8 +6,11 @@ this mapping best describes this hint?" -- the successor to
 type distance, this one uses the sub-hint relation
 ([`issubhint`][bagof.dispatchers.core.issubhint]) directly: the best entry is
 the mapping key that accepts the query and is the most specific such key. When
-two equally specific keys both accept the query the lookup is ambiguous, and
-the caller chooses -- raise, warn or ignore.
+two equally specific keys both accept the query, a **class** query breaks the
+tie
+by MRO (RFC 0001 §2.2 step 3, the same refinement the value-dispatch path
+uses); a tie MRO cannot break is ambiguous and the caller chooses -- raise,
+warn or ignore.
 
 The mapping's *values* are whatever the caller stored; the key is a type hint.
 Keys are compared by the relation, so a `#!python Union` key matches any of its
@@ -29,7 +32,7 @@ import typing_extensions as tx
 # local
 from ._compat import UnknownHintWarning
 from ._exact import exact_target, is_exact
-from ._introspect import _typing_spelling, normalise_hint
+from ._introspect import _typing_spelling, mro_index, normalise_hint
 from ._relation import issubhint
 from ._sentinels import UNSET
 
@@ -52,6 +55,14 @@ def resolve_hint(
     match (the query is a key, by equality) always wins, and a
     [`Exact`][bagof.dispatchers.Exact]`[C]` key is additionally reachable by a
     query equivalent to `C`.
+
+    When several keys are equally specific and the query is a **class**, the
+    tie is broken by the query's MRO (RFC 0001 §2.2 step 3): the key whose
+    class is the nearest base of the query wins. So `#!python {Enum, str}`
+    resolves `#!python class Color(str, Enum)` to `str`, and a diamond
+    `#!python D(B, C)` resolves `#!python {B, C}` to `B`, order-independently.
+    A tie that MRO cannot break -- a non-class query, or class keys equidistant
+    in the MRO -- falls to `ambiguity`.
 
     Parameters
     ----------
@@ -114,8 +125,17 @@ def resolve_hint(
     if len(best) == 1:
         return mapping[best[0]]
 
-    # Two or more equally specific keys accept the query and nothing separates
-    # them. Keep the mapping's own order so the choice is repeatable.
+    # Two or more equally specific keys accept the query. When the query is a
+    # class, refine by argument MRO (RFC 0001 §2.2 step 3): the key nearest in
+    # the query's MRO wins -- so `{Enum, str}` picks `str` for
+    # `class Color(str, Enum)`, and the diamond `D(B, C)` picks `B`, both
+    # order-independently, matching the value-dispatch tie-break.
+    refined = _mro_refine(hint, best)
+    if refined is not UNSET:
+        return mapping[refined]
+
+    # Nothing separates them -- a non-class query, or class keys equidistant in
+    # the MRO. Keep the mapping's own order so the choice is repeatable.
     winner = next(key for key in mapping if key in best)
     if ambiguity == "raise":
         raise _ambiguous_keys(hint, best)
@@ -176,6 +196,35 @@ def _strictly_below(a: tx.Any, b: tx.Any) -> bool:
         return issubhint(na, nb) and not issubhint(nb, na)
     except TypeError:
         return False
+
+
+def _mro_refine(hint: tx.Any, best: tx.Sequence[tx.Any]) -> tx.Any:
+    """The single best key by the query's MRO, or `UNSET` when none is.
+
+    This is the RFC 0001 §2.2 step-3 refinement, applied to a tie between
+    equally specific keys: when the query is a class, the key whose class is
+    the *nearest* base of the query in its MRO wins. It runs only when the
+    query is a class and every candidate names a distinct position in that
+    MRO (via [`mro_index`][bagof.dispatchers.core.mro_index]); a non-class
+    query, a candidate that is not a class in the MRO (a `#!python Union`, a
+    `#!python Protocol`, an ABC satisfied by registration), or two candidates
+    at the same MRO position all leave the tie unbroken, returning
+    [`UNSET`][bagof.dispatchers.core.UNSET] so the caller's order fallback and
+    ambiguity report still apply.
+    """
+    if not isinstance(hint, type):
+        return UNSET
+    ranked = []
+    for key in best:
+        index = mro_index(key, hint)
+        if index is None:
+            return UNSET
+        ranked.append((index, key))
+    nearest = min(index for index, _ in ranked)
+    winners = [key for index, key in ranked if index == nearest]
+    if len(winners) == 1:
+        return winners[0]
+    return UNSET
 
 
 def _warn_unusable_key(key: tx.Any) -> None:

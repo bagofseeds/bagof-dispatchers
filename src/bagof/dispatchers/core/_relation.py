@@ -799,6 +799,16 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     if hint is superhint:
         return True
 
+    # A bare `TypedDict` marker on the hint side means "any TypedDict". Every
+    # TypedDict-shaped value is a `dict`, so the marker is a sub-hint of `dict`
+    # (and of whatever `dict` is a sub-hint of, e.g. `Mapping`); rank it as
+    # `dict` here. The superhint-is-marker case is handled further below and a
+    # plain `dict` is not a sub-hint of the marker, so the marker stays
+    # strictly below `dict` -- which makes `TypedDict` the unique most-specific
+    # key over `dict` in `resolve_hint` (RFC 0001 §8.1).
+    if is_typeddict_marker(get_origin_uw(hint)):
+        return issubhint(dict, superhint)
+
     # Unwrap superhint origin
     origin_uw = get_origin_uw(superhint)
 

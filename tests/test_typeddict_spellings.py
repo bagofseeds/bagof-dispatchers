@@ -11,6 +11,7 @@ import typing_extensions as tx
 from bagof.dispatchers.core import (
     is_typeddict,
     issubclassable,
+    issubhint,
     safe_issubclass,
     typeddict_required_keys,
 )
@@ -145,3 +146,37 @@ def test_required_keys_falls_back_to_total() -> None:
 
     assert typeddict_required_keys(OldStyle) == {"a", "b"}
     assert typeddict_required_keys(OldStylePartial) == frozenset()
+
+
+# --- the bare `TypedDict` marker is a sub-hint of `dict` (#19) -----------
+
+
+@pytest.mark.parametrize("name,TD", SPELLINGS)
+def test_bare_typeddict_marker_is_subhint_of_dict(
+    name: str, TD: tx.Any
+) -> None:
+    """A bare `TypedDict` marker means "any TypedDict", and every TypedDict
+    value is a `dict`, so the marker is a sub-hint of `dict` -- but a plain
+    `dict` is not the marker's sub-hint, so the marker stays strictly below
+    `dict`."""
+    assert issubhint(TD, dict)
+    assert not issubhint(dict, TD)
+
+
+@pytest.mark.parametrize("name,TD", SPELLINGS)
+def test_bare_typeddict_marker_is_not_below_unrelated_types(
+    name: str, TD: tx.Any
+) -> None:
+    """The marker ranks as `dict`, so it is not a sub-hint of an unrelated
+    class or of `int`."""
+    assert not issubhint(TD, int)
+    assert not issubhint(TD, list)
+
+
+@pytest.mark.parametrize("name,TD", SPELLINGS)
+def test_concrete_typeddict_is_subhint_of_dict(
+    name: str, TD: tx.Any
+) -> None:
+    """A concrete TypedDict is a sub-hint of `dict` too."""
+    cls = _build(TD)["plain"]
+    assert issubhint(cls, dict)

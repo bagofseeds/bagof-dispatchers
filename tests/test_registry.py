@@ -1,6 +1,7 @@
 """Tests for the hint-keyed lookup (`core/_registry.py`)."""
 
 # stdlib
+import enum
 import re
 import sys
 import typing
@@ -130,6 +131,75 @@ def test_ambiguous_keys_ignore_is_silent() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert resolve_hint(int, registry, ambiguity="ignore") == "a"
+
+
+# --- MRO tie-break for equally specific class keys (#19) ----------------
+
+
+class _MroColor(str, enum.Enum):
+    RED = "red"
+
+
+class _MroB:
+    pass
+
+
+class _MroC:
+    pass
+
+
+class _MroD(_MroB, _MroC):
+    pass
+
+
+def test_mro_tiebreak_enum_str_prefers_str() -> None:
+    """`{Enum, str}` resolves `class Color(str, Enum)` to `str`, either order.
+
+    `Enum` and `str` are incomparable under the relation, but `str` is the
+    nearer base of `Color` in its MRO, so it wins (RFC 0001 §2.2 step 3) --
+    order-independently, matching the old `get_from_registry`.
+    """
+    str_first = {str: "str", enum.Enum: "enum"}
+    enum_first = {enum.Enum: "enum", str: "str"}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no ambiguity warning
+        assert resolve_hint(_MroColor, str_first) == "str"
+        assert resolve_hint(_MroColor, enum_first) == "str"
+    assert resolve_hint(_MroColor, enum_first, ambiguity="raise") == "str"
+
+
+def test_mro_tiebreak_diamond_prefers_nearer_base() -> None:
+    """Diamond `D(B, C)` resolves `{C, B}` to `B`, either order."""
+    b_first = {_MroB: "b", _MroC: "c"}
+    c_first = {_MroC: "c", _MroB: "b"}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert resolve_hint(_MroD, b_first) == "b"
+        assert resolve_hint(_MroD, c_first) == "b"
+    assert resolve_hint(_MroD, c_first, ambiguity="raise") == "b"
+
+
+def test_mro_tiebreak_leaves_a_clear_win_alone() -> None:
+    """A plain, non-ambiguous class query still resolves by specificity."""
+    registry = {object: "any", int: "int", bool: "bool"}
+    assert resolve_hint(bool, registry) == "bool"
+
+
+def test_mro_tiebreak_does_not_apply_to_non_class_keys() -> None:
+    """A genuinely incomparable non-class tie still warns and order-falls-back.
+
+    The query is a class here, but the two accepting keys are `Union`s, which
+    name no MRO position -- so MRO cannot break the tie and the caller's order
+    fallback (plus warning) still applies.
+    """
+    a_first = {typing.Union[int, str]: "a", typing.Union[int, bytes]: "b"}
+    b_first = {typing.Union[int, bytes]: "b", typing.Union[int, str]: "a"}
+    with pytest.warns(RuntimeWarning):
+        assert resolve_hint(int, a_first, ambiguity="warn") == "a"
+    with pytest.warns(RuntimeWarning):
+        assert resolve_hint(int, b_first, ambiguity="warn") == "b"
+    with pytest.raises(AmbiguousMethodError):
+        resolve_hint(int, a_first)
 
 
 def test_exact_key_convenience() -> None:
@@ -360,19 +430,20 @@ def test_parity_new_style_generic_still_falls_back_to_its_origin() -> None:
     assert _get(list[int], {list: "bare", object: "any"}) == "bare"
 
 
-def test_parity_typeddict_over_dict_is_now_ambiguous() -> None:
-    # #19 (TypedDict-key ordering): the bare `TypedDict` marker and `dict` are
-    # incomparable under the relation (neither is a sub-hint of the other), so
-    # a TypedDict-subclass query matches both equally. The old summed-distance
-    # lookup forced a TypedDict preference; the relation makes it a genuine
-    # ambiguity. With `ambiguity="raise"` it raises; the `get_from_registry`
-    # shim (`ambiguity="warn"`) takes the first registered.
-    with pytest.raises(AmbiguousMethodError):
-        resolve_hint(_Base, {dict: "dict", tx.TypedDict: "typeddict"})
+def test_parity_typeddict_over_dict_wins_order_independently() -> None:
+    # #19 (TypedDict-key ordering): the bare `TypedDict` marker is a sub-hint
+    # of `dict` (every TypedDict value is a dict), so `TypedDict` is the unique
+    # most-specific key over `dict` for a TypedDict-subclass query -- resolved
+    # order-independently, restoring the old `get_from_registry` preference.
     td_first = {tx.TypedDict: "typeddict", dict: "dict"}
     dict_first = {dict: "dict", tx.TypedDict: "typeddict"}
-    assert _get(_Base, td_first) == "typeddict"
-    assert _get(_Base, dict_first) == "dict"
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no ambiguity warning is emitted
+        assert resolve_hint(_Base, td_first) == "typeddict"
+        assert resolve_hint(_Base, dict_first) == "typeddict"
+    # It is unambiguous: `ambiguity="raise"` still returns it, either order.
+    assert resolve_hint(_Base, td_first, ambiguity="raise") == "typeddict"
+    assert resolve_hint(_Base, dict_first, ambiguity="raise") == "typeddict"
 
 
 def test_parity_ignores_an_unrelated_typeddict_key() -> None:
