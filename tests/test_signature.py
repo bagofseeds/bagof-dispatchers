@@ -766,12 +766,16 @@ def test_deferred_callable_signatures_same_name_equal() -> None:
     reason="PEP 585 builtin generics (list[...]) need Python 3.9+",
 )
 def test_deferred_equality_ignores_generic_spelling() -> None:
-    """A deferred `list["Zed"]` equals a deferred `List["Zed"]` (#16).
+    """`list["Zed"]` equals `List["Zed"]` though spelled differently (#16).
 
     The two denote the same type but are different objects -- a
     `types.GenericAlias` holding a bare string versus a `typing._GenericAlias`
-    holding a `ForwardRef` -- so the deferred equality must canonicalise the
-    spelling and unify the reference before comparing.
+    holding a `ForwardRef` -- so equality must canonicalise the spelling and
+    unify the reference before comparing. (On 3.11+ both signatures are
+    `_deferred`; on 3.10 `get_type_hints` accepts the bare-string `list["Zed"]`
+    without deferring, but the hint still carries a forward reference, so the
+    same equality path applies -- hence the per-hint check rather than the
+    signature-level `_deferred` flag.)
     """
 
     def p(x: list["Zed"]) -> None: ...  # noqa: F821
@@ -781,7 +785,10 @@ def test_deferred_equality_ignores_generic_spelling() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         sp, sq = Signature.from_callable(p), Signature.from_callable(q)
-        assert sp._deferred and sq._deferred
+        # Both hints still carry an unresolved forward reference (not reduced
+        # to a bare `list`), so the comparison exercises the forward-ref path.
+        assert sigmod._has_forward_ref(sp.parameters["x"].hint)
+        assert sigmod._has_forward_ref(sq.parameters["x"].hint)
         assert sp == sq
 
     def r(x: typing.List["Yed"]) -> None: ...  # noqa: F821
