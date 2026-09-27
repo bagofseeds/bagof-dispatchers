@@ -753,6 +753,11 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     """
     hint, superhint = normalise_hint(hint), normalise_hint(superhint)
 
+    # A bottom (`Never`/`NoReturn`) holds no values, so it is a sub-hint of
+    # every hint -- `Exact[C]` included, which is why this comes first.
+    if _is_never(hint):
+        return True
+
     # `Exact` first, before any `Annotated` metadata is unwrapped. `Exact[C]`
     # is a *leaf* subtype of `C`: an exactly-`C` value is a `C`, so
     # `Exact[C] <= C`, but neither `C` nor any subclass of `C` is exactly-`C`,
@@ -798,12 +803,10 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
 
     hint, superhint = _known_form(hint), _known_form(superhint)
 
-    # Bottom types: only a bottom is a sub-hint of a bottom; a bottom is a
-    # sub-hint of everything.
+    # Only a bottom is a sub-hint of a bottom (a bottom sub-hint has already
+    # returned above).
     if _is_never(superhint):
-        return _is_never(hint)
-    if _is_never(hint):
-        return True
+        return False
 
     # shortcircuits
     if _is_any(superhint):

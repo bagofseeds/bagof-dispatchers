@@ -41,6 +41,10 @@ EXACT_SUPER_CASES = [
     (tx.Literal[True], Exact[bool], True),
     (tx.Literal[1], Exact[bool], False),
     (tx.Literal["a"], Exact[int], False),
+    # A bottom holds no values, so it is below every `Exact[C]` (#54).
+    (tx.Never, Exact[int], True),
+    (tx.NoReturn, Exact[int], True),
+    (tx.Never, tx.Union[Exact[int], str], True),
 ]
 
 
@@ -62,6 +66,9 @@ EXACT_SUB_CASES = [
     (Exact[int], str, False),
     (Exact[int], tx.Union[int, str], True),
     (Exact[int], tx.Any, True),
+    # Only a bottom is below a bottom.
+    (Exact[int], tx.Never, False),
+    (Exact[int], tx.NoReturn, False),
 ]
 
 
@@ -82,6 +89,8 @@ def test_exact_distributes_over_a_containing_superhint() -> None:
     assert issubhint(Exact[int], T) is True
     # An exact subclass is still not below an `Exact[int]` bound.
     assert issubhint(Exact[bool], T) is False
+    # A bottom is below the bound as well (#54).
+    assert issubhint(tx.Never, T) is True
 
 
 def test_a_bound_typevar_is_not_below_exact() -> None:
