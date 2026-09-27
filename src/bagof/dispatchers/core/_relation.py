@@ -365,6 +365,187 @@ def _typeddict_extra_policy(td: tx.Any) -> tx.Tuple[str, tx.Any]:
     return "open", None
 
 
+# --- TypedDict well-formedness (PEP 728) -------------------------------
+
+
+def _skippable_extra_hint(hint: tx.Any) -> bool:
+    """Whether an `extra_items` / field hint cannot be judged here.
+
+    An unresolvable forward reference -- a bare string or a
+    [`ForwardRef`][typing.ForwardRef] -- carries no type to compare, and a
+    missing hint is `#!python None`. In either case the well-formedness of a
+    key or policy against it is left unjudged rather than guessed at, exactly
+    as the value-level shape check skips such a field.
+    """
+    return hint is None or isinstance(hint, (str, tx.ForwardRef))
+
+
+def _own_extra_policy(cls: tx.Any) -> tx.Tuple[str, tx.Any]:
+    """The policy a class declares *itself*, ignoring what it inherits.
+
+    A `TypedDict`'s base is not in its MRO, and `__closed__` and
+    `__extra_items__` are set from the class's own keyword alone, so a plain
+    attribute read gives the class's own declaration. Returns one of:
+
+    * `("typed", hint)` -- the class wrote `extra_items=hint`;
+    * `("closed", None)` -- the class wrote `closed=True`;
+    * `("reopened", None)` -- the class wrote `closed=False`;
+    * `("none", None)` -- the class declared no policy of its own.
+    """
+    no_extra = getattr(tx, "NoExtraItems", _NO_EXTRA_ITEMS)
+    extra = getattr(cls, "__extra_items__", _NO_EXTRA_ITEMS)
+    if extra is not _NO_EXTRA_ITEMS and extra is not no_extra:
+        return "typed", extra
+    closed = getattr(cls, "__closed__", None)
+    if closed is True:
+        return "closed", None
+    if closed is False:
+        return "reopened", None
+    return "none", None
+
+
+def _typeddict_bases(cls: tx.Any) -> tx.Tuple[tx.Any, ...]:
+    """The direct `TypedDict` bases of a class, by origin, skipping the marker.
+
+    A parametrised base (`Base[int]`) is read through its origin (`Base`), the
+    same way [`_typeddict_extra_policy`][] reaches a generic base.
+    """
+    bases = ()  # type: tx.Tuple[tx.Any, ...]
+    for base in getattr(cls, "__orig_bases__", ()):
+        if is_typeddict_marker(base):
+            continue
+        origin = safe_get_origin(base) or base
+        if is_typeddict(origin) and not is_typeddict_marker(origin):
+            bases += (origin,)
+    return bases
+
+
+def _inherited_extra_policy(
+    cls: tx.Any,
+) -> tx.Tuple[str, tx.Any, tx.Any]:
+    """The `("open"/"closed"/"typed", hint, base)` policy `cls` inherits.
+
+    The effective policy of `cls`'s nearest constrained base, together with
+    that base -- so a violation can name where the contract came from. `cls`'s
+    own declaration is not read here.
+    """
+    for base in _typeddict_bases(cls):
+        policy, hint = _typeddict_extra_policy(base)
+        if policy != "open":
+            return policy, hint, base
+    return "open", None, None
+
+
+def _own_declared_keys(cls: tx.Any) -> tx.FrozenSet[str]:
+    """The keys `cls` declares that none of its `TypedDict` bases declare."""
+    own = set(typeddict_field_hints(cls))
+    for base in _typeddict_bases(cls):
+        own -= set(typeddict_field_hints(base))
+    return frozenset(own)
+
+
+def _malformed_class_reason(cls: tx.Any) -> tx.Optional[str]:
+    """Why `cls` itself violates a base's PEP 728 policy, or `None`.
+
+    Reads `cls`'s own declaration and the policy it inherits, and reports the
+    first violation of the base's closed / `extra_items` contract. A closed
+    base is read as `extra_items=Never` (it admits no extra key), so adding a
+    key to it and adding an `extra_items`-incompatible key are the one check.
+    """
+    inherited, inherited_hint, base = _inherited_extra_policy(cls)
+    if inherited == "open":
+        # An open base constrains nothing, so nothing about `cls` can break it.
+        return None
+    cname = getattr(cls, "__name__", str(cls))
+    bname = getattr(base, "__name__", str(base))
+    # A closed base admits no extra items: read it as `extra_items=Never`.
+    inherited_extra = tx.Never if inherited == "closed" else inherited_hint
+    own, own_hint = _own_extra_policy(cls)
+    if own == "reopened":
+        # `closed=False` widens a closed base back to open, or a typed base to
+        # open -- either way broader than the inherited contract.
+        return (
+            f"{cname} is a malformed TypedDict: reopens "
+            f"{'closed ' if inherited == 'closed' else ''}base {bname} "
+            "with closed=False"
+        )
+    if own == "typed" and not _skippable_extra_hint(own_hint):
+        # Setting `extra_items` is allowed only when it narrows the inherited
+        # one; against a closed base (Never) nothing but Never narrows.
+        if not issubhint(own_hint, inherited_extra):
+            if inherited == "closed":
+                return (
+                    f"{cname} is a malformed TypedDict: sets extra_items on "
+                    f"closed base {bname}"
+                )
+            return (
+                f"{cname} is a malformed TypedDict: widens the extra_items of "
+                f"base {bname}"
+            )
+    field_hints = typeddict_field_hints(cls)
+    for key in sorted(_own_declared_keys(cls)):
+        key_hint = field_hints.get(key)
+        if _skippable_extra_hint(key_hint):
+            continue
+        if not issubhint(key_hint, inherited_extra):
+            if inherited == "closed":
+                return (
+                    f"{cname} is a malformed TypedDict: adds key {key!r} to "
+                    f"closed base {bname}"
+                )
+            return (
+                f"{cname} is a malformed TypedDict: adds key {key!r} whose "
+                f"type is not compatible with the extra_items of base {bname}"
+            )
+    return None
+
+
+def _typeddict_chain(td: tx.Any) -> tx.List[tx.Any]:
+    """Every `TypedDict` class in `td`'s inheritance, `td` first, by origin.
+
+    Origins are resolved (`Base[int]` -> `Base`) and each class is visited
+    once, so a diamond is not walked twice.
+    """
+    chain = []  # type: tx.List[tx.Any]
+    stack = [td]
+    while stack:
+        current = stack.pop(0)
+        origin = safe_get_origin(current) or current
+        if is_typeddict_marker(origin) or not is_typeddict(origin):
+            continue
+        if any(origin is seen for seen in chain):
+            continue
+        chain.append(origin)
+        stack.extend(getattr(origin, "__orig_bases__", ()))
+    return chain
+
+
+def _malformed_typeddict_reason(td: tx.Any) -> tx.Optional[str]:
+    """Why a `TypedDict` `td` is malformed under PEP 728, or `None`.
+
+    A concrete `TypedDict` is *malformed* when it -- or any base in its chain
+    -- breaks a closed / `extra_items` contract that a type checker enforces:
+    it adds a key to a closed base, adds a key whose value type is not
+    compatible with a base's `extra_items`, widens a base's `extra_items`, or
+    reopens a closed base (with `extra_items=` or `closed=False`). For such a
+    class the nominal hint order disagrees with the value-level shape check, so
+    it is refused at registration rather than silently mis-dispatched.
+
+    A well-formed `TypedDict` -- a plain subclass of a closed base, one that
+    narrows `extra_items`, or a subclass of an open base -- returns `#!python
+    None`. So does anything that is not a concrete `TypedDict`, and any class
+    built by a `typing_extensions` too old to record closedness (its policy
+    cannot be read, so nothing can be judged malformed).
+    """
+    if not is_typeddict(td) or is_typeddict_marker(td):
+        return None
+    for cls in _typeddict_chain(td):
+        reason = _malformed_class_reason(cls)
+        if reason is not None:
+            return reason
+    return None
+
+
 def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
     """Check that a value has the shape a `TypedDict` describes.
 
@@ -424,7 +605,7 @@ def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
     # closed or carries an `extra_items=` type. An open `TypedDict` (the
     # common case) skips this loop entirely.
     #
-    # NOTE (hint-level follow-up): the value check above reads *inherited*
+    # NOTE (hint-level relation): the value check above reads *inherited*
     # closedness (via `_typeddict_extra_policy`), but the hint-level
     # `issubhint` on a concrete `TypedDict` is purely nominal
     # (`safe_issubclass`) and does not. For every *well-formed* PEP 728
@@ -433,9 +614,10 @@ def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
     # `extra_items`, so a subclass value never carries a key its closed/typed
     # base would refuse. A subclass that breaks those rules (which a type
     # checker rejects, but the runtime still lets you build) could carry such
-    # a key, and the nominal hint relation would still call it a subhint;
-    # making `issubhint` closedness-aware to close that gap is a separate
-    # change.
+    # a key. Rather than make the relation closedness-aware, such a *malformed*
+    # `TypedDict` is refused at registration (`_malformed_typeddict_reason`),
+    # so the relation stays nominal and total and only well-formed shapes reach
+    # it (#42).
     policy, extra_hint = _typeddict_extra_policy(td)
     if policy != "open":
         for key in obj:

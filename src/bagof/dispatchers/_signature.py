@@ -38,16 +38,19 @@ from ._lattice import (
     typevartuple_consistent,
 )
 from .core import (
+    is_typeddict,
     ishintstance,
     issubhint,
     normalise_hint,
     safe_get_origin,
+    unwrap,
 )
-from .core._compat import _UNPACK_FORMS, spellings
+from .core._compat import _UNPACK_FORMS, UNION_TYPES, spellings
 from .core._exact import exact_target, is_exact
 from .core._relation import (
     _is_subscripted_tuple,
     _is_unpacked_typevartuple,
+    _malformed_typeddict_reason,
     _TupleShape,
 )
 
@@ -411,12 +414,14 @@ class Signature:
         params = {}  # type: tx.Dict[str, Parameter]
         for index, hint in enumerate(hints):
             name = f"_{index}"
-            params[name] = Parameter(
-                name, normalise_hint(hint), _POSITIONAL_ONLY
-            )
+            normalised = normalise_hint(hint)
+            _reject_malformed_typeddict(name, normalised)
+            params[name] = Parameter(name, normalised, _POSITIONAL_ONLY)
         for name, hint in named_hints.items():
+            normalised = normalise_hint(hint)
+            _reject_malformed_typeddict(name, normalised)
             params[name] = Parameter(
-                name, normalise_hint(hint), _POSITIONAL_OR_KEYWORD
+                name, normalised, _POSITIONAL_OR_KEYWORD
             )
         return cls(params)
 
@@ -441,11 +446,14 @@ class Signature:
                 varargs_name = name
                 varargs = _catch_all_or_any(hint)
                 _reject_variadic_param(name, varargs, fn, catch_all=True)
+                _reject_malformed_typeddict(name, hint, fn)
             elif param.kind is _VAR_KEYWORD:
                 varkw_name = name
                 varkw = _catch_all_or_any(hint)
+                _reject_malformed_typeddict(name, hint, fn)
             else:
                 _reject_variadic_param(name, hint, fn)
+                _reject_malformed_typeddict(name, hint, fn)
                 params[name] = Parameter(
                     name, hint, param.kind, param.default
                 )
@@ -501,21 +509,26 @@ class Signature:
             # A forward reference that resolved to a `ParamSpec`/`Concatenate`
             # is refused here, the same as one written outright.
             _reject_variadic_param(name, hint, self._fn)
+            # A forward reference that resolved to a malformed `TypedDict` is
+            # refused here too, now that the name has become readable.
+            _reject_malformed_typeddict(name, hint, self._fn)
             new_params[name] = Parameter(
                 name, hint, param.kind, param.default
             )
         self._parameters = new_params
         if self._varargs_name is not None:
-            self._varargs = _catch_all_or_any(
-                normalise_hint(hints.get(self._varargs_name, tx.Any))
-            )
+            resolved = normalise_hint(hints.get(self._varargs_name, tx.Any))
+            self._varargs = _catch_all_or_any(resolved)
             _reject_variadic_param(
                 self._varargs_name, self._varargs, self._fn, catch_all=True
             )
-        if self._varkw_name is not None:
-            self._varkw = _catch_all_or_any(
-                normalise_hint(hints.get(self._varkw_name, tx.Any))
+            _reject_malformed_typeddict(
+                self._varargs_name, resolved, self._fn
             )
+        if self._varkw_name is not None:
+            resolved = normalise_hint(hints.get(self._varkw_name, tx.Any))
+            self._varkw = _catch_all_or_any(resolved)
+            _reject_malformed_typeddict(self._varkw_name, resolved, self._fn)
         # Build the plan before clearing the deferred flag: a reader on a
         # free-threaded build (3.13t) must never see `_deferred` false while
         # the plan still reflects the unresolved hints, so the flag is
@@ -1277,6 +1290,43 @@ def _reject_variadic_param(
             f"{name!r} of {fn}: a Tuple or parameter list may hold at most "
             "one unpacked TypeVarTuple (Unpack[Ts])"
         )
+
+
+def _top_level_typeddicts(hint: tx.Any) -> tx.List[tx.Any]:
+    """The `TypedDict`s a hint carries at its top level.
+
+    The hint itself when it is a `TypedDict` (its
+    [`Annotated`][typing.Annotated] wrapper stripped first), or each such
+    member of a top-level [`Union`][typing.Union] /
+    [`Optional`][typing.Optional]. A `TypedDict` buried inside a container
+    (`#!python List[Movie]`) is *not* returned -- its shape is not what a value
+    binds against at this slot.
+    """
+    hint = unwrap(normalise_hint(hint))
+    if safe_get_origin(hint) in UNION_TYPES:
+        found = []  # type: tx.List[tx.Any]
+        for member in tx.get_args(hint):
+            found.extend(_top_level_typeddicts(member))
+        return found
+    return [hint] if is_typeddict(hint) else []
+
+
+def _reject_malformed_typeddict(
+    name: str, hint: tx.Any, fn: tx.Any = None
+) -> None:
+    """Refuse a parameter whose hint is a malformed `TypedDict` (PEP 728).
+
+    A `TypedDict` that breaks a closed / `extra_items` contract a type checker
+    enforces has a nominal hint order that disagrees with the value-level shape
+    check, so a method registered with it would mis-dispatch. It is refused at
+    registration with a message that names the parameter and the specific
+    violation. A well-formed `TypedDict`, and any other hint, is accepted.
+    """
+    for typeddict in _top_level_typeddicts(hint):
+        reason = _malformed_typeddict_reason(typeddict)
+        if reason is not None:
+            where = f" of {fn}" if fn is not None else ""
+            raise TypeError(f"{name!r}{where}: {reason}")
 
 
 def _has_two_open_runs(hint: tx.Any) -> bool:
