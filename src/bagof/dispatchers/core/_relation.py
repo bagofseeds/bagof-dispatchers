@@ -6,6 +6,7 @@ import functools
 import inspect
 import types
 import warnings
+import weakref
 from collections import abc
 
 # dependencies
@@ -384,8 +385,8 @@ def _ishintstance_type(obj: tx.Any, hint: tx.Any) -> bool:
 #   the value itself, and each **method** off the value's class -- the way a
 #   method-only protocol is already decided, by type. Only the data members
 #   depend on the instance, so the call cache keys such a position on the
-#   value's type and which of those members it has (`_has_data_member`, the
-#   one reader the check and the key share);
+#   value's type and which of those members it has
+#   (`_present_data_members`, the one reader the check and the key share);
 # * the hint level (`_declares_protocol`) asks whether *every* instance of a
 #   class has them, which only what the class itself defines can promise.
 
@@ -469,46 +470,100 @@ def _has_method(cls: type, name: str) -> bool:
     return found is not _ABSENT and found is not None
 
 
-def _has_data_member(obj: tx.Any, name: str) -> bool:
-    """Whether the value `obj` has the attribute `name`.
+def _present_data_members(
+    obj: tx.Any, names: tx.Sequence[str]
+) -> tx.Tuple[bool, ...]:
+    """Whether the value `obj` has each attribute in `names`, in order.
 
-    Found on the instance's own `__dict__` or anywhere in its class's MRO --
-    a class attribute, a property, a slot -- without running any of the
-    value's code, as [`inspect.getattr_static`][] finds it and as Python's
-    own `isinstance` reads a protocol member from 3.12 on (earlier versions of
-    `typing` call `hasattr`, which runs a property and asks `__getattr__`).
+    An attribute is found on the instance's own `__dict__` or anywhere in its
+    class's MRO -- a class attribute, a property, a slot -- without running
+    any of the value's code, as [`inspect.getattr_static`][] finds it and as
+    Python's own `isinstance` reads a protocol member from 3.12 on (earlier
+    versions of `typing` call `hasattr`, which runs a property and asks
+    `__getattr__`).
 
     This is the one reader both the value check and the call cache use, so
     the key always covers what the check reads. It runs on every call the
-    cache answers at such an argument, so the common case -- an ordinary
-    instance -- reads the two namespaces directly, and everything else takes
-    [`inspect.getattr_static`][] itself.
+    cache answers at such an argument, so the value's lookup is worked out
+    once for all the names, and the common case -- an ordinary instance --
+    reads the two namespaces directly ([`_lookup_of`][] says which case
+    applies); everything else takes [`inspect.getattr_static`][] itself.
     """
     cls = type(obj)
-    try:
-        direct = _reads_instance_dict(cls)
-    except TypeError:
-        # A class whose metaclass makes it unhashable cannot key the memo.
-        direct = _reads_instance_dict.__wrapped__(cls)
-    if not direct:
+    lookup = _lookup_of(cls)
+    if lookup == _PLAIN:
         try:
-            inspect.getattr_static(obj, name)
-        except (AttributeError, TypeError):
-            # Absent -- or, from 3.13, a class `getattr_static` cannot read
-            # because its metaclass makes it unhashable (Python's own
-            # `isinstance` raises there): nothing is found.
-            return False
-        return True
+            own = object.__getattribute__(obj, "__dict__")
+        except AttributeError:
+            # `__slots__` without a `__dict__`: only the class can hold it.
+            own = _NO_ATTRIBUTES
+        return tuple(
+            [
+                name in own or _class_attribute(cls, name) is not _ABSENT
+                for name in names
+            ]
+        )
+    if lookup == _CLASS_ONLY:
+        return tuple(
+            [_class_attribute(cls, name) is not _ABSENT for name in names]
+        )
+    return tuple([_found_statically(obj, name) for name in names])
+
+
+# The namespace of an instance that has none of its own.
+_NO_ATTRIBUTES = frozenset()  # type: tx.FrozenSet[str]
+
+
+def _found_statically(obj: tx.Any, name: str) -> bool:
+    """Whether [`inspect.getattr_static`][] finds `name` on `obj`."""
     try:
-        if name in object.__getattribute__(obj, "__dict__"):
-            return True
-    except AttributeError:
-        # `__slots__` without a `__dict__`: only the class can hold it.
-        pass
-    return _class_attribute(cls, name) is not _ABSENT
+        inspect.getattr_static(obj, name)
+    except (AttributeError, TypeError):
+        # Absent. A `TypeError` is defensive: from 3.13 `getattr_static`
+        # memoises on the classes it walks, and raises for one it cannot
+        # hash -- a case `_lookup_of` already routes around for the value's
+        # own class.
+        return False
+    return True
 
 
-@functools.lru_cache(maxsize=None)
+# How an instance of a class has its attributes looked up (`_lookup_of`):
+# its own `__dict__` and then its class's MRO; `inspect.getattr_static`; or
+# its class's MRO alone.
+_PLAIN = 0
+_STATIC = 1
+_CLASS_ONLY = 2
+
+# `_lookup_of`'s memo. Its keys are the types of the values dispatched on, so
+# they are held weakly: a class made and dropped at runtime is not kept alive
+# for the life of the process.
+_LOOKUPS = weakref.WeakKeyDictionary()  # type: weakref.WeakKeyDictionary
+
+
+def _lookup_of(cls: type) -> int:
+    """How [`_present_data_members`][] reads an instance of `cls`, memoised.
+
+    `_PLAIN` for an ordinary class ([`_reads_instance_dict`][]), and
+    `_STATIC` -- `inspect.getattr_static` -- for any other.
+
+    A class that cannot key the memo -- one whose metaclass makes it
+    unhashable -- is worked out afresh on each call. It cannot key
+    `getattr_static`'s own memo either, which raises `TypeError` for an
+    instance of it from 3.13 on (as Python's own `isinstance` does against a
+    protocol, on every version), so an instance of one that redefines
+    `__dict__` is read through its class's MRO alone: `_CLASS_ONLY`, which is
+    all `getattr_static` reads for such an instance.
+    """
+    try:
+        return _LOOKUPS[cls]
+    except KeyError:
+        lookup = _PLAIN if _reads_instance_dict(cls) else _STATIC
+        _LOOKUPS[cls] = lookup
+        return lookup
+    except TypeError:
+        return _PLAIN if _reads_instance_dict(cls) else _CLASS_ONLY
+
+
 def _reads_instance_dict(cls: type) -> bool:
     """Whether an instance of `cls` has its attributes looked up plainly.
 
@@ -541,7 +596,7 @@ def _ishintstance_protocol(
     A class that names `proto` among its bases is one, as Python's
     `isinstance` counts it, whatever its instances hold. Otherwise every
     method must be defined by the value's class and every data member be
-    present on the value ([`_has_data_member`][]).
+    present on the value ([`_present_data_members`][]).
 
     Methods are read off the class, as a method-only protocol is decided,
     so only the data members depend on the instance -- and those are all
@@ -552,15 +607,23 @@ def _ishintstance_protocol(
     if any(base is proto for base in cls.__mro__):
         return True
     return all(_has_method(cls, name) for name in members.methods) and all(
-        _has_data_member(obj, name) for name in members.data
+        _present_data_members(obj, members.data)
     )
 
 
 def _dataclass_fields(cls: type) -> tx.FrozenSet[str]:
-    """The names of the fields of `cls` if it is a dataclass, else nothing."""
+    """The fields of the dataclass `cls` its `__init__` sets, by name.
+
+    Only an `init=True` field is always set by the generated `__init__`. One
+    written `field(init=False)` is left for the class to set, so it promises
+    nothing (one with a plain default is a class attribute, and found as
+    such). Nothing for a class that is not a dataclass.
+    """
     if not dataclasses.is_dataclass(cls):
         return frozenset()
-    return frozenset(field.name for field in dataclasses.fields(cls))
+    return frozenset(
+        field.name for field in dataclasses.fields(cls) if field.init
+    )
 
 
 def _declares_protocol(
@@ -584,12 +647,14 @@ def _declares_protocol(
     never sets the attribute is not an instance of `proto`, so counting it
     would put the class below `proto` while one of its instances fails the
     value check -- the one thing the order must never do (a value of a
-    sub-hint is a value of the super-hint). A dataclass field does count,
-    because a dataclass promises every field on every instance: its
-    generated `__init__` sets each one. Only a hand-written `__init__` that
-    skips a field, a `del`, or a call made on `self` from inside `__init__`
-    before the field is set can break that promise; each is breaking the
-    dataclass itself.
+    sub-hint is a value of the super-hint). A dataclass field its generated
+    `__init__` sets -- an `init=True` one -- does count, because a dataclass
+    promises it on every instance; a `field(init=False)` does not, unless it
+    has a plain default, which is a class attribute. Only a hand-written
+    `__init__` that skips a field, a `del`, a call made on `self` from inside
+    `__init__` before the field is set, or a subclass that redeclares an
+    inherited field `init=False` can break that promise; each is breaking
+    the dataclass itself.
     """
     if not isinstance(cls, type):
         return False

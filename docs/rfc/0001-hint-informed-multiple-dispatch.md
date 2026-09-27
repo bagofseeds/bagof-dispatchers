@@ -171,7 +171,7 @@ changes it, and the change is called out.
 | `Annotated[int,'x'] ≡ int` | T/T | metadata invisible → `Exact` handled before delegating |
 | `Callable[[int],str]` vs `Callable[[bool],str]` | F/F → **contravariant (post-fix)** | params compared contravariantly, return covariantly |
 | `Callable[[int],R] < Callable[Concatenate[int,P],R] < Callable[P,R] ≡ Callable[...,R]` | True | `...` / bare `P` top the parameter lists, a `Concatenate` prefix sits between (row-flip, §11.1; issue #32) — so `Callable[...,R] ≤ Callable[[int],R]` and `Callable[Concatenate[int,P],R] ≤ Callable[[int],R]` are **False** (were True), which restores transitivity |
-| `int ≤ P` (non-`runtime_checkable` Protocol) | raises → **False (post-fix)** | guarded; registration still refuses with a friendly message |
+| `int ≤ P` (non-`runtime_checkable` Protocol) | raises → **False (post-fix)** | guarded; an overload on one registers, but answers False at both levels, so it never matches and the call raises `NoMethodError` |
 | `list ≤ RP` (runtime protocol) | True | protocols dispatch structurally |
 | `Named ≤ HasName`, `Record ≤ HasName`, `Ann ≤ HasName`, `Sub ≤ HasName`, `Other ≤ HasName` (`HasName` a runtime protocol with the data member `name: str`; `Named` sets `name = …` on the class, `Record` is a dataclass with a `name` field, `Ann` only annotates it, `Sub(HasName, Protocol)`, `Other` an unrelated protocol with the same member) | **True** / **True** / False / **True** / False | Python refuses `issubclass` here; the relation asks whether every instance has the member, which only the class's own definitions — or a dataclass field — promise (§2.3; #56) |
 | `dict ≤ TD`, `TD ≤ dict`, `TD ≤ Mapping` | F/T/T | TypedDict orders correctly at hint level |
@@ -448,7 +448,9 @@ multiply.
     sub-protocol included), or when `C` is not a protocol and **declares**
     every member: each method defined by the class (not as `None`), each
     data member defined by the class itself (a class attribute, a property,
-    a slot) or listed as a dataclass field. Another protocol that does not
+    a slot) or listed as a dataclass field that the generated `__init__`
+    sets (`init=True`; a `field(init=False)` counts only through a plain
+    default, which is a class attribute). Another protocol that does not
     list `P` is not below it, even with the same members. A data protocol is
     below a method-only protocol `Q` when it lists `Q`, or when its methods
     cover `Q`'s members — never through a data member, which Python's
@@ -458,13 +460,27 @@ multiply.
     of `C` fails `v ∈ P`. A **bare annotation** on a plain class
     (`name: str` with no value) promises nothing at runtime, so it does not
     declare the member: `Ann ⊑ HasName` is False, and an `Ann()` that never
-    set `name` is not in `HasName`. A **dataclass field** does declare it:
-    a dataclass promises every field on every instance, which its generated
-    `__init__` sets. The residue — a hand-written `__init__` that skips a
-    field, a `del`, a call dispatched on `self` from inside `__init__`
-    before the field is set, or a subclass that sets an inherited method to
+    set `name` is not in `HasName`. A **dataclass field** its generated
+    `__init__` sets does declare it: a dataclass promises such a field on
+    every instance. A `field(init=False)` without a default is left for the
+    class to set, so it declares nothing. The residue — a hand-written
+    `__init__` that skips a field, a `del`, a call dispatched on `self` from
+    inside `__init__` before the field is set, a subclass that redeclares an
+    inherited field `init=False`, or one that sets an inherited method to
     `None` — breaks the class's own promise, and is documented rather than
     guarded.
+  - *an overlap the order does not see* — a class that annotates a member
+    and sets it in `__init__` (`Member`) is incomparable with the protocol
+    at the hint level, yet every such instance is in both. An overload on
+    each is therefore ambiguous for that instance, and `AmbiguousMethodError`
+    is the answer: neither is more specific. Registration gives no warning
+    and `ambiguities()` lists nothing, since both look for hint-level
+    overlap. The remedies are the user's: give the class overload a higher
+    `priority=`, or declare the member on the class (a class default, or a
+    dataclass field) so that `Member ⊑ HasName`. The guide
+    (`guide/protocols.md`) shows both, runnably. Whether dispatch should
+    resolve this itself is an open owner decision; the behaviour is
+    deliberately left as is.
   - *registration* — an overload on such a protocol is reachable like any
     other; a protocol that is not `runtime_checkable` is unchanged (it
     answers False, so an overload on it never matches).
@@ -507,6 +523,15 @@ its captured keywords together with every other slot carrying `T` — the same
 greatest-element solve `*args: T` gets — and those keywords also form one group
 for the specificity tie-break below (Phase 8d). This is the Pythonic middle
 between Julia's strict diagonal and mypy's join.
+
+A constrained `TypeVar` whose constraint is a runtime protocol with data
+members (#56) is solved from the argument's *class*, `issubhint(type(v), Ci)`,
+so a value that is in the protocol only by what its instance holds does not
+select that constraint, at one position or several: declare the member on
+the class, or use a `bound=`, which is checked value by value. A generic
+protocol with data members (`HasItem[int]`, `item: T`) checks the members'
+presence only; a structural value declares no arguments, so what it holds
+under `item` is not compared with `int`, as a plain list's items are not.
 
 **Specificity with TypeVars.** Position-wise a TypeVar is replaced by its table
 entry, so `(int, int) < (T, T) ≡ (Any, Any)`. One tie-break inside `≡`: when
@@ -836,13 +861,17 @@ Caching & thread-safety — **two levels**, because the order is per shape:
    bounded LRU, so after churn a fresh `Box[int]` object is a new entry: a
    missed hit, never a wrong method. A value that is not a `Generic` instance —
    a plain list at a `List[int]` argument — is not probed and keys as
-   `(type, None)`, a few tens of nanoseconds over the bare type. At a
+   `(type, None)`; a cached call at such an argument costs roughly 0.1–0.2 µs
+   more than at a type-keyed one (building, hashing and comparing the richer
+   key). At a
    member-dependent argument the part carries a tuple of booleans, one per
    recorded data member, saying whether the value has it — read by the one
    function the value check uses, so the key always covers what the check
    reads, and never the value or its identity: every instance of a class
-   holding the same members shares one entry (a fraction of a microsecond
-   per call). A position with several dependences carries every part — the
+   holding the same members shares one entry. That read happens on every
+   call, so a cached call at a member-dependent argument costs roughly 1 µs
+   more than at a type-keyed one. A position with several dependences
+   carries every part — the
    value, the record, the members — since none stands in for another (a
    value's `==` sees neither the record nor which attributes are set). An
    unhashable value at a value-dependent argument → uncached.
@@ -1076,7 +1105,8 @@ Callable[...,R]` (`...`/bare `P` top the lists; row-flip §11.1, #32); a repeate
 type[int] < type` · `Annotated` (non-`Exact`) `≡ X`; `Exact` of a non-class →
 `TypeError` · TypedDict hint-level fine; value-level shape-checks the mapping ·
 Protocols: runtime structural, two satisfied → ambiguous unless comparable,
-non-runtime → registration `TypeError` · runtime protocol with data members
+non-runtime → registers, answers False at both levels, so it never matches
+and the call raises `NoMethodError` · runtime protocol with data members
 → read member by member, value-level on the instance, keyed by which members
 the value has (#56) · ABCs via `issubclass`; late `register()`
 → cache-token invalidation · diamond `D(B,C)` → `B`; B vs satisfied-ABC →

@@ -550,6 +550,14 @@ def instance_members(hint: tx.Any) -> tx.Tuple[str, ...]:
     upper bound, as for
     [`is_value_dependent`][bagof.dispatchers._lattice.is_value_dependent].
 
+    Two limits of what is read off the instance. A constrained `TypeVar`
+    whose constraint is such a protocol is *solved* from the argument's
+    class (`#!python issubhint(type(v), c)`), so a value that is in the
+    protocol only by what its instance holds does not select that
+    constraint. And a generic protocol (`#!python HasItem[int]`, with
+    `#!python item: T`) checks that the members are present, not what they
+    hold: a structural value declares no type arguments to compare.
+
     !!! example
         ```pycon
         >>> import typing_extensions as tx

@@ -64,7 +64,7 @@ from .core import (
 )
 from .core._compat import is_plausible_hint
 from .core._exact import exact_target, is_exact
-from .core._relation import _has_data_member
+from .core._relation import _present_data_members
 
 __all__ = ["Function"]
 
@@ -123,6 +123,9 @@ class _Plan:
         "declared",
         "members",
         "dependent",
+        "value_only",
+        "declared_only",
+        "members_only",
     )
 
     def __init__(
@@ -149,6 +152,18 @@ class _Plan:
         self.members = dict(members or {})
         # Every argument key whose part is more than the bare type.
         self.dependent = value_dependent | declared | frozenset(self.members)
+        # The keys that read exactly one thing beside the type, which
+        # `_call_key` builds inline; the rest go through `_dependent_part`.
+        # Most dependent arguments read one, and the call cache is on the
+        # path of every call.
+        members_set = frozenset(self.members)
+        self.value_only = value_dependent - declared - members_set
+        self.declared_only = declared - value_dependent - members_set
+        self.members_only = {
+            key: names
+            for key, names in self.members.items()
+            if key not in value_dependent and key not in declared
+        }
 
 
 class Function:
@@ -1283,29 +1298,44 @@ def _call_key(
     dependent = plan.dependent
     parts = [len(args)]  # type: tx.List[tx.Any]
     for index, value in enumerate(args):
-        if index in dependent:
-            parts.append(_dependent_part(value, index, plan))
-        else:
+        if index not in dependent:
             parts.append(type(value))
+        elif index in plan.declared_only:
+            parts.append((type(value), _declared_key(value)))
+        elif index in plan.value_only:
+            parts.append((type(value), _KeyValue(value)))
+        elif index in plan.members_only:
+            names = plan.members_only[index]
+            parts.append((type(value), _members_key(value, names)))
+        else:
+            parts.append(_dependent_part(value, index, plan))
     for keyword in sorted(kwargs):
         value = kwargs[keyword]
-        if keyword in dependent:
-            parts.append((keyword,) + _dependent_part(value, keyword, plan))
-        else:
+        if keyword not in dependent:
             parts.append((keyword, type(value)))
+        elif keyword in plan.declared_only:
+            parts.append((keyword, type(value), _declared_key(value)))
+        elif keyword in plan.value_only:
+            parts.append((keyword, type(value), _KeyValue(value)))
+        elif keyword in plan.members_only:
+            names = plan.members_only[keyword]
+            parts.append((keyword, type(value), _members_key(value, names)))
+        else:
+            parts.append((keyword,) + _dependent_part(value, keyword, plan))
     return tuple(parts)
 
 
 def _dependent_part(
     value: tx.Any, key: tx.Any, plan: _Plan
 ) -> tx.Tuple[tx.Any, ...]:
-    """The key part of an argument whose hints read more than its type.
+    """The key part of an argument whose hints read two things or more.
 
     The value's type, followed by one entry for each thing the hints at `key`
     read: the value, the parametrisation it declares, the protocol data
-    members it has. A position that reads several carries every one -- none
-    stands in for another: a value's own `==` sees neither the record (a
-    dataclass generic compares its fields) nor which attributes are set.
+    members it has. None stands in for another: a value's own `==` sees
+    neither the record (a dataclass generic compares its fields) nor which
+    attributes are set. `_call_key` builds the part of an argument that reads
+    only one of them inline.
     """
     part = (type(value),)  # type: tx.Tuple[tx.Any, ...]
     if key in plan.value_dependent:
@@ -1318,16 +1348,11 @@ def _dependent_part(
     return part
 
 
-def _members_key(value: tx.Any, names: tx.Sequence[str]) -> tx.Any:
-    """Which of the protocol data members `names` the value has, in order.
-
-    A tuple of booleans, read by the same function the value check uses
-    ([`_has_data_member`][bagof.dispatchers.core._relation._has_data_member]),
-    so the key always covers what the check reads -- never the value itself,
-    so every instance of one class that holds the same members shares one
-    entry.
-    """
-    return tuple([_has_data_member(value, name) for name in names])
+# Which of the protocol data members `names` the value has, in order: a tuple
+# of booleans, read by the very function the value check uses, so the key
+# always covers what the check reads -- never the value itself, so every
+# instance of one class that holds the same members shares one entry.
+_members_key = _present_data_members
 
 
 def _declared_key(value: tx.Any) -> tx.Any:

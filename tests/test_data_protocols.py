@@ -20,8 +20,12 @@ No `X | Y` or `list[int]`: this runs on 3.8.
 
 # stdlib
 import dataclasses
+import gc
+import inspect
+import sys
 import types
 import typing
+import weakref
 
 # dependencies
 import pytest
@@ -35,7 +39,7 @@ from bagof.dispatchers._lattice import (
     is_declaration_dependent,
     is_value_dependent,
 )
-from bagof.dispatchers.core import ishintstance, issubhint
+from bagof.dispatchers.core import _relation, ishintstance, issubhint
 
 # --- the family, in both spellings -------------------------------------
 
@@ -100,6 +104,18 @@ def _family(module: tx.Any) -> types.SimpleNamespace:
     class Person:
         name: str
         age: int
+
+    @dataclasses.dataclass
+    class InitFalse:
+        """`__init__` never sets `name`: the class promises nothing."""
+
+        name: str = dataclasses.field(init=False)
+
+    @dataclasses.dataclass
+    class InitFalseDefault:
+        """`name` has a plain default, so the class holds it."""
+
+        name: str = dataclasses.field(init=False, default="d")
 
     class Prop:
         @property
@@ -240,21 +256,70 @@ def test_a_class_object_is_read_through_its_bases_and_metaclass(
     assert ishintstance(p.Plain, p.HasName) is False
 
 
-def test_an_unhashable_class_is_still_read(p: types.SimpleNamespace) -> None:
+def _unhashable_meta() -> type:
     class Meta(type):
         def __eq__(cls, other: tx.Any) -> bool:
             return cls is other
 
     assert Meta.__hash__ is None
+    return Meta
 
-    class Odd(metaclass=Meta):
+
+def test_an_instance_of_an_unhashable_class_is_read(
+    p: types.SimpleNamespace,
+) -> None:
+    """A class whose metaclass makes it unhashable cannot key the memo."""
+
+    class Odd(metaclass=_unhashable_meta()):
         pass
 
+    with pytest.raises(TypeError):
+        hash(Odd)
     assert ishintstance(_with_name(Odd), p.HasName) is True
     assert ishintstance(Odd(), p.HasName) is False
-    # The class itself, which `inspect.getattr_static` cannot read from
-    # 3.13 on (and `isinstance` raises for): nothing is found, never an error.
+    # Python's own `isinstance` raises for such an instance.
+    with pytest.raises(TypeError):
+        isinstance(Odd(), p.HasName)
+    # The class itself is an ordinary value: its type is hashable.
     assert ishintstance(Odd, p.HasName) is False
+    assert isinstance(Odd, p.HasName) is False
+
+
+def test_an_unhashable_class_that_redefines_its_dict_is_read(
+    p: types.SimpleNamespace,
+) -> None:
+    """Read through its class alone, which `getattr_static` cannot do from
+    3.13 on: it memoises on the class too."""
+
+    class Odd(metaclass=_unhashable_meta()):
+        @property
+        def __dict__(self) -> tx.Dict[str, tx.Any]:  # type: ignore[override]
+            raise AssertionError("the value's own code must not run")
+
+    class Named(Odd):
+        name = "n"
+
+    if sys.version_info >= (3, 13):
+        with pytest.raises(TypeError):
+            inspect.getattr_static(Odd(), "name")
+    assert ishintstance(Odd(), p.HasName) is False
+    assert ishintstance(Named(), p.HasName) is True
+
+
+def test_a_class_made_at_runtime_is_not_kept_alive(
+    p: types.SimpleNamespace,
+) -> None:
+    """The lookup memo holds the types of dispatched values weakly."""
+
+    def make() -> weakref.ReferenceType:
+        throwaway = type("Throwaway", (), {})
+        assert ishintstance(_with_name(throwaway), p.HasName) is True
+        assert throwaway in _relation._LOOKUPS
+        return weakref.ref(throwaway)
+
+    ref = make()
+    gc.collect()
+    assert ref() is None
 
 
 def test_methods_are_read_off_the_class(p: types.SimpleNamespace) -> None:
@@ -317,6 +382,7 @@ def test_type_of_a_data_protocol(p: types.SimpleNamespace) -> None:
         ("ClassAttr", True),
         ("Record", True),
         ("Person", True),
+        ("InitFalseDefault", True),
         ("Prop", True),
         ("Slotted", True),
         ("Nominal", True),
@@ -324,6 +390,7 @@ def test_type_of_a_data_protocol(p: types.SimpleNamespace) -> None:
         ("HasName", True),
         ("Plain", False),
         ("Annotated", False),
+        ("InitFalse", False),
         ("OtherName", False),
         ("SupportsClose", False),
     ],
@@ -392,6 +459,8 @@ _VALUES = [
     lambda p: _with_name(p.Annotated),
     lambda p: p.Record("r"),
     lambda p: p.Person("r", 1),
+    lambda p: p.InitFalse(),
+    lambda p: p.InitFalseDefault(),
     lambda p: p.Prop(),
     lambda p: p.Slotted(),
     lambda p: p.Nominal(),
@@ -412,6 +481,8 @@ _HINTS = [
     "Annotated",
     "Record",
     "Person",
+    "InitFalse",
+    "InitFalseDefault",
     "Prop",
     "Slotted",
     "Nominal",
@@ -674,3 +745,38 @@ def test_a_generic_data_protocol() -> None:
     for _ in range(2):
         assert f(held) == "item"
         assert f(Holder()) == "object"
+
+
+def test_a_constrained_typevar_is_solved_from_the_class(
+    p: types.SimpleNamespace,
+) -> None:
+    """A documented limit: the constraint is chosen from `type(v)`."""
+    constrained = tx.TypeVar("constrained", p.HasName, int)
+    bound = tx.TypeVar("bound", bound=p.HasName)
+    f = Function("f")
+    f.register((constrained,))(lambda x: "constrained")
+    f.register((object,))(lambda x: "object")
+    g = Function("g")
+    g.register((bound,))(lambda x: "bound")
+    g.register((object,))(lambda x: "object")
+    # By its class, the constraint is chosen...
+    assert f(p.ClassAttr()) == "constrained"
+    # ...but not by what the instance alone holds; a bound reads that.
+    assert f(_with_name(p.Plain)) == "object"
+    assert g(_with_name(p.Plain)) == "bound"
+
+
+def test_a_generic_data_protocol_checks_presence_only() -> None:
+    """A structural value declares no arguments to compare."""
+    T = tx.TypeVar("T")
+
+    @tx.runtime_checkable
+    class HasItem(tx.Protocol[T]):
+        item: T
+
+    class Holder:
+        pass
+
+    held = Holder()
+    held.item = "not an int"
+    assert ishintstance(held, HasItem[int]) is True
