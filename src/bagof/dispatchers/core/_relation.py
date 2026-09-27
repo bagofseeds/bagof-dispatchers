@@ -380,6 +380,18 @@ def _skippable_extra_hint(hint: tx.Any) -> bool:
     return hint is None or isinstance(hint, (str, tx.ForwardRef))
 
 
+def _is_any_hint(hint: tx.Any) -> bool:
+    """Whether a field / `extra_items` hint is `Any`, through its qualifiers.
+
+    Looks through the transparent qualifiers (`Required` / `NotRequired` /
+    `ReadOnly` / `Final` / `ClassVar`, via `normalise_hint`) and any
+    [`Annotated`][typing.Annotated] wrapper, then asks `_is_any`. An
+    `Any`-typed key or `extra_items` accepts every value, so it can never break
+    a base's contract and is treated as compatible.
+    """
+    return _is_any(unwrap(normalise_hint(hint), tx.Annotated))
+
+
 def _own_extra_policy(cls: tx.Any) -> tx.Tuple[str, tx.Any]:
     """The policy a class declares *itself*, ignoring what it inherits.
 
@@ -436,21 +448,22 @@ def _inherited_extra_policy(
     return "open", None, None
 
 
-def _own_declared_keys(cls: tx.Any) -> tx.FrozenSet[str]:
-    """The keys `cls` declares that none of its `TypedDict` bases declare."""
-    own = set(typeddict_field_hints(cls))
-    for base in _typeddict_bases(cls):
-        own -= set(typeddict_field_hints(base))
-    return frozenset(own)
-
-
 def _malformed_class_reason(cls: tx.Any) -> tx.Optional[str]:
-    """Why `cls` itself violates a base's PEP 728 policy, or `None`.
+    """Why `cls` violates a constrained base's PEP 728 contract, or `None`.
 
-    Reads `cls`'s own declaration and the policy it inherits, and reports the
-    first violation of the base's closed / `extra_items` contract. A closed
+    Reads `cls`'s own declaration and the policy it inherits from its nearest
+    closed / `extra_items` base, and reports the first key or policy that would
+    let a value of `cls` carry something that base refuses -- which the nominal
+    hint order would still call a sub-hint, so it would mis-dispatch. A closed
     base is read as `extra_items=Never` (it admits no extra key), so adding a
     key to it and adding an `extra_items`-incompatible key are the one check.
+
+    Every key `cls` carries -- from its own body **or any base**, not only the
+    keys it declares itself -- is checked against the constrained base: a key
+    the base does not declare, whose value type it does not admit, is a
+    dispatch-unsound diamond (a sibling open base contributing a key a closed
+    base would reject). An `Any`-typed key or `extra_items` accepts every
+    value, so it can never break the contract and is treated as compatible.
     """
     inherited, inherited_hint, base = _inherited_extra_policy(cls)
     if inherited == "open":
@@ -469,7 +482,11 @@ def _malformed_class_reason(cls: tx.Any) -> tx.Optional[str]:
             f"{'closed ' if inherited == 'closed' else ''}base {bname} "
             "with closed=False"
         )
-    if own == "typed" and not _skippable_extra_hint(own_hint):
+    if (
+        own == "typed"
+        and not _skippable_extra_hint(own_hint)
+        and not _is_any_hint(own_hint)
+    ):
         # Setting `extra_items` is allowed only when it narrows the inherited
         # one; against a closed base (Never) nothing but Never narrows.
         if not issubhint(own_hint, inherited_extra):
@@ -483,9 +500,10 @@ def _malformed_class_reason(cls: tx.Any) -> tx.Optional[str]:
                 f"base {bname}"
             )
     field_hints = typeddict_field_hints(cls)
-    for key in sorted(_own_declared_keys(cls)):
+    base_keys = set(typeddict_field_hints(base))
+    for key in sorted(set(field_hints) - base_keys):
         key_hint = field_hints.get(key)
-        if _skippable_extra_hint(key_hint):
+        if _skippable_extra_hint(key_hint) or _is_any_hint(key_hint):
             continue
         if not issubhint(key_hint, inherited_extra):
             if inherited == "closed":
@@ -521,15 +539,28 @@ def _typeddict_chain(td: tx.Any) -> tx.List[tx.Any]:
 
 
 def _malformed_typeddict_reason(td: tx.Any) -> tx.Optional[str]:
-    """Why a `TypedDict` `td` is malformed under PEP 728, or `None`.
+    """Why a `TypedDict` `td` would break dispatch soundness, or `None`.
 
-    A concrete `TypedDict` is *malformed* when it -- or any base in its chain
-    -- breaks a closed / `extra_items` contract that a type checker enforces:
-    it adds a key to a closed base, adds a key whose value type is not
-    compatible with a base's `extra_items`, widens a base's `extra_items`, or
-    reopens a closed base (with `extra_items=` or `closed=False`). For such a
-    class the nominal hint order disagrees with the value-level shape check, so
-    it is refused at registration rather than silently mis-dispatched.
+    This rejects a **dispatch-sound subset**, not everything a type checker
+    forbids: it names a `TypedDict` whose nominal hint order (`issubhint` /
+    `ishintstance` are nominal on a concrete `TypedDict`) would disagree with
+    the value-level shape check, breaking `v in Sub and Sub <= Base => v in
+    Base`. Such a class is refused at registration rather than left to
+    mis-dispatch. The shapes named are: a key added to a closed base, a key
+    whose value type a base's `extra_items` does not admit (including a key
+    from a sibling open base in a diamond), a widened `extra_items`, and a
+    reopened closed base (`extra_items=` or `closed=False`).
+
+    Two deviations from a type checker follow from resting on this library's
+    relation rather than PEP 728:
+
+    * **`Any` keys are accepted** -- an `Any`-typed key or `extra_items` admits
+      every value, so it can never carry something a base refuses (lenient
+      where a type checker may still object).
+    * **there is no numeric-tower promotion** -- `issubhint(int, float)` is
+      `#!python False`, so a key typed `int` under `extra_items=float` *is*
+      rejected, because a value-level check would genuinely mis-dispatch it
+      (stricter than a type checker, which accepts it under PEP 484 §Numeric).
 
     A well-formed `TypedDict` -- a plain subclass of a closed base, one that
     narrows `extra_items`, or a subclass of an open base -- returns `#!python

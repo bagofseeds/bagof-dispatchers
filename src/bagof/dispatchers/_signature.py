@@ -416,7 +416,9 @@ class Signature:
         for index, hint in enumerate(hints):
             name = f"_{index}"
             normalised = normalise_hint(hint)
-            _reject_malformed_typeddict(name, normalised)
+            _reject_malformed_typeddict(
+                name, normalised, subject=f"positional hint {index}"
+            )
             params[name] = Parameter(name, normalised, _POSITIONAL_ONLY)
         for name, hint in named_hints.items():
             normalised = normalise_hint(hint)
@@ -1321,7 +1323,9 @@ def _top_level_typeddicts(hint: tx.Any) -> tx.List[tx.Any]:
     The hint itself when it is a `TypedDict` (its
     [`Annotated`][typing.Annotated] wrapper stripped first), or each such
     member of a top-level [`Union`][typing.Union] /
-    [`Optional`][typing.Optional]. A `TypedDict` buried inside a container
+    [`Optional`][typing.Optional]. A parametrised generic `TypedDict`
+    (`#!python Movie[int]`) is read through its origin, so a malformed generic
+    used parametrised is still checked. A `TypedDict` buried inside a container
     (`#!python List[Movie]`) is *not* returned -- its shape is not what a value
     binds against at this slot.
     """
@@ -1331,25 +1335,39 @@ def _top_level_typeddicts(hint: tx.Any) -> tx.List[tx.Any]:
         for member in tx.get_args(hint):
             found.extend(_top_level_typeddicts(member))
         return found
-    return [hint] if is_typeddict(hint) else []
+    # A generic `TypedDict` used parametrised is a `_GenericAlias`, not a
+    # class, so read its origin (`Movie[int]` -> `Movie`) before the class
+    # check -- as the value-level TypedDict check resolves the origin too.
+    origin = safe_get_origin(hint) or hint
+    return [origin] if is_typeddict(origin) else []
 
 
 def _reject_malformed_typeddict(
-    name: str, hint: tx.Any, fn: tx.Any = None
+    name: str,
+    hint: tx.Any,
+    fn: tx.Any = None,
+    subject: tx.Optional[str] = None,
 ) -> None:
     """Refuse a parameter whose hint is a malformed `TypedDict` (PEP 728).
 
-    A `TypedDict` that breaks a closed / `extra_items` contract a type checker
-    enforces has a nominal hint order that disagrees with the value-level shape
-    check, so a method registered with it would mis-dispatch. It is refused at
-    registration with a message that names the parameter and the specific
-    violation. A well-formed `TypedDict`, and any other hint, is accepted.
+    A `TypedDict` whose nominal hint order disagrees with the value-level shape
+    check would make a method registered with it mis-dispatch, breaking `v in
+    Sub and Sub <= Base => v in Base`, so it is refused at registration with a
+    message that names the parameter and the specific violation. A well-formed
+    `TypedDict`, and any other hint, is accepted.
+
+    `subject` overrides how the slot is named in the message, for a synthetic
+    parameter with no user-facing name (`positional hint 0` rather than the
+    internal `'_0'`); otherwise the parameter name is shown.
     """
     for typeddict in _top_level_typeddicts(hint):
         reason = _malformed_typeddict_reason(typeddict)
         if reason is not None:
-            where = f" of {fn}" if fn is not None else ""
-            raise TypeError(f"{name!r}{where}: {reason}")
+            named = subject if subject is not None else repr(name)
+            where = ""
+            if fn is not None:
+                where = f" of {getattr(fn, '__name__', fn)}"
+            raise TypeError(f"{named}{where}: {reason}")
 
 
 def _has_two_open_runs(hint: tx.Any) -> bool:
