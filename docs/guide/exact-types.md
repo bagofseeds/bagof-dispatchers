@@ -19,5 +19,8 @@ any of its subclasses:
 'a boolean'
 ```
 
-To a static type checker, `Exact[int]` is indistinguishable from plain
-`int`.
+This is the reverse of the usual multiple-dispatch situation, where an
+overload written for a base class is meant to also serve its subclasses.
+`Exact` is for the times a handler written for a base type must not run on
+a more specific one instead. To a static type checker, `Exact[int]` is
+indistinguishable from plain `int`.
