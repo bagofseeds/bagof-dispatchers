@@ -61,8 +61,8 @@ else:
 
         `Exact` composes with [`Type`][typing.Type] and
         [`Hint`][bagof.dispatchers.Hint]. Placing `Exact` inside the
-        bracket flips that position's match from "a subtype of" to "this
-        type itself", so `#!python Type[Exact[int]]` matches the class
+        bracket narrows that position from matching a subtype to matching
+        the type itself, so `#!python Type[Exact[int]]` matches the class
         `#!python int` but not `#!python bool`, and
         `#!python Hint[Exact[int]]` matches the hint `#!python int` but
         not `#!python bool`. Writing `Exact` around the whole form instead,

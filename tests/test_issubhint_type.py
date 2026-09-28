@@ -76,6 +76,13 @@ def test_ishintstance_type_exact() -> None:
     assert ishintstance(bool, tx.Type[Exact[int]]) is False
 
 
+def test_ishintstance_type_exact_matches_a_bare_alias() -> None:
+    # `Type[Exact[List]]` compares its argument structurally, so the class
+    # `list` matches even though `List` is the spelling written.
+    assert ishintstance(list, tx.Type[Exact[tx.List]]) is True
+    assert ishintstance(dict, tx.Type[Exact[tx.List]]) is False
+
+
 def test_issubhint_type_any_and_union() -> None:
     assert issubhint(tx.Type[int], tx.Type[tx.Any]) is True
     assert issubhint(tx.Type[int], tx.Type[tx.Union[int, str]]) is True

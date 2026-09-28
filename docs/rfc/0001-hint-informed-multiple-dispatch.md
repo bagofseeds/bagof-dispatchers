@@ -200,7 +200,7 @@ entry marks a result worth double-checking against intuition.
 | `int ≤ Union` (bare) | False | a bare `Union`, `Literal`, or `Type`, with no arguments, means only "is one of these" in the abstract, and never actually applies to a value |
 | `Annotated[int,'x'] ≤ Annotated` (bare), `int ≤ Annotated` (bare) | True / **False** | *(0.2.0)* a bare `Annotated` super-hint is now structural: only an `Annotated` form is below it, where before it was opaque and accepted everything |
 | `type[Exact[C]] ≤ type[C]`, `type[C] ≤ type[Exact[C]]`, `type[Any]` accepts every class | True / **False** / — | `Exact` inside a `type[...]` position is the same identity leaf it is on its own, and `type[...]` now reads its argument through the full relation, so `type[Any]`, `type[Union[…]]` and `type[T]` all behave (§4) |
-| `Hint[bool] ≤ Hint[int]`, `int ≤ Hint[int]`, `Hint[int] ≤ object`, `Hint[Exact[int]] ≤ Hint[int]` | True / **False** / **False** / True | *(0.2.0)* `Hint[X]` describes type hints, not values: only another `Hint` form is ordered against it, covariantly by its argument, so no ordinary hint sits below it and nothing but `Any` sits above it; `Exact` inside narrows to the exact hint (§4) |
+| `Hint[bool] ≤ Hint[int]`, `int ≤ Hint[int]`, `Hint[int] ≤ object`, `Hint[Exact[int]] ≤ Hint[int]` | True / **False** / **False** / True | *(0.2.0)* `Hint[X]` describes type hints, not values: only another `Hint` form is ordered against it, covariantly by its argument, so no ordinary hint sits below it. Above it sit `Any`, a free `TypeVar`, a union that has a `Hint` member, and a wider `Hint` form (up to `Hint ≡ Hint[Any]`), but no ordinary class such as `object`; `Exact` inside narrows to the exact hint (§4) |
 | `issubhint(1, int)`, `issubhint(1, 1)`, `issubhint(int, 1)` | `TypeError` | *(0.2.0)* a non-hint on either side is a caller error, reported for the left argument first, the way `issubclass` rejects a non-class; a non-hint no longer reads as `Any` |
 
 The value-level check, `ishintstance`, never inspects a container's actual
@@ -1490,10 +1490,19 @@ insertion-ordered working set (`RELATION_CACHE_SIZE`, read at store time),
 evicting oldest-first exactly as the call cache does; reads are lock-free,
 and a lock guards only eviction, insertion, and the clear. It is emptied
 whenever `abc.get_cache_token()` changes, so a late `ABC.register` never
-leaves a stale answer, and an unhashable pair is simply answered without
-caching. `ishintstance` is not cached, since it reads a value whose
-identity is not a stable key. The relation cache only ever changes how fast
-an answer is reached, never the answer itself.
+leaves a stale answer; a result computed while such a change lands is
+dropped rather than stored, checked once more under the lock. Only ABC
+registration is watched, though, exactly as the standard library's own ABC
+caches watch it: mutating a class in a way the token does not track, such
+as adding a data member to a `Protocol` or editing a `TypedDict` after it
+has been compared, is not invalidated, and callers who do that must clear
+the cache themselves. An unhashable pair is simply answered without
+caching. On an interpreter whose `typing.Literal` equality merges distinct
+literals (Python 3.8 and 3.9.0), the cache is keyed by object identity so
+that two hints that compare equal but must dispatch differently are never
+collapsed onto one entry. `ishintstance` is not cached, since it reads a
+value whose identity is not a stable key. The relation cache only ever
+changes how fast an answer is reached, never the answer itself.
 
 Every rendered error names the full signature involved, such as
 `area(shape: !Circle, scale: float = 1.0) @ shapes.py:12`, with `/` and `*`
@@ -1685,8 +1694,10 @@ Each case below is covered by a dedicated test.
   `int ≤ Annotated` does not.
 - *(0.2.0)* `Hint[X]` dispatches on a hint passed as a value: a `Hint`
   form is ordered only against another `Hint` form, covariantly by its
-  argument, so no ordinary hint sits below it and nothing but `Any` sits
-  above it. `Hint[Exact[X]]` matches the exact hint `X` structurally, not
+  argument, so no ordinary hint sits below it, and above it sit only the
+  tops (`Any`, a free `TypeVar`, a union with a `Hint` member) and a wider
+  `Hint` form up to `Hint ≡ Hint[Any]` -- never an ordinary class such as
+  `object`. `Hint[Exact[X]]` matches the exact hint `X` structurally, not
   merely something equivalent to it, so a free `TypeVar` does not match
   `Hint[Exact[Any]]`. `Hint[X]` is value-dependent, and the outer form
   `Exact[Hint[X]]` normalises to `Hint[Exact[X]]`.

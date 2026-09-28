@@ -72,11 +72,12 @@ class Hint(tx.Generic[_T_co]):
             )
         try:
             return super().__class_getitem__(item)
-        except TypeError:  # pragma: no cover  -- accepted from 3.14
-            # A bare special form (`Hint[Union]`, `Hint[Literal]`), which
-            # `typing._type_check` refuses before 3.14: build the alias
-            # directly. From 3.14 on the subscription accepts it, so this
-            # fallback is only reached on the earlier interpreters.
+        except TypeError:  # pragma: no cover  -- reached only before 3.10
+            # A bare special form (`Hint[Union]`, `Hint[Literal]`) that the
+            # Generic subscription refuses on the oldest interpreters (Python
+            # 3.8): build the alias directly. Python 3.10 and later accept a
+            # bare special form here, so this fallback is reached only before
+            # 3.10.
             return _GENERIC_ALIAS(cls, (item,))
 
 

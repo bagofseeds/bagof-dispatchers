@@ -18,8 +18,10 @@ def test_hint_of_a_class() -> None:
 
 
 def test_hint_of_a_bare_special_form_uses_the_alias_fallback() -> None:
-    # `typing._type_check` refuses a bare special form, so these go through
-    # the direct-alias fallback.
+    # A bare special form must build on every version. Before Python 3.10 the
+    # Generic subscription refuses one and the direct-alias fallback handles
+    # it; 3.10 and later accept it through the ordinary path. Either way the
+    # result is the same alias.
     for form in (tx.Union, tx.Literal, tx.Annotated):
         alias = Hint[form]
         assert tx.get_origin(alias) is Hint
@@ -96,6 +98,15 @@ def test_hint_of_exact_matches_a_bare_alias_and_its_origin() -> None:
     assert ishintstance(list, Hint[Exact[list]]) is True
     assert ishintstance(tx.List, Hint[Exact[list]]) is True
     assert ishintstance(dict, Hint[Exact[list]]) is False
+
+
+def test_hint_of_exact_never_matches_both_bottom_spellings() -> None:
+    # `Never` and `NoReturn` are one bottom, so either matches the other's
+    # `Hint[Exact[...]]`.
+    assert ishintstance(tx.Never, Hint[Exact[tx.Never]]) is True
+    assert ishintstance(tx.NoReturn, Hint[Exact[tx.Never]]) is True
+    assert ishintstance(tx.Never, Hint[Exact[tx.NoReturn]]) is True
+    assert ishintstance(int, Hint[Exact[tx.Never]]) is False
 
 
 # --- value level -------------------------------------------------------

@@ -58,6 +58,30 @@ than `Hint[Union]`, it wins. The match on `Exact` is by the exact hint, not
 by mere equivalence, so a free `TypeVar`, which accepts the same values as
 `Any` without being the hint `Any`, does not match `Hint[Exact[Any]]`.
 
+## Writing a catch-all
+
+Use `Hint[Any]`, not `object`, as the fallback overload for hint dispatch.
+A `Hint` form is deliberately incomparable with an ordinary class, so an
+`object` overload is neither more nor less specific than a `Hint[X]` one; a
+call matching both then has no most specific method and dispatch reports an
+ambiguity. `Hint[Any]` sits above every other `Hint` form, so a more
+specific `Hint[X]` always wins over it and the fallback is only reached when
+nothing else applies.
+
+```pycon
+>>> from typing import Any
+>>> @dispatch
+... def classify(h: Hint[int]) -> str:
+...     return "int-like"
+>>> @dispatch
+... def classify(h: Hint[Any]) -> str:
+...     return "some other hint"
+>>> classify(bool)
+'int-like'
+>>> classify(str)
+'some other hint'
+```
+
 ## Checking whether a value is a hint
 
 A function that dispatches on hints often needs to know first whether it

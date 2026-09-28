@@ -399,6 +399,9 @@ def test_bare_annotated_super_hint_is_structural() -> None:
     assert issubhint(int, tx.Annotated) is False
     assert issubhint(tx.Annotated[int, "meta"], tx.Annotated) is True
     assert issubhint(tx.Annotated, tx.Annotated) is True
+    # `Exact[C]`, though built from `Annotated`, is a leaf of its own and is
+    # not caught by a bare `Annotated`.
+    assert issubhint(Exact[int], tx.Annotated) is False
 
 
 def test_bare_optional_normalises_to_bare_union() -> None:
