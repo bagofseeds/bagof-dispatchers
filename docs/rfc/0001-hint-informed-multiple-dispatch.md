@@ -10,9 +10,9 @@ icon: fontawesome/solid/file-lines
 This document is the design record for the dispatch engine: the subtype
 relation between type hints, the rule that decides which registered method a
 call selects, and the corner cases the hint vocabulary forces a position on.
-Citations name a source without quoting it verbatim: [[PEP 483]] and
-[[PEP 484]] for the typing specification, [[Julia]] for Julia's own
-multiple-dispatch semantics, and [[Wiki]] for background terminology.
+Citations name a source without quoting it verbatim: \\[[PEP 483]\] and
+\\[[PEP 484]\] for the typing specification, \\[[Julia]\] for Julia's own
+multiple-dispatch semantics, and \\[[Wiki]\] for background terminology.
 
 ---
 
@@ -86,7 +86,7 @@ discriminate on *which* type filled it, is out of scope.
 *Single dispatch* is the model behind Python's ordinary methods and
 [`functools.singledispatch`]: it chooses an implementation from the dynamic
 type of one argument. *Multiple dispatch* chooses from the dynamic types of
-several arguments at once [[Wiki]]. The dispatched name is a *generic
+several arguments at once \[[Wiki]\]. The dispatched name is a *generic
 function*; each registered implementation is a *method*; the methods
 *applicable* to a call are those whose parameter types accept the call's
 argument types; and the method actually chosen is the *most specific*
@@ -94,7 +94,7 @@ applicable one. Castagna, Ghelli and Longo formalised this in 1995 as
 overloaded functions with late binding, governed by a partial order over
 signatures.
 
-A type can be understood as the set of values it describes [[PEP 483]]: `t1` is
+A type can be understood as the set of values it describes \[[PEP 483]\]: `t1` is
 a subtype of `t2` when every value of `t1` is a value of `t2`, equivalently
 when every function accepting a `t2` also accepts a `t1`. For instance,
 `bool` is a subtype of `int`, which is a subtype of `object`. Hints other
@@ -103,17 +103,17 @@ below `Optional[int]`, and `Union[int, str]` is below `object`. The order is
 only partial: `int` and `str`, for instance, are incomparable.
 
 A method's parameter list is compared against a call's argument types as a
-tuple, position by position, and `Tuple` types are covariant [[PEP 483]]:
+tuple, position by position, and `Tuple` types are covariant \[[PEP 483]\]:
 `(bool, str)` is a subtype of `(int, str)`. This is why dispatch on
 arguments is covariant: a method's signature is a tuple type, and the
 method that wins is the one whose argument-tuple type is the smallest
-supertype of the call's own [[Julia]].
+supertype of the call's own \[[Julia]\].
 
 For a call `f(1, "a")`, whose argument types form the tuple `(int, str)`,
 every method whose parameter types accept that tuple is applicable.
 `(int, str)`, `(int, Any)`, `(Any, Any)`, and `(numbers.Real, str)` all
 qualify, and `(int, str)` is chosen because it is a subtype of every other
-applicable signature [[Julia]]. Definition order plays no part in the choice.
+applicable signature \[[Julia]\]. Definition order plays no part in the choice.
 
 The order need not have a unique smallest applicable element, and when it
 does not, the call is *ambiguous*. Given `g(x: float, y)` and
@@ -122,9 +122,9 @@ a subtype of the other, so the applicable set has two maximal elements and
 no minimum. This is a property of the two registrations, not of the call,
 and [Julia] raises `MethodError` rather than choosing between them, suggesting
 that the caller define the method that would resolve the intersection
-[[Julia]].
+\[[Julia]\].
 
-Dispatchers differ in how they handle this situation [[Wiki]]. [CLOS] resolves it
+Dispatchers differ in how they handle this situation \[[Wiki]\]. [CLOS] resolves it
 by argument precedence, comparing arguments left to right, and never reports
 an ambiguity. [Julia], [Dylan], and [Cecil] instead treat every argument
 symmetrically and raise. Among Python's own dispatch libraries,
@@ -191,16 +191,16 @@ entry marks a result worth double-checking against intuition.
 | `type[bool] < type[int] < type` | True | `type[C]` is covariant |
 | `List[int] ≤ Sequence[int]`, `List[int] ≤ Iterable` | True | ABC registration is honoured |
 | `Annotated[int,'x'] ≡ int` | True (both directions) | metadata is invisible to the relation except `Exact`, which is unwrapped and handled before delegating to the inner type |
-| `Callable[[int],str] ≤ Callable[[bool],str]`, and the reverse | True, False | parameters are compared contravariantly (a narrower parameter list makes a more permissive callable) and the return type covariantly |
-| `Callable[[int],R] < Callable[Concatenate[int,P],R] < Callable[P,R] ≡ Callable[...,R]` | True (a chain) | `...` and a bare `ParamSpec` sit at the top of the parameter-list order — they accept a callable of any signature — with a `Concatenate` prefix strictly between the top and a fully fixed list; ordering them this way keeps the relation transitive (§11.1) |
+| `Callable\[[int],str] ≤ Callable\[[bool],str]`, and the reverse | True, False | parameters are compared contravariantly (a narrower parameter list makes a more permissive callable) and the return type covariantly |
+| `Callable\[[int],R] < Callable[Concatenate[int,P],R] < Callable[P,R] ≡ Callable[...,R]` | True (a chain) | `...` and a bare `ParamSpec` sit at the top of the parameter-list order — they accept a callable of any signature — with a `Concatenate` prefix strictly between the top and a fully fixed list; ordering them this way keeps the relation transitive (§11.1) |
 | `int ≤ P` (a `Protocol` that is not `runtime_checkable`), and any other query against `P` | False | Python's `issubclass` would raise here; the relation instead answers `False`, so an overload registered on `P` is reachable but never fires, and the call raises `NoMethodError` rather than the program crashing |
 | `list ≤ RP` (a runtime protocol) | True | protocols dispatch structurally |
 | `Named ≤ HasName`, `Record ≤ HasName`, `Ann ≤ HasName`, `CV ≤ HasName`, `Sub ≤ HasName`, `Other ≤ HasName` (`HasName` a runtime protocol declaring the data member `name: str`; `Named` sets `name = …` on the class; `Record` is a dataclass with a `name` field; `Ann` only annotates it; `CV` declares it `ClassVar[str] = …`; `Sub(HasName, Protocol)`; `Other` an unrelated protocol with the same member) | **True** / **True** / **True** / False / **True** / False | Python's own `issubclass` refuses to answer here; the relation instead asks whether the class declares the member as the *kind* the protocol declares it — an instance variable or a class variable — the way mypy and pyright both read it, and the value level counts a declared member on every instance, so the order stays sound (§2.3) |
 | `dict ≤ TD`, `TD ≤ dict`, `TD ≤ Mapping` | False / True / True | a `TypedDict` orders correctly at the hint level |
 | `int ≤ Union` (bare) | False | a bare `Union`, `Literal`, or `Type`, with no arguments, means only "is one of these" in the abstract, and never actually applies to a value |
 | `Annotated[int,'x'] ≤ Annotated` (bare), `int ≤ Annotated` (bare) | True / **False** | *(0.2.0)* a bare `Annotated` super-hint is now structural: only an `Annotated` form is below it, where before it was opaque and accepted everything |
-| `type[Exact[C]] ≤ type[C]`, `type[C] ≤ type[Exact[C]]`, `type[Any]` accepts every class | True / **False** / — | `Exact` inside a `type[...]` position is the same identity leaf it is on its own, and `type[...]` now reads its argument through the full relation, so `type[Any]`, `type[Union[…]]` and `type[T]` all behave (§4) |
-| `Hint[bool] ≤ Hint[int]`, `int ≤ Hint[int]`, `Hint[int] ≤ object`, `Hint[Exact[int]] ≤ Hint[int]` | True / **False** / **False** / True | *(0.2.0)* `Hint[X]` describes type hints, not values: only another `Hint` form is ordered against it, covariantly by its argument, so no ordinary hint sits below it. Above it sit `Any`, a free `TypeVar`, a union that has a `Hint` member, and a wider `Hint` form (up to `Hint ≡ Hint[Any]`), but no ordinary class such as `object`; `Exact` inside narrows to the exact hint (§4) |
+| `type[Exact[C]\] ≤ type[C]`, `type[C] ≤ type[Exact[C]\]`, `type[Any]` accepts every class | True / **False** / — | `Exact` inside a `type[...]` position is the same identity leaf it is on its own, and `type[...]` now reads its argument through the full relation, so `type[Any]`, `type[Union[…]\]` and `type[T]` all behave (§4) |
+| `Hint[bool] ≤ Hint[int]`, `int ≤ Hint[int]`, `Hint[int] ≤ object`, `Hint[Exact[int]\] ≤ Hint[int]` | True / **False** / **False** / True | *(0.2.0)* `Hint[X]` describes type hints, not values: only another `Hint` form is ordered against it, covariantly by its argument, so no ordinary hint sits below it. Above it sit `Any`, a free `TypeVar`, a union that has a `Hint` member, and a wider `Hint` form (up to `Hint ≡ Hint[Any]`), but no ordinary class such as `object`; `Exact` inside narrows to the exact hint (§4) |
 | `issubhint(1, int)`, `issubhint(1, 1)`, `issubhint(int, 1)` | `TypeError` | *(0.2.0)* a non-hint on either side is a caller error, reported for the left argument first, the way `issubclass` rejects a non-class; a non-hint no longer reads as `Any` |
 
 The value-level check, `ishintstance`, does not look at the values held
@@ -218,9 +218,9 @@ Box[str]`. `GL[int]()`, for `class GL(list[T])`, records `GL[int]` and is
 not `in list[str]`, and an instance of `class Child(List[int])` is not `in
 List[float]`. `Box()`, a base class with a free `T`
 (`class C(List[T])`), and a value that only declares `Any`, all stay
-shallow. `print in Callable[[int],str]` is True: a callable's own signature
+shallow. `print in Callable\[[int],str]` is True: a callable's own signature
 is never inspected, and a `ParamSpec` is never solved from a value.
-`True in Literal[1]` is False ([[PEP 586]]); `1 in T` is True; `'x' in TB` is
+`True in Literal[1]` is False (\[[PEP 586]\]); `1 in T` is True; `'x' in TB` is
 False (for `TB` bound by `int`). `v in HasName` is True exactly when `v` has
 a `name`, set on the instance or declared by its class, and False
 otherwise, so two instances of the same class can genuinely differ.
@@ -229,7 +229,7 @@ A `Hint[X]` is checked at the value level against the hint passed as a
 value: `int in Hint[int]` and `bool in Hint[int]` are True, `str in
 Hint[int]` is False, and `1 in Hint[int]` is False because `1` is not a
 hint at all. `Union[int, str] in Hint[Union]` is True, and `Union in
-Hint[Exact[Union]]` is True while `Union[int, str] in Hint[Exact[Union]]`
+Hint[Exact[Union]\]` is True while `Union[int, str] in Hint[Exact[Union]\]`
 is False. Because a `Hint` matches on the value rather than on its Python
 type, the call cache keys such an argument on the hint itself.
 
@@ -607,7 +607,7 @@ one-to-one with parameters, also stays shallow.
 Where a value does carry a declared parametrisation, the comparison follows
 the specification's variance rules exactly, which is stricter than the
 shallow check in an invariant position. `Box[int]()` no longer matches
-`Box[object]`, `Box[Union[int, str]]`, or `Box[Optional[int]]`, and an
+`Box[object]`, `Box[Union[int, str]\]`, or `Box[Optional[int]\]`, and an
 instance of `class Strs(List[str])` no longer matches `List[object]`,
 though it still matches `List[Any]`, plain `list`, and the covariant
 `Sequence[object]`.
@@ -907,7 +907,7 @@ at both levels, so an overload registered on it can never match a call.
 | unbound `T` | any value (`T` behaves as `Any`) | `Any` |
 | bound by `B` | an instance of `B` | `B` |
 | constrained to `(C1, C2)` | an instance of one `Ci` (`bool` solves as `int`) | `Union[C1, C2]` |
-| carrying a `default=` ([[PEP 696]]) | as above — the default is a static-checker fallback and plays no role at runtime | as above |
+| carrying a `default=` (\[[PEP 696]\]) | as above — the default is a static-checker fallback and plays no role at runtime | as above |
 
 The origin of a TypeVar does not matter to dispatch: a legacy
 `tx.TypeVar(...)`, a variance-flagged `bagof.hints.typevars.*` variable, and
@@ -1042,12 +1042,12 @@ one run of that same `Ts`, solved jointly with every `Tuple[..., *Ts]` slot
 elsewhere in the signature. So `(t: Tuple[*Ts], *args: *Ts)` applies to
 `resolve(Tuple[int, str], int, str)` but not to `resolve(Tuple[int])`,
 since the empty `*args` run there disagrees with `(int,)`. A
-`Callable[[int, *Ts], R]` parameter list rides the same open-tail machinery
+`Callable\[[int, *Ts], R]` parameter list rides the same open-tail machinery
 `ParamSpec` uses, with its own `*Ts` tail solved by that machinery, keyed
 separately from any tuple run of the same `Ts` elsewhere. Only a top-level,
 landed `Tuple` or `Callable` joins a group this way. A `*Ts` nested inside
 another hint does not, nor does a `*Ts` in the middle of a `Callable`
-parameter list followed by a fixed suffix — `Callable[[int, *Ts, str], R]`
+parameter list followed by a fixed suffix — `Callable\[[int, *Ts, str], R]`
 degrades to an open `Concatenate[int, P]` shape instead. `*Ts` never enters the
 repeated-TypeVar specificity tie-break above. It is not a `TypeVar` at all,
 deliberately the opposite of how `*args: T` behaves, so `*args: *Ts` against
@@ -1136,25 +1136,25 @@ otherwise depend on `bagof.dispatchers` ever needs it.
 *(0.2.0)* `Exact` composes with `Type[…]` and with `Hint[…]` (§6) under one
 rule: placing `Exact` **inside** the bracket flips that position's match
 from subtype to identity, while `Exact` around the **whole** form means the
-same thing and is normalised to the inner spelling. `Exact[Type[int]]`
-normalises to `Type[Exact[int]]`, `Exact[Hint[int]]` to `Hint[Exact[int]]`,
+same thing and is normalised to the inner spelling. `Exact[Type[int]\]`
+normalises to `Type[Exact[int]\]`, `Exact[Hint[int]\]` to `Hint[Exact[int]\]`,
 and a bare `Exact[Type]` to `Exact[type]`.
 
 The leaf rules then compose automatically, because both `type[…]` and
-`Hint[…]` compare their argument through `issubhint`. So `type[Exact[C]]` is
+`Hint[…]` compare their argument through `issubhint`. So `type[Exact[C]\]` is
 a leaf below `type[C]` exactly as `Exact[C]` is a leaf below `C`:
-`issub(type[Exact[C]], type[C])` is true, `issub(type[C], type[Exact[C]])`
-is false, and `issub(type[Exact[C1]], type[Exact[C2]])` holds only when
-`C1` and `C2` are the same class. `Hint[Exact[X]]` behaves the same way
-within the `Hint` order. At the value level, `type[Exact[C]]` matches a
-class `v` only when `v is C`, and `Hint[Exact[X]]` matches a hint only when
+`issub(type[Exact[C]\], type[C])` is true, `issub(type[C], type[Exact[C]\])`
+is false, and `issub(type[Exact[C1]\], type[Exact[C2]\])` holds only when
+`C1` and `C2` are the same class. `Hint[Exact[X]\]` behaves the same way
+within the `Hint` order. At the value level, `type[Exact[C]\]` matches a
+class `v` only when `v is C`, and `Hint[Exact[X]\]` matches a hint only when
 it is structurally `X` itself, judged by identity of spelling rather than
 by equivalence, so a free `TypeVar` — equivalent to `Any` but not the hint
-`Any` — does not match `Hint[Exact[Any]]`.
+`Any` — does not match `Hint[Exact[Any]\]`.
 
 Reading `type[…]`'s argument through the full relation also fixes the forms
 that were degenerate before: `type[Any]` now accepts every class,
-`type[Union[…]]` accepts a class in the union, and `type[T]` for a free
+`type[Union[…]\]` accepts a class in the union, and `type[T]` for a free
 TypeVar accepts every class.
 
 ---
@@ -1381,7 +1381,7 @@ Forward references are handled the way `bagof.magic._resolve._Deferred`
 already does: a raw annotation that raises `NameError` or `TypeError` when
 first read is kept as-is and retried on the function's first dispatch; if
 it is still unresolvable then, the error names the function and the
-parameter. On Python 3.14 and its lazy annotations ([[PEP 649]]/[[PEP 749]]), the
+parameter. On Python 3.14 and its lazy annotations (\[[PEP 649]\]/\[[PEP 749]\]), the
 resolution order is `tx.get_type_hints(include_extras=True)` first, then
 `annotationlib.get_annotations(fn, format=Format.FORWARDREF)`, and finally
 the raw `__annotations__` with deferral.
@@ -1689,14 +1689,14 @@ Each case below is covered by a dedicated test.
 - The `Tuple[X, ...]` / `Tuple[X, Y]` / `tuple` chain orders as expected;
   items are never inspected; `Tuple[()]` is valid.
 - `Callable` parametrisations order by contravariant parameters and
-  covariant return; the full chain `Callable[[int], R] <
+  covariant return; the full chain `Callable\[[int], R] <
   Callable[Concatenate[int, P], R] < Callable[P, R] ≡ Callable[..., R]`
   holds (§11.1); a repeated `ParamSpec` is solved by greatest element at
   the hint level, and shallowly at the value level.
 - `type[X]` is value-dependent; `type[bool] < type[int] < type`.
   *(0.2.0)* `type[X]` reads its argument through the full relation, so
-  `type[Any]` accepts every class, `type[Union[…]]` accepts a class in the
-  union, and `type[Exact[C]]` is an identity leaf below `type[C]`.
+  `type[Any]` accepts every class, `type[Union[…]\]` accepts a class in the
+  union, and `type[Exact[C]\]` is an identity leaf below `type[C]`.
 - `Annotated` metadata other than `Exact` is invisible
   (`Annotated[X, ...] ≡ X`); applying `Exact` to a non-class raises
   `TypeError`. *(0.2.0)* A bare, unsubscripted `Annotated` super-hint is
@@ -1707,10 +1707,10 @@ Each case below is covered by a dedicated test.
   argument, so no ordinary hint sits below it, and above it sit only the
   tops (`Any`, a free `TypeVar`, a union with a `Hint` member) and a wider
   `Hint` form up to `Hint ≡ Hint[Any]` -- never an ordinary class such as
-  `object`. `Hint[Exact[X]]` matches the exact hint `X` structurally, not
+  `object`. `Hint[Exact[X]\]` matches the exact hint `X` structurally, not
   merely something equivalent to it, so a free `TypeVar` does not match
-  `Hint[Exact[Any]]`. `Hint[X]` is value-dependent, and the outer form
-  `Exact[Hint[X]]` normalises to `Hint[Exact[X]]`.
+  `Hint[Exact[Any]\]`. `Hint[X]` is value-dependent, and the outer form
+  `Exact[Hint[X]\]` normalises to `Hint[Exact[X]\]`.
 - *(0.2.0)* `issubhint` and `ishintstance` reject a non-hint the way
   `issubclass` and `isinstance` do: a non-hint on either side of
   `issubhint`, or as the hint argument of `ishintstance`, raises
@@ -1765,11 +1765,11 @@ Each case below is covered by a dedicated test.
   Tuple[Any, ...]`; a repeated `*Ts` at several top-level `Tuple` slots is
   solved jointly by greatest element at the hint level (value-level
   solving remains out of scope); two open runs in one parameter list raise
-  `TypeError` at registration; `Tuple[int, *Tuple[str, int]]` flattens.
+  `TypeError` at registration; `Tuple[int, *Tuple[str, int]\]` flattens.
 - The `Callable[P, R]` family orders as described in §2.1 and §11.1, with
   `...`/bare `P` at the top and a `Concatenate` prefix strictly between; a
   repeated `P` is solved jointly by greatest element at the hint level;
-  `Callable[[int, *Ts], R]` rides the open-tail machinery.
+  `Callable\[[int, *Ts], R]` rides the open-tail machinery.
 - `*args: P.args` and `*args: *Ts` are both read as an `Any` tail; a bare
   `Ts`/`P`, or a top-level `Unpack[Ts]`, used as a parameter annotation
   raises `TypeError` at registration; `Unpack[TD]` on `**kwargs` is
@@ -1937,8 +1937,8 @@ the `_compat.spellings(name)` helper.
 | [PEP 695] `type X = …` (`TypeAliasType`) | 3.12 | 4.6+ | `resolve_alias` detects one by duck type (`__value__` plus `__type_params__`) or either spelling, returns `__value__`, and substitutes arguments for a subscripted `G[int]` through typing's own `__getitem__`; resolution is recursive, with a cycle guard, and runs at the top of `issubhint`/`ishintstance` and from `normalise_hint` (not from `unwrap`). **Supported.** |
 | [PEP 613] `TypeAlias` | 3.10 | 4.x | The bound value is an ordinary hint; the bare marker itself falls under the unknown-form rule. **Supported (trivially).** |
 | [PEP 696] defaults | 3.13 | 4.4+ | Only the bound or constraints are read, through `_typevar_upper`; the default is ignored. **Supported.** |
-| [PEP 646] `TypeVarTuple`/`Unpack`/`*Ts` | 3.11 | 4.1+ | `Unpack[Ts]` inside `Tuple[...]` is an open run of zero or more `Any`, split into prefix and suffix by the tuple-shape classifier; a fixed prefix or suffix captures the rest, a longer one is stricter, and `Tuple[*Ts] ≡ Tuple[Any, ...]`; a repeated `*Ts` at top-level `Tuple` slots (and in `Callable[[int, *Ts], R]`, through the open-tail path) is solved jointly by greatest element at the hint level; `*args: *Ts` reads as an `Any` tail sharing that same run; a bare `Ts` or a top-level `Unpack[Ts]` used as a parameter, and two open runs in one list, both raise `TypeError` at registration. Value-level solving is deferred (§10); a `*Ts` in the middle of a list followed by a fixed suffix degrades to an open shape; `Unpack[Ts]` on `**kwargs`, and [PEP 696] defaults on a `TypeVarTuple`, are both out of scope. **Supported at the hint level.** |
-| [PEP 612] `ParamSpec`/`Concatenate` | 3.10 | 4.x | `Callable[[int], R] < Callable[Concatenate[int, P], R] < Callable[P, R] ≡ Callable[..., R]`, with `...`/bare `P` at the top of the parameter-list order (§2.1); `Concatenate` is a contravariant prefix, and a longer prefix is stricter; a repeated `P` is solved jointly by greatest element at the hint level; `*args: P.args` reads as an `Any` tail; a bare `P` or `Concatenate` used as a parameter raises `TypeError` at registration. Value-level solving is deferred (§10). **Supported at the hint level.** |
+| [PEP 646] `TypeVarTuple`/`Unpack`/`*Ts` | 3.11 | 4.1+ | `Unpack[Ts]` inside `Tuple[...]` is an open run of zero or more `Any`, split into prefix and suffix by the tuple-shape classifier; a fixed prefix or suffix captures the rest, a longer one is stricter, and `Tuple[*Ts] ≡ Tuple[Any, ...]`; a repeated `*Ts` at top-level `Tuple` slots (and in `Callable\[[int, *Ts], R]`, through the open-tail path) is solved jointly by greatest element at the hint level; `*args: *Ts` reads as an `Any` tail sharing that same run; a bare `Ts` or a top-level `Unpack[Ts]` used as a parameter, and two open runs in one list, both raise `TypeError` at registration. Value-level solving is deferred (§10); a `*Ts` in the middle of a list followed by a fixed suffix degrades to an open shape; `Unpack[Ts]` on `**kwargs`, and [PEP 696] defaults on a `TypeVarTuple`, are both out of scope. **Supported at the hint level.** |
+| [PEP 612] `ParamSpec`/`Concatenate` | 3.10 | 4.x | `Callable\[[int], R] < Callable[Concatenate[int, P], R] < Callable[P, R] ≡ Callable[..., R]`, with `...`/bare `P` at the top of the parameter-list order (§2.1); `Concatenate` is a contravariant prefix, and a longer prefix is stricter; a repeated `P` is solved jointly by greatest element at the hint level; `*args: P.args` reads as an `Any` tail; a bare `P` or `Concatenate` used as a parameter raises `TypeError` at registration. Value-level solving is deferred (§10). **Supported at the hint level.** |
 | `NewType` | 3.5 native / 3.10 class-based | typing_extensions class on 3.8/3.9 | `resolve_newtype` follows `__supertype__` recursively, inside `normalise_hint`. **Supported.** |
 | `Never`/`NoReturn` | 3.11/3.6 | 4.1+ | The bottom type; a `Never` parameter makes its method never applicable — an explicit way to forbid a combination. **Supported.** |
 | `TypeGuard`/`TypeIs` | 3.10/3.13 | 4.x/4.10+ | Treated as `bool`. **Supported.** |
@@ -2017,7 +2017,7 @@ on any currently supported Python, can raise its way out of the relation.
 - On Python 3.13, [PEP 696] defaults, `TypeIs`, and `ReadOnly` all become
   native; `Annotated` is no longer a class; the free-threaded build exists,
   which is why registration takes an explicit lock.
-- From Python 3.14 onward, lazy annotations ([[PEP 649]]/[[PEP 749]]) are read through
+- From Python 3.14 onward, lazy annotations (\[[PEP 649]\]/\[[PEP 749]\]) are read through
   `annotationlib` with `Format.FORWARDREF`; `Union` becomes a class, with
   `types.UnionType is typing.Union`. Anything newer than this is covered by
   the opaque rule, the structural special-form fallback, and `spellings()`,
