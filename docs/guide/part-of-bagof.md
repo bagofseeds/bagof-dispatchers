@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/sitemap
----
-
 # Part of `bagof`
 
 `bagof.dispatchers` is the low-level root of the `bagof` family of packages.

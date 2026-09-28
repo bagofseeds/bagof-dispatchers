@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/triangle-exclamation
----
-
 # When two overloads are equally specific
 
 When two registered overloads both accept a call and neither is more

@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/rocket
----
-
 # Getting started
 
 Register each overload by decorating its `def` with

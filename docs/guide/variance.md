@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/arrows-left-right
----
-
 # Variance
 
 When two overloads differ only in the type argument of a generic, which one

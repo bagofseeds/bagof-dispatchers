@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/bullseye
----
-
 # Exact types
 
 By default, an overload registered for `int` also accepts `bool`, because

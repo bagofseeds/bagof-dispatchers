@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/database
----
-
 # Your own registry
 
 [`dispatch`][bagof.dispatchers.dispatch] is a ready-made registry that keeps

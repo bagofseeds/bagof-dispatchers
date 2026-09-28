@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/hashtag
----
-
 # Dispatching on numbers
 
 Dispatch matches the runtime type of a value, so an overload annotated
