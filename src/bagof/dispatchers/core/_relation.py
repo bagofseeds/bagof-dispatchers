@@ -16,9 +16,11 @@ import functools
 import inspect
 import re
 import sys
+import threading
 import types
 import warnings
 import weakref
+from abc import get_cache_token
 from collections import abc
 
 # dependencies
@@ -1543,6 +1545,48 @@ def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
     return True
 
 
+# --- the issubhint result cache ----------------------------------------
+#
+# `issubhint` is called densely during selection, and the same pair of hints
+# recurs across a plan's many comparisons, so its answer is memoised here.
+# Internal recursion goes back through the public `issubhint`, so a nested
+# comparison is cached at every level, not only at the top. `ishintstance` is
+# not cached: it reads a value, and a value's own identity is not a stable key.
+#
+# The cache is keyed by `(hint, superhint)` and holds a bounded, insertion-
+# ordered working set, evicting the oldest entry once full, the same shape as
+# `_function._store_call`. Reads are lock-free; the lock guards only eviction,
+# insertion, and the clear on cache-token change. An unhashable pair simply
+# goes uncached. Because an ABC `register` can change what `issubclass` (and so
+# the relation) answers, the cache is emptied whenever `abc.get_cache_token`
+# reports a change, exactly as `functools.lru_cache`-based ABC caches do.
+
+RELATION_CACHE_SIZE = 4096
+"""The most `(hint, superhint)` results the relation cache holds at once.
+
+This is read at store time, so lowering it takes effect on the next store
+and raising it lets the cache grow again; it is a module attribute so that
+a caller can tune it.
+"""
+
+_RELATION_CACHE = {}  # type: tx.Dict[tx.Any, bool]
+_RELATION_TOKEN = None  # type: tx.Any
+_RELATION_LOCK = threading.Lock()
+_MISS = object()
+
+
+def clear_relation_cache() -> None:
+    """Empty the `issubhint` result cache.
+
+    The cache never changes an answer, only its speed, so clearing it is
+    always safe. It is provided for tests that need a cold cache; ordinary
+    callers never need it, since an ABC registration invalidates the cache
+    on its own.
+    """
+    with _RELATION_LOCK:
+        _RELATION_CACHE.clear()
+
+
 def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     """Report whether `hint` is a sub-hint of `superhint`.
 
@@ -1550,6 +1594,14 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     describes is also described by the second, which makes `issubhint`
     the type-level counterpart of asking whether every instance of one
     class is also an instance of another.
+
+    Both arguments must be type hints. `issubhint` mimics
+    [`issubclass`][], so a value that is not a hint raises a
+    [`TypeError`][] rather than being read as a catch-all, and the error
+    names the offending argument, the left one first when both are at
+    fault. A bare string is accepted on the left, where it is a forward
+    reference this relation reports as unknown, but rejected on the right,
+    where it cannot be resolved against any namespace.
 
     Where a hint is generic, each of its argument positions is compared
     according to the variance that generic declares for it, following
@@ -1625,7 +1677,34 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
         # A bare `str` super-hint is an unresolvable forward reference, so it
         # keeps raising even though a string counts as a hint on the left.
         raise TypeError(_not_a_hint_message(superhint))
-    return _issubhint(hint, superhint)
+
+    global _RELATION_TOKEN
+    token = get_cache_token()
+    if token != _RELATION_TOKEN:
+        # An ABC `register` (or the first call) may have changed what the
+        # relation answers, so drop every remembered result and note the token.
+        with _RELATION_LOCK:
+            _RELATION_CACHE.clear()
+            _RELATION_TOKEN = token
+
+    key = (hint, superhint)
+    try:
+        hit = _RELATION_CACHE.get(key, _MISS)
+    except TypeError:
+        # An unhashable hint cannot key the cache; answer it without caching.
+        return _issubhint(hint, superhint)
+    if hit is not _MISS:
+        return hit
+
+    result = _issubhint(hint, superhint)
+    with _RELATION_LOCK:
+        if (
+            key not in _RELATION_CACHE
+            and len(_RELATION_CACHE) >= RELATION_CACHE_SIZE
+        ):
+            _RELATION_CACHE.pop(next(iter(_RELATION_CACHE)))
+        _RELATION_CACHE[key] = result
+    return result
 
 
 def _issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
