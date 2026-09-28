@@ -4,10 +4,12 @@
 functions separate per module, so the same name defined in two different
 modules produces two independent functions. A
 [`Dispatcher`][bagof.dispatchers.Dispatcher] built directly behaves
-differently: it keys a function by its qualified name alone, so every module
-that registers that name into the same `Dispatcher` instance extends a
-single, shared function. Build one when several modules need to contribute
-overloads to what is conceptually one generic function.
+differently: it keys a function by its qualified name alone, so every
+module that registers that name into the same `Dispatcher` instance extends
+a single, shared function. Build one when several modules need to
+contribute overloads to what is conceptually one generic function.
+
+## Naming a function before it exists
 
 A function held by a `Dispatcher` is reached through its `functions`
 namespace, which get-or-creates: naming a function that does not exist yet
@@ -27,9 +29,11 @@ True
 'int:7'
 ```
 
-The `functions` namespace exposes no methods of its own, so a function may be
-given any name, including one that would otherwise collide with a namespace
-method, such as `register`, `items`, or `map`:
+## Names that would otherwise collide
+
+The `functions` namespace exposes no methods of its own, so a function may
+be given any name, including one that would otherwise collide with a
+namespace method, such as `register`, `items`, or `map`:
 
 ```pycon
 >>> registry = Dispatcher()
@@ -45,10 +49,13 @@ True
 
 Attribute access ignores names beginning with an underscore, so a REPL or a
 tool probing for dunder attributes never mints an empty function by
-accident. Item access does not apply that rule, so `registry.functions["_x"]`
-still names a function whose name starts with an underscore. This distinction
-matters for anonymous overloads too: registering `@dispatch def _` or a
-`lambda` directly keys the function by the literal name `"_"` or
-`"<lambda>"`, so several such registrations on the same registry collapse
-into a single function instead of staying independent. Give each overload a
-real name, or overlay hints onto a named `def`, to avoid the collision.
+accident. Item access does not apply that rule, so
+`registry.functions["_x"]` still names a function whose name starts with an
+underscore.
+
+This distinction matters for anonymous overloads too. Registering
+`@dispatch def _` or a `lambda` directly keys the function by the literal
+name `"_"` or `"<lambda>"`. Several such registrations on the same registry
+therefore collapse into a single function instead of staying independent.
+Give each overload a real name, or overlay hints onto a named `def`, to
+avoid the collision.

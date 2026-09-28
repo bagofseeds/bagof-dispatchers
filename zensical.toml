@@ -16,13 +16,15 @@ nav = [
     {"Variance" = "guide/variance.md"},
     {"Your own registry" = "guide/registries.md"},
     {"Without a def" = "guide/without-a-def.md"},
+    {"Gotchas" = "guide/gotchas.md"},
     {"Part of bagof" = "guide/part-of-bagof.md"},
   ]},
-  {"Design" = "rfc/0001-hint-informed-multiple-dispatch.md"},
+  {"design" = "rfc/0001-hint-informed-multiple-dispatch.md"},
   {"API" = [
     "api/index.md",
     {"core" = "api/core.md"},
   ]},
+  {"Comparison" = "comparison.md"},
 ]
 
 # The site_name is shown in the page header and the browser window title

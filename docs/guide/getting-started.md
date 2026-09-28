@@ -1,10 +1,10 @@
 # Getting started
 
 Register each overload by decorating its `def` with
-[`dispatch`][bagof.dispatchers.dispatch]. A second `def` that shares the name
-of an earlier one does not replace it; it adds another overload to the same
-function, and a call runs whichever overload most specifically matches the
-arguments:
+[`dispatch`][bagof.dispatchers.dispatch]. A second `def` that shares the
+name of an earlier one does not replace it. It adds another overload to the
+same function, and a call runs whichever overload most specifically matches
+the arguments:
 
 ```pycon
 >>> from bagof.dispatchers import dispatch
@@ -22,5 +22,11 @@ arguments:
 
 After both definitions, the name `area` refers to a single dispatched
 function rather than to either `def` on its own. `@dispatch` returns that
-function, so `area` keeps working as an ordinary callable, except that it now
-chooses among every overload registered under that name.
+function, so `area` keeps working as an ordinary callable, except that it
+now chooses among every overload registered under that name.
+
+A call whose arguments no overload accepts, or that matches two overloads
+equally well, raises a clear error instead of guessing. [When nothing
+matches](no-match.md) and [When two overloads are equally
+specific](ambiguous-overloads.md) show what those errors look like and how
+to resolve them.
