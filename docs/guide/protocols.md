@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/plug
----
-
 # Protocols
 
 A [`runtime_checkable`][typing.runtime_checkable] protocol describes a shape

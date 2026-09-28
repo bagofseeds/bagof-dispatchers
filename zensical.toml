@@ -18,11 +18,11 @@ nav = [
     {"Without a def" = "guide/without-a-def.md"},
     {"Part of bagof" = "guide/part-of-bagof.md"},
   ]},
+  {"design" = "rfc/0001-hint-informed-multiple-dispatch.md"},
   {"API" = [
     "api/index.md",
     {"core" = "api/core.md"},
   ]},
-  {"RFC" = "rfc/0001-hint-informed-multiple-dispatch.md"},
 ]
 
 # The site_name is shown in the page header and the browser window title

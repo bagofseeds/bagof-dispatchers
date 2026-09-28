@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/list-ul
----
-
 # Registering overloads
 
 `@dispatch` reads its signature from the `def` it decorates, which covers the

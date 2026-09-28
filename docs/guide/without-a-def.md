@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/table
----
-
 # Without a `def`
 
 When the overloads already exist as a plain mapping from type to callable,

@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/circle-xmark
----
-
 # When nothing matches
 
 When no registered overload accepts a call, dispatch raises
