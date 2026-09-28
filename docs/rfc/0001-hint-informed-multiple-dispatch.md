@@ -160,6 +160,7 @@ changes it, and the change is called out.
 | `IntBox ≤ Box[int]`, `Sub[bool] ≤ Box[bool]`, `Flip[int,str] ≤ Pair[str,int]`, `IntBox ≤ Box[str]` | **True** / T / T / F | differing origins: the sub-hint is re-expressed through the bases its class was written with — `class IntBox(Box[int])`, `class Sub(Box[T])`, `class Flip(Pair[B, A], Generic[A, B])` — then compared slot by slot (§2.3; V5 of #50) |
 | `Box[bool] ≤ Box[TB]`, `Box[TB] ≤ Box[int]`, `Box[int] ≤ Box[TC]` (`TB` bound=int, `TC(int, str)`), `Snk[bool] ≤ Snk[TB]` | **True** / **False** / True / False | a `TypeVar` in an invariant slot is solved on the super side and a family on the sub side (V3 read it as exactly its bound: F / T / F); a contravariant slot keeps the bound reading (§2.3; V5 of #50) |
 | `Child ≤ List[int]`, `Child ≤ List[float]`, `Child ≤ List[object]`, `Child ≤ Sequence[object]` (`class Child(List[int])`) | **True** / F / F / T | `Child` is `List[int]` nominally; invariance governs comparing that with another `list` parametrisation, covariance lets it widen through `Sequence` (V5 of #50) |
+| `GL[bool] ≤ GL[int]`, `GL[int] ≤ List[int]`, `GL[int] ≤ list[str]`, `Sub ≤ list[int]` (`class GL(list[T])`, `class Sub(GL[int])`, 3.9+) | **False** / **True** / F / **True** | no `Generic` in `GL`'s MRO: its parameters are the `TypeVar`s its PEP 585 bases mention, at their declared variance, then compared through its bases like any other (§2.3; #60) |
 | `Tuple[int] < Tuple[int, ...] < tuple`, `Tuple[int,...] ≤ Tuple[Any,...]` | True chain | covariant `Tuple` |
 | `Tuple[int,str] ≤ Tuple[int,*Ts]`, `Tuple[int] ≤ Tuple[int,*Ts]`, `Tuple[int,*Ts] ≤ Tuple[*Ts]`, `Tuple[int,*Ts,str] ≤ Tuple[int,*Ts]` | True | `*Ts` is an open run of 0+ `Any`: a fixed prefix captures the rest, a longer fixed prefix/suffix is stricter (Phase-8(b), #28) |
 | `Tuple[int,*Ts]` vs `Tuple[*Ts,int]`, `Tuple[int,*Ts]` vs `Tuple[int,...]` | incomparable | a prefix run and a suffix run, or a `*Ts` run and a `...` run, do not order either way |
@@ -180,9 +181,11 @@ changes it, and the change is called out.
 Value level (`ishintstance`): `{'a':1} in TD` → **False**; `[1] in List[str]`
 → **True** (items never inspected, and a plain list declares no arguments);
 a value's **declared** parametrisation is read when it has one (V5 of #50):
-`Box[int]()` records `Box[int]` and is **not** in `Box[str]`, and an instance of
-`class Child(List[int])` is **not** in `List[float]` — while `Box()`, a base
-with a free `T` (`class C(List[T])`), and a declared `Any` stay shallow;
+`Box[int]()` records `Box[int]` and is **not** in `Box[str]`, `GL[int]()` for
+`class GL(list[T])` (3.9+, no `Generic` in its MRO) records `GL[int]` and is
+**not** in `list[str]` (#60), and an instance of `class Child(List[int])` is
+**not** in `List[float]` — while `Box()`, a base with a free `T` (`class
+C(List[T])`), and a declared `Any` stay shallow;
 `print in Callable[[int],str]` → True
 (a callable's own signature is never inspected, and a `ParamSpec` is not
 solved from values — the value level is unchanged by the row-flip, #33);
@@ -295,7 +298,18 @@ multiply.
   declared `TypeVar` live off `__parameters__`: `covariant=True` → covariant,
   `contravariant=True` → contravariant, **neither → invariant** (PEP 484). A
   PEP 695 `infer_variance` variable is unknowable at runtime and read as
-  invariant. A stdlib generic is looked up in a table vendored from CPython's
+  invariant. A class whose only generic bases are PEP 585 aliases (`class
+  GL(list[T])`, `class GD(dict[str, T])`, 3.9+) lists no `__parameters__`;
+  its parameters are the `TypeVar`s those bases mention, in order of first
+  appearance, as `Generic` would collect them, and each is read the same way
+  (#60). That is the variance the variable *declares*, not the one of the
+  slot it fills: an unflagged `T` is invariant wherever it goes (so
+  `GL[bool] ⋢ GL[int]`, as for `class GL(List[T])`), and a `T_co` written
+  into `list`'s invariant slot — an error a type checker reports in the class
+  — is taken at its word, as covariant, which is what a checker goes on to
+  do. Such a class is ill-typed, and the order is only a preorder over
+  well-typed ones: `Cov[bool] ⊑ Cov[int] ⊑ list[int]` but `Cov[bool] ⋢
+  list[int]`. A stdlib generic is looked up in a table vendored from CPython's
   `typing` (the spec's reference implementation), keyed by runtime origin: `list`
   / `set` / `dict` / `MutableSequence` / … invariant, `Sequence` / `frozenset` /
   `Collection` / `Iterable` / `Type[C]` / … covariant, `Mapping` key-invariant
@@ -346,8 +360,10 @@ multiply.
   `List[…]`, whatever the container's variance. But when the value itself
   *declares* its parametrisation, `ishintstance(v, G[args])` uses it (V5),
   looking in order at (1) the instance's `__orig_class__` — set by typing when
-  `Box[int]()` is called — read only off an instance of a `Generic` subclass,
-  against any parametrised class hint (a user generic or a stdlib one, so
+  `Box[int]()` is called, and by the runtime alias type when `GL[int]()` is,
+  for `class GL(list[T])` — read only off an instance of a `Generic` subclass
+  or of a class whose MRO carries a PEP 585 base (#60), against any
+  parametrised class hint (a user generic or a stdlib one, so
   `Row[int]()` for `class Row(Sequence[T])` is a `Sequence[int]` and not a
   `Sequence[str]`), and used when it re-expresses as a parametrisation of `G`;
   then (2) the class's written bases, when `type(v)` re-expresses as a
@@ -582,6 +598,12 @@ for 2+ captured keywords and ties for 0 or 1.
 
 **Hint-level `resolve` with TypeVars in the query** uses `issubhint` unchanged.
 
+**Only top-level `TypeVar`s are solved jointly across positions.** A `TypeVar`
+nested inside a hint — a slot of a generic (`Box[T]`, `List[T]`) — is solved
+locally, inside `issubhint`, once per position, not across them: `(Box[T],
+Box[T])` accepts `Box[int](), Box[str]()`, as `(List[T], List[T])` accepts
+two lists of different declared types.
+
 **Variadic kinds.** `*args: *Ts` / `*args: P.args` → an `Any` tail for a lone
 element; a bare `Ts`/`P` (or a `Concatenate[...]`), or a top-level `Unpack[Ts]`,
 as a *parameter* annotation is an invalid hint → registration `TypeError`
@@ -714,7 +736,9 @@ import order cannot break a program. A pair split by a differing `priority` is
 resolved deterministically at the call — the higher priority wins — so it is
 neither warned nor listed. A same-origin parametrised pair (`List[int]` vs
 `List[str]`) is *not* warned or listed either: registering both is legitimate
-and the incomparability only shows at the call.
+and the incomparability only shows at the call — a value that declares its
+arguments (`Child(List[int])`, `Box[int]()`, `GL[int]()` for `class
+GL(list[T])`) picks one, and only one that declares nothing is ambiguous.
 
 ---
 
@@ -863,8 +887,9 @@ Caching & thread-safety — **two levels**, because the order is per shape:
    *declaration-dependent* (any method's hint there is a parametrised class
    generic, user or stdlib — `Box[int]`, `Sequence[int]` — directly or through
    a `Union`/`TypeVar`/`Annotated`, but not `Tuple`/`Callable`/`Type[C]`/a
-   `TypedDict`: its value check reads a `Generic` instance's `__orig_class__`,
-   V5), and which are *member-dependent* (any method's hint there is a
+   `TypedDict`: its value check reads the `__orig_class__` of an instance of
+   a `Generic` subclass or of a class written against a PEP 585 alias, V5 and
+   #60), and which are *member-dependent* (any method's hint there is a
    runtime protocol with data members, directly or through a
    `Union`/`TypeVar`/`Annotated`: its value check reads those members off the
    instance, #56 — recorded as the sorted union of the data members of every
@@ -876,16 +901,23 @@ Caching & thread-safety — **two levels**, because the order is per shape:
    recorded parametrisation, compared by identity (typing caches `Box[int]`, so
    every `Box[int]()` shares one entry, and identity never merges records `==`
    would, e.g. `Literal[1] == Literal[True]` on 3.8), never the instance. A
+   PEP 585 record (`GL[int]`) is a new object at each subscription, so it is
+   keyed by its origin, its arguments (each keyed the same way) and whether
+   it is unpacked, and every `GL[int]()` still shares one entry. A
    position that is both keys on the value *and* the record — the value's own
    `==` need not see the record (a dataclass generic compares its fields). The
-   record is read only off an instance of a `Generic` subclass, as the value
-   check does, so no other value is probed. Typing's subscription cache is a
+   record is read only off an instance of a `Generic` subclass or of a class
+   whose MRO carries a PEP 585 base — one memoised per-class gate, which the
+   value check and the key both ask, so they stay in lockstep and no other
+   value is probed. Typing's subscription cache is a
    bounded LRU, so after churn a fresh `Box[int]` object is a new entry: a
-   missed hit, never a wrong method. A value that is not a `Generic` instance —
-   a plain list at a `List[int]` argument — is not probed and keys as
-   `(type, None)`; a cached call at such an argument costs roughly 0.1–0.2 µs
-   more than at a type-keyed one (building, hashing and comparing the richer
-   key). At a
+   missed hit, never a wrong method. A value the gate refuses — a plain list
+   at a `List[int]` argument — is not probed and keys as
+   `(type, None)`; a cached call at such an argument costs roughly 0.1–0.25 µs
+   more than at a type-keyed one (asking the gate, and building, hashing and
+   comparing the richer key); a value with a record to read costs more,
+   roughly 0.5–0.6 µs for a `Box[int]()` and 0.7 µs for a `GL[int]()`, whose
+   record is keyed by its parts. At a
    member-dependent argument the part carries a tuple of booleans, one per
    recorded data member, saying whether the value has it — read by the one
    function the value check uses, so the key always covers what the check
@@ -1362,7 +1394,7 @@ is uniform across spellings and forward-tolerant. Two measured facts shape this:
 | **`Final`/`ClassVar`** | 3.8 | — | transparent qualifiers → inner. **Support** |
 | **`Annotated`/`Doc` (PEP 727)** | 3.9/typing_extensions | 4.x/4.9+ | transparent except `EXACT`; `Annotated` is a class ≤3.12, not 3.13 (pinned). **Support** |
 | **PEP 604 `X \| Y`** | 3.10 | — | `types.UnionType` in `UNION_TYPES`; 3.14 `types.UnionType is typing.Union` (pinned; verify). **Support** |
-| **PEP 585 `list[int]`** | 3.9 | — | `isinstance(list[int], type)` is True on 3.9/3.10 → guard with `get_origin(x) is None` before treating as a class; `≡ List[int]`. **Support** |
+| **PEP 585 `list[int]`** | 3.9 | — | `isinstance(list[int], type)` is True on 3.9/3.10 → guard with `get_origin(x) is None` before treating as a class; `≡ List[int]`. A class written against one (`class GL(list[T])`) takes the `TypeVar`s its PEP 585 bases mention, each at its declared variance, and its `GL[int]()` instances are read by their record, as a `Generic` instance's are (#60). **Support** |
 | **User `Generic[T]`** | 3.8 | — | origin `isinstance`; args compared by the position's declared variance, read live off `__parameters__` (`covariant`/`contravariant`/unflagged→invariant, `infer_variance`→invariant); a subclass is compared through its written bases, and a value by the parametrisation it declares (`Box[int]()`, `class IntBox(Box[int])`), else shallow (§2.3; #50). **Support** |
 | **Unknown / future form** | — | typing_extensions first | opaque rule (§11.2). **Degrade** |
 

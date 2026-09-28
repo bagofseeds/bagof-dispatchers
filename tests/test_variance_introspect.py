@@ -93,6 +93,11 @@ def test_generic_variances_user_contravariant() -> None:
     assert _generic_variances(Box) == (_CONTRAVARIANT,)
 
 
+def test_generic_variances_of_a_special_form_is_none() -> None:
+    # `Literal` is a special form, not a class, on every version.
+    assert _generic_variances(tx.Literal) is None
+
+
 def test_generic_variances_user_two_params_mixed() -> None:
     k = tx.TypeVar("k")
     v_co = tx.TypeVar("v_co", covariant=True)

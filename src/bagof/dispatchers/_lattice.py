@@ -415,7 +415,7 @@ def is_value_dependent(hint: tx.Any) -> bool:
     `#!python Box[str]()`), not the instance, so it gets the narrower key
     [`is_declaration_dependent`][bagof.dispatchers._lattice.is_declaration_dependent]
     describes -- and so does a standard-library generic
-    (`#!python Sequence[int]`), which an instance of a `Generic` subclass of
+    (`#!python Sequence[int]`), which an instance of a generic subclass of
     `#!python Sequence` declares the same way.
 
     A [`runtime_checkable`][typing.runtime_checkable] protocol with data
@@ -486,13 +486,14 @@ def is_declaration_dependent(hint: tx.Any) -> bool:
     The narrower dependence the call cache keys on between "the type" and
     "the value" (RFC 0001 §6). A parametrised generic (`#!python Box[int]`,
     `#!python Sequence[int]`) is matched against the parametrisation an
-    instance of a `Generic` subclass was built from: `#!python Box[int]()`
-    records `#!python Box[int]` on itself, so two instances of one class can
-    match different methods. The cache therefore keys such an argument on its
-    type *and* that record, not on the instance -- so every
-    `#!python Box[int]()` shares one entry. A value that is not a `Generic`
-    instance (a plain `#!python list`) is never asked, and keys as its type
-    and `#!python None`.
+    instance was built from: `#!python Box[int]()` records
+    `#!python Box[int]` on itself, and so does `#!python GL[int]()` for a
+    class written against a builtin generic, `#!python class GL(list[T])`
+    (Python 3.9+) -- so two instances of one class can match different
+    methods. The cache therefore keys such an argument on its type *and* that
+    record, not on the instance -- so every `#!python Box[int]()` shares one
+    entry. A value of any other class (a plain `#!python list`) is never
+    asked, and keys as its type and `#!python None`.
 
     `#!python Type[C]`, a `TypedDict`, `#!python Tuple` and
     `#!python Callable` keep their own checks and are not dependent (the first
