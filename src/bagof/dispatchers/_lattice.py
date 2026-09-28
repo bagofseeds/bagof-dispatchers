@@ -537,15 +537,18 @@ def instance_members(hint: tx.Any) -> tx.Tuple[str, ...]:
     [`runtime_checkable`][typing.runtime_checkable] protocol with data
     members (`#!python name: str`) is matched by what the value holds, so two
     instances of one class can match it differently -- one that set
-    `#!python name` and one that did not. Its methods are read off the
-    value's class, so only its data members depend on the instance, and the
-    cache keys such an argument on the value's type and which of these
-    members the value has: every instance of one class holding the same
-    members shares one entry.
+    `#!python name` and one that did not. Its methods and its
+    `#!python ClassVar` members are read off the value's class, so only its
+    other data members depend on the instance, and the cache keys such an
+    argument on the value's type and which of these members the value has:
+    every instance of one class holding the same members shares one entry.
+    A member the class declares with an annotation is present on every
+    instance, so it keys them all alike.
 
-    Returns the data members' names, sorted, or `#!python ()` for a hint
+    Returns those data members' names, sorted, or `#!python ()` for a hint
     that reads nothing off the instance -- a protocol whose members are all
-    methods, one that is not runtime-checkable, and every other hint. A
+    methods or class variables, one that is not runtime-checkable, and every
+    other hint. A
     `#!python Union` gathers its members', and a `#!python TypeVar` reads its
     upper bound, as for
     [`is_value_dependent`][bagof.dispatchers._lattice.is_value_dependent].

@@ -132,7 +132,8 @@ class _NamedAged:
 
 
 class _Unnamed:
-    """Annotates `name` but never sets it: declares nothing at runtime."""
+    """Annotates `name` but never sets it: declares it, as a type checker
+    reads it."""
 
     name: str
 
@@ -240,7 +241,8 @@ CORPUS = [
     _Movie,
     # runtime protocols with data members (#56): a protocol, a sub-protocol,
     # a class declaring the member, a dataclass declaring both, and a class
-    # that only annotates it (so is below neither).
+    # that only annotates it (so is below the protocol, not the
+    # sub-protocol).
     _HasName,
     _HasNameAge,
     _Named,
@@ -366,7 +368,10 @@ def test_the_data_protocol_rows_are_ordered() -> None:
     assert issubhint(_Named, _HasNameAge) is False
     assert issubhint(_NamedAged, _HasNameAge) is True
     assert issubhint(_NamedAged, _HasName) is True
-    assert issubhint(_Unnamed, _HasName) is False
+    assert issubhint(_Unnamed, _HasName) is True
+    assert issubhint(_HasName, _Unnamed) is False
+    assert issubhint(_Unnamed, _HasNameAge) is False
+    assert issubhint(_Unnamed, tx.Optional[_HasName]) is True
     assert issubhint(_Named, tx.Optional[_HasName]) is True
 
 
