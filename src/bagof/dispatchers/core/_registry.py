@@ -33,7 +33,7 @@ import warnings
 import typing_extensions as tx
 
 # local
-from ._compat import UnknownHintWarning
+from ._compat import UnknownHintWarning, ishint
 from ._exact import exact_target, is_exact
 from ._introspect import (
     _looks_like_class,
@@ -123,6 +123,16 @@ def resolve_hint(
     exact = _exact_key(hint, mapping)
     if exact is not UNSET:
         return mapping[exact]
+
+    if not ishint(hint):
+        # A query that is not a type hint cannot be a sub-hint of any key, so
+        # nothing accepts it. Running the relation against each key would make
+        # `issubhint` raise for the query and wrongly blame each key, so the
+        # matching loop is skipped: the lookup stays lenient and falls through
+        # to `default`, or to `NoMethodError` when none was given.
+        if default is not UNSET:
+            return default
+        raise _no_key(hint, mapping)
 
     accepting = [key for key in mapping if _accepts(hint, key)]
     if not accepting:

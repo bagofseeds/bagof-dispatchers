@@ -89,21 +89,37 @@ def test_unhashable_key_does_not_raise() -> None:
 
 
 def test_unhashable_query_hint() -> None:
-    """An unhashable query hint is not an exact key and falls through."""
-    # A list is unhashable; it cannot be an exact key, and nothing accepts it.
-    assert resolve_hint([1, 2], {int: "n"}, default="fallback") == "fallback"
+    """A non-hint query falls through to the default, with no warning."""
+    # A list is not a hint (and is unhashable). The lookup stays lenient and
+    # returns the default, and it does not warn about any key: the query, not a
+    # key, is at fault.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert (
+            resolve_hint([1, 2], {int: "n"}, default="fallback") == "fallback"
+        )
 
 
 def test_non_hint_query_no_longer_reaches_any() -> None:
     """A non-hint query no longer matches an `Any` key (0.2.0).
 
-    `issubhint` now refuses a non-hint, so a non-hint query no longer
-    slips through to an `Any` catch-all as it did while `issubhint(1, Any)`
-    was wrongly True. With nothing accepting it and no default, the lookup
-    raises, and `NoMethodError` is a `TypeError`.
+    A non-hint query used to slip through to an `Any` catch-all while
+    `issubhint(1, Any)` was wrongly True. It no longer does, but the lookup
+    stays lenient rather than raising a bare `TypeError`: with nothing
+    accepting the query and no default, it raises `NoMethodError`, and it
+    warns about no key, since the query rather than a key is at fault.
     """
-    with pytest.raises(TypeError):
-        resolve_hint(1, {tx.Any: "anything"})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(NoMethodError):
+            resolve_hint(1, {tx.Any: "anything"})
+
+
+def test_non_hint_query_with_default_returns_it_without_warning() -> None:
+    """A non-hint query with a default returns the default, silently."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert resolve_hint(1, {tx.Any: "x"}, default="d") == "d"
 
 
 def test_none_is_read_as_nonetype() -> None:
