@@ -8,7 +8,6 @@ A `runtime_checkable` protocol matches a value by what it **has**, not by
 what it inherits. A protocol can ask for a data member as well as methods:
 
 ```pycon
->>> import dataclasses
 >>> import typing_extensions as tx
 >>> from bagof.dispatchers import dispatch
 >>> @tx.runtime_checkable
@@ -30,99 +29,104 @@ what it inherits. A protocol can ask for a data member as well as methods:
 'hello, Ada'
 ```
 
-A data member counts when the value has it, set on the instance or defined
-by its class. A method counts when the value's class defines it. Members are
-looked up without running any of the value's code: a property is not called,
-and `__getattr__` is not asked. A class that lists the protocol among its
-bases always matches, as with `isinstance`.
+A data member counts when the value sets it on itself, or when its class
+declares it: an annotation, a class attribute, a property or a slot. A
+method
+counts when the value's class defines it. Members are looked up without
+running any of the value's code: a property is not called, and
+`__getattr__` is not asked. A class that lists the protocol among its bases
+always matches, as with `isinstance`.
 
 ## A class is more specific than a protocol it declares
 
-An overload on a class wins over one on a protocol, when the class
-**declares** every member — defines it itself (a class attribute, a
-property, a method) or lists it as a dataclass field that `__init__` sets:
+An overload on a class wins over one on a protocol when the class
+**declares** every member, much as a type checker reads it: an annotation
+(`name: str`), a class attribute, a property, a slot, or a dataclass
+field.
 
 ```pycon
->>> @dataclasses.dataclass
-... class User:
+>>> class User:
 ...     name: str
+...     def __init__(self, name: str) -> None:
+...         self.name = name
 >>> @dispatch
 ... def greet(x: User) -> str:
 ...     return "welcome back, " + x.name
 >>> greet(User("Grace"))
 'welcome back, Grace'
+>>> greet(guest)
+'hello, Ada'
 ```
 
-A bare annotation on a plain class (`name: str`, with no value) does not
-declare the member: an instance may never set it. Neither does a dataclass
-field written `field(init=False)` without a default, which `__init__` leaves
-unset. A sub-protocol is more specific than the protocols it extends.
+An annotation counts whether or not `__init__` sets the attribute, and
+whether it is written on the class or on one of its bases. So an instance
+of `User` matches `Named` even before `name` is set. Python's own
+`isinstance` differs here: it looks for the attribute itself.
+
+A read-only member also counts: a property without a setter, or
+`name: Final = "x"`. A type checker rejects those for `Named`, whose `name`
+can be assigned; dispatch only reads the member, so it accepts them.
+
+A sub-protocol is more specific than the protocols it extends.
+
+## Class variables
+
+A member the protocol declares as a `ClassVar` is read off the class, and
+only a `ClassVar` annotation declares it, with a value or without. A plain
+class attribute does not (it is an instance variable's default), and
+neither does an attribute set on the instance:
+
+```pycon
+>>> from typing import ClassVar
+>>> @tx.runtime_checkable
+... class Kinded(tx.Protocol):
+...     kind: ClassVar[str]
+>>> @dispatch
+... def describe(x: Kinded) -> str:
+...     return "a " + x.kind
+>>> @dispatch
+... def describe(x: object) -> str:
+...     return "something"
+>>> class Cat:
+...     kind: ClassVar[str] = "cat"
+>>> describe(Cat())
+'a cat'
+>>> class Dog:
+...     kind = "dog"
+>>> describe(Dog())
+'something'
+```
+
+The other way round, a `ClassVar` never declares an ordinary member such as
+`name`, even with a value, and neither does a dataclass `InitVar`. Both
+rules are the ones type checkers apply.
 
 ## When a call matches both
 
-A class that annotates a member but does not declare it is neither more nor
-less specific than the protocol. An instance that sets the member matches
-both overloads, and the call is ambiguous. Registering the two gives no
-warning, and `ambiguities()` does not list them — the clash only shows at the
-call:
+A class that declares none of the protocol's members is neither more nor
+less specific than the protocol. An instance that is given the member
+matches both overloads, and the call is ambiguous:
 
 ```pycon
->>> import warnings
 >>> from bagof.dispatchers import Function, AmbiguousMethodError
->>> class Member:
-...     name: str
-...     def __init__(self, name: str) -> None:
-...         self.name = name
 >>> badge = Function("badge")
->>> with warnings.catch_warnings():
-...     warnings.simplefilter("error")   # nothing is raised here
-...     @badge.register
-...     def _named(x: Named) -> str:
-...         return "named"
-...     @badge.register
-...     def _member(x: Member) -> str:
-...         return "member"
->>> badge.ambiguities()
-[]
+>>> @badge.register
+... def _named(x: Named) -> str:
+...     return "named"
+>>> @badge.register
+... def _guest(x: Guest) -> str:
+...     return "guest"
 >>> try:
-...     badge(Member("Lin"))
+...     badge(guest)
 ... except AmbiguousMethodError:
 ...     print("ambiguous")
 ambiguous
 ```
 
-Either give the class overload a higher `priority`:
-
-```pycon
->>> badge = Function("badge")
->>> @badge.register
-... def _named(x: Named) -> str:
-...     return "named"
->>> @badge.register(priority=1)
-... def _member(x: Member) -> str:
-...     return "member"
->>> badge(Member("Lin"))
-'member'
-```
-
-or declare the member on the class — a class default, or a dataclass field
-as `User` does above — so the class is more specific:
-
-```pycon
->>> class Member:
-...     name: str = ""
-...     def __init__(self, name: str) -> None:
-...         self.name = name
->>> badge = Function("badge")
->>> @badge.register
-... def _named(x: Named) -> str:
-...     return "named"
->>> @badge.register
-... def _member(x: Member) -> str:
-...     return "member"
->>> badge(Member("Lin"))
-'member'
-```
+Registering the two gives no warning, and `ambiguities()` does not list
+them: the clash only shows at the call. Annotate the member on the class
+(`name: str`) to make its overload the more specific one, or give one
+overload a higher `priority`.
 
 !!! note
     A protocol without `@runtime_checkable` cannot be checked against a

@@ -1,9 +1,12 @@
 """The hint-level subtype relation: `issubhint` and `ishintstance`."""
 
 # stdlib
+import builtins
 import dataclasses
 import functools
 import inspect
+import re
+import sys
 import types
 import warnings
 import weakref
@@ -227,12 +230,20 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
       or container field is read recursively.
     * If `hint` is a [`runtime_checkable`][typing.runtime_checkable]
       protocol with **data members** (`#!python name: str`), checks the
-      value itself, as [`isinstance`][] does: its class names the protocol
-      among its bases, or every data member is present on the value --
-      set on the instance or defined by its class -- and every method is
-      defined by its class. Members are looked up without running the
-      value's code: a property is not called and `__getattr__` is not
-      asked. A protocol with methods only is checked on the value's type.
+      value itself, much as [`isinstance`][] does: its class names the
+      protocol among its bases, or every data member is present on the
+      value -- set on the instance, or declared by its class: an
+      annotation, a class attribute, a property or a slot, but not a
+      `#!python ClassVar` -- and every method is defined by its class. An
+      annotated member counts even on an instance that never set it, where
+      [`isinstance`][] finds nothing: that is how a type checker reads the
+      annotation, and it keeps this check in step with
+      [`issubhint`][bagof.dispatchers.core.issubhint]. A member the protocol
+      declares `#!python ClassVar` is read off the class alone, and only a
+      `#!python ClassVar` annotation declares it. Members are looked up
+      without running the value's code: a property is not called and
+      `__getattr__` is not asked. A protocol with methods only is checked
+      on the value's type.
     * If `hint` is a parametrised generic (`#!python List[int]`,
       `#!python Box[int]`), checks that `obj` is an instance of its class,
       and checks the type arguments only when `obj` **declares** them: an
@@ -384,26 +395,41 @@ def _ishintstance_type(obj: tx.Any, hint: tx.Any) -> bool:
 # instance, not of its class. So such a protocol is read here member by
 # member, in two halves:
 #
-# * the value level (`_ishintstance_protocol`) reads each **data** member off
-#   the value itself, and each **method** off the value's class -- the way a
-#   method-only protocol is already decided, by type. Only the data members
-#   depend on the instance, so the call cache keys such a position on the
-#   value's type and which of those members it has
-#   (`_present_data_members`, the one reader the check and the key share);
-# * the hint level (`_declares_protocol`) asks whether *every* instance of a
-#   class has them, which only what the class itself defines can promise.
+# * the value level (`_ishintstance_protocol`) reads each **instance**
+#   variable off the value itself, and each **method** and each
+#   **`ClassVar`** member off the value's class -- the way a method-only
+#   protocol is already decided, by type. Only the instance variables depend
+#   on the instance, so the call cache keys such a position on the value's
+#   type and which of those it has (`_present_data_members`, the one reader
+#   the check and the key share);
+# * the hint level (`_declares_protocol`) asks whether a class declares
+#   every member, much as a type checker asks it of a structural subtype
+#   (a read-only member counts here, where a type checker refuses it).
+#
+# Both halves read what a class declares as a type checker does
+# (`_class_reading`), each kind exclusively: `name: str` anywhere in a
+# class's MRO declares an instance variable, set in `__init__` or not, and
+# so does a value in a class body; only `name: ClassVar[str]` declares a
+# class variable. That puts a class that annotates `name` below a
+# protocol asking for `name`, so -- for a value of a sub-hint to stay a value
+# of the super-hint -- it also makes `name` present on every instance of the
+# class, where Python's own `isinstance` looks for the attribute and finds
+# none on an instance that never set it.
 
 
 class _ProtocolMembers(tx.NamedTuple):
     """A runtime-checkable protocol's members, split by where they are read.
 
-    `data` are read off the value (its instance `__dict__` or its class), and
-    `methods` off the value's class. Both are sorted, so a caller that keys
-    on them always reads them in the same order.
+    `data` are its instance variables, read off the value (its instance
+    `__dict__`, its class, or its class's annotations). `methods` and
+    `class_variables` -- the data members it declares `ClassVar` -- are read
+    off the value's class. All are sorted, so a caller that keys on them
+    always reads them in the same order.
     """
 
     data: tx.Tuple[str, ...]
     methods: tx.Tuple[str, ...]
+    class_variables: tx.Tuple[str, ...]
 
 
 # A marker for "no such attribute", distinct from any value a class can hold
@@ -436,18 +462,28 @@ def _read_protocol_members(cls: type) -> tx.Optional[_ProtocolMembers]:
 
     A member is a method when the protocol holds a callable under its name,
     and a data member otherwise -- an annotation alone, a property, or a
-    plain default -- the same split Python makes.
+    plain default -- the same split Python makes. A data member is a class
+    variable when the protocol's nearest annotation of it is `ClassVar`.
     """
     if not tx.is_protocol(cls):
         return None
     names = sorted(tx.get_protocol_members(cls))
-    data = tuple(
-        name for name in names if not callable(getattr(cls, name, None))
-    )
+    data = [name for name in names if not callable(getattr(cls, name, None))]
     if not data:
         return None
-    methods = tuple(name for name in names if name not in data)
-    return _ProtocolMembers(data, methods)
+    kinds = {}  # type: tx.Dict[str, int]
+    for base in reversed(cls.__mro__):
+        # Nearest last, so a sub-protocol's annotation wins over its base's.
+        kinds.update(_own_annotation_kinds(base))
+    return _ProtocolMembers(
+        data=tuple(
+            name for name in data if kinds.get(name) != _CLASS_VARIABLE
+        ),
+        methods=tuple(name for name in names if name not in data),
+        class_variables=tuple(
+            name for name in data if kinds.get(name) == _CLASS_VARIABLE
+        ),
+    )
 
 
 def _class_attribute(cls: type, name: str) -> tx.Any:
@@ -476,41 +512,67 @@ def _has_method(cls: type, name: str) -> bool:
 def _present_data_members(
     obj: tx.Any, names: tx.Sequence[str]
 ) -> tx.Tuple[bool, ...]:
-    """Whether the value `obj` has each attribute in `names`, in order.
+    """Whether the value `obj` has each instance variable in `names`, in order.
 
-    An attribute is found on the instance's own `__dict__` or anywhere in its
-    class's MRO -- a class attribute, a property, a slot -- without running
-    any of the value's code, as [`inspect.getattr_static`][] finds it and as
-    Python's own `isinstance` reads a protocol member from 3.12 on (earlier
-    versions of `typing` call `hasattr`, which runs a property and asks
-    `__getattr__`).
+    A name is present when it is in the instance's own `__dict__`, or when
+    the value's class declares it an instance variable anywhere in its MRO
+    ([`_class_reading`][]): an annotation (`#!python name: str`), or a class
+    attribute, a property, a slot or a method that the same class does not
+    annotate `ClassVar`. Nothing of the value's code runs: a property is
+    found, not called, and `__getattr__` is never asked, as Python's own
+    `isinstance` reads a protocol member from 3.12 on (earlier versions of
+    `typing` call `hasattr`). Two differences from `isinstance`, both the
+    type checker's reading and the one the hint level
+    ([`_declares_protocol`][]) takes, so that the two agree: an annotated
+    name is present on an instance that never set it, and a `ClassVar` is
+    not an instance variable, so a class attribute declared one is not
+    present.
 
     This is the one reader both the value check and the call cache use, so
     the key always covers what the check reads. It runs on every call the
-    cache answers at such an argument, so the value's lookup is worked out
-    once for all the names, and the common case -- an ordinary instance --
-    reads the two namespaces directly ([`_lookup_of`][] says which case
-    applies); everything else takes [`inspect.getattr_static`][] itself.
+    cache answers at such an argument, so what depends on the class alone
+    is worked out once per class ([`_class_reading`][]): how the value's
+    attributes are looked up -- an ordinary instance reads its own
+    `__dict__`, a class read as a value takes [`inspect.getattr_static`][],
+    and any other is read through its class alone -- and which names the
+    class declares. A declared name is present on every instance, so its
+    entry in the key is the same for all of them, and reading it costs a
+    set lookup.
     """
     cls = type(obj)
-    lookup = _lookup_of(cls)
-    if lookup == _PLAIN:
+    reading = _class_reading(cls)
+    declared = reading.instance_variables
+    if reading.lookup == _PLAIN:
         try:
             own = object.__getattribute__(obj, "__dict__")
         except AttributeError:
             # `__slots__` without a `__dict__`: only the class can hold it.
             own = _NO_ATTRIBUTES
-        return tuple(
-            [
-                name in own or _class_attribute(cls, name) is not _ABSENT
-                for name in names
-            ]
-        )
-    if lookup == _CLASS_ONLY:
-        return tuple(
-            [_class_attribute(cls, name) is not _ABSENT for name in names]
-        )
-    return tuple([_found_statically(obj, name) for name in names])
+        # A loop, not a comprehension: before 3.12 a comprehension builds a
+        # function on each call, which costs more than the reading here.
+        present = []
+        for name in names:
+            present.append(name in own or name in declared)
+        return tuple(present)
+    if reading.lookup == _CLASS_ONLY:
+        return tuple([name in declared for name in names])
+    return tuple(
+        [name in declared or _found_statically(obj, name) for name in names]
+    )
+
+
+def _holds_class_variables(cls: type, names: tx.Sequence[str]) -> bool:
+    """Whether `cls` declares every `ClassVar` member in `names`.
+
+    A class variable lives on the class, so it is read off the class alone,
+    at the value level and the hint level alike: a `ClassVar` annotation
+    anywhere in the MRO, with a value or not. A plain class attribute, an
+    instance variable's annotation, and an attribute an instance sets on
+    itself do not count -- a type checker rejects each of them for a
+    `ClassVar` member.
+    """
+    declared = _class_reading(cls).class_variables
+    return all(name in declared for name in names)
 
 
 # The namespace of an instance that has none of its own.
@@ -524,47 +586,278 @@ def _found_statically(obj: tx.Any, name: str) -> bool:
     except (AttributeError, TypeError):
         # Absent. A `TypeError` is defensive: from 3.13 `getattr_static`
         # memoises on the classes it walks, and raises for one it cannot
-        # hash -- a case `_lookup_of` already routes around for the value's
-        # own class.
+        # hash -- a case `_class_reading` already routes around for the
+        # value's own class.
         return False
     return True
 
 
-# How an instance of a class has its attributes looked up (`_lookup_of`):
-# its own `__dict__` and then its class's MRO; `inspect.getattr_static`; or
-# its class's MRO alone.
+# How an instance of a class has its attributes looked up (`_class_reading`):
+# its own `__dict__` and then what its class declares;
+# `inspect.getattr_static`, for a class read as a value; or what its class
+# declares alone.
 _PLAIN = 0
 _STATIC = 1
 _CLASS_ONLY = 2
 
-# `_lookup_of`'s memo. Its keys are the types of the values dispatched on, so
-# they are held weakly: a class made and dropped at runtime is not kept alive
-# for the life of the process.
-_LOOKUPS = weakref.WeakKeyDictionary()  # type: weakref.WeakKeyDictionary
+
+class _ClassReading(tx.NamedTuple):
+    """What reading an instance of a class needs, worked out once per class.
+
+    `lookup` says how its attributes are looked up (`_PLAIN`, `_STATIC` or
+    `_CLASS_ONLY`); `instance_variables` and `class_variables` are the names
+    the class declares, anywhere in its MRO, as each kind.
+    """
+
+    lookup: int
+    instance_variables: tx.FrozenSet[str]
+    class_variables: tx.FrozenSet[str]
 
 
-def _lookup_of(cls: type) -> int:
+# `_class_reading`'s memo. Its keys are the types of the values dispatched
+# on, so they are held weakly: a class made and dropped at runtime is not
+# kept alive for the life of the process.
+_CLASS_READINGS = weakref.WeakKeyDictionary()  # type: weakref.WeakKeyDictionary
+
+
+def _class_reading(cls: type) -> _ClassReading:
     """How [`_present_data_members`][] reads an instance of `cls`, memoised.
 
-    `_PLAIN` for an ordinary class ([`_reads_instance_dict`][]), and
-    `_STATIC` -- `inspect.getattr_static` -- for any other.
+    Its lookup is `_PLAIN` for an ordinary class
+    ([`_reads_instance_dict`][]); `_STATIC` -- `inspect.getattr_static` --
+    for a metaclass, whose instances are classes holding attributes of
+    their own in their bases and their metaclass; and `_CLASS_ONLY` for a
+    class that redefines `__dict__`, whose instances' own attributes cannot
+    be read without running its code.
+
+    Its declared names are read from each class of its MRO
+    ([`_read_class`][]): a name counts when *any* of them declares it, so a
+    subclass declares everything its bases do, and an instance of a class
+    below a protocol is always an instance of the protocol too. The memo is
+    read once per class: an attribute or an annotation added to a class
+    after it was first dispatched on is not seen.
 
     A class that cannot key the memo -- one whose metaclass makes it
     unhashable -- is worked out afresh on each call. It cannot key
     `getattr_static`'s own memo either, which raises `TypeError` for an
     instance of it from 3.13 on (as Python's own `isinstance` does against a
-    protocol, on every version), so an instance of one that redefines
-    `__dict__` is read through its class's MRO alone: `_CLASS_ONLY`, which is
-    all `getattr_static` reads for such an instance.
+    protocol, on every version), so an instance of such a metaclass is read
+    through what its class declares alone, `_CLASS_ONLY`, too.
     """
     try:
-        return _LOOKUPS[cls]
+        return _CLASS_READINGS[cls]
     except KeyError:
-        lookup = _PLAIN if _reads_instance_dict(cls) else _STATIC
-        _LOOKUPS[cls] = lookup
-        return lookup
+        reading = _read_class(cls, _STATIC)
+        _CLASS_READINGS[cls] = reading
+        return reading
     except TypeError:
-        return _PLAIN if _reads_instance_dict(cls) else _CLASS_ONLY
+        return _read_class(cls, _CLASS_ONLY)
+
+
+def _read_class(cls: type, metaclass_lookup: int) -> _ClassReading:
+    """[`_class_reading`][], unmemoised.
+
+    `metaclass_lookup` is the lookup for a metaclass. Each class of the MRO
+    declares, as a type checker reads it:
+
+    * an instance variable for each of its annotations that is not a
+      `ClassVar` (nor an `InitVar` or `KW_ONLY`, which declare nothing), and
+      for each name its namespace holds -- a class attribute, a property, a
+      slot, a method -- that it does not annotate: a value in the class
+      body is an instance variable's default;
+    * a class variable for each `ClassVar` annotation, with a value or not.
+
+    The two are gathered over the whole MRO, never decided class by class:
+    a subclass that redeclares an inherited instance variable `ClassVar`
+    keeps it (a type checker rejects the override), so a class is always
+    below whatever its bases are below.
+    """
+    instance_variables = set()  # type: tx.Set[str]
+    class_variables = set()  # type: tx.Set[str]
+    for base in cls.__mro__:
+        kinds = _own_annotation_kinds(base)
+        for name, kind in kinds.items():
+            if kind == _INSTANCE_VARIABLE:
+                instance_variables.add(name)
+            elif kind == _CLASS_VARIABLE:
+                class_variables.add(name)
+        for name in base.__dict__:
+            if name not in kinds:
+                instance_variables.add(name)
+    if _reads_instance_dict(cls):
+        lookup = _PLAIN
+    elif issubclass(cls, type):
+        lookup = metaclass_lookup
+    else:
+        lookup = _CLASS_ONLY
+    return _ClassReading(
+        lookup, frozenset(instance_variables), frozenset(class_variables)
+    )
+
+
+# --- what a class's annotations declare --------------------------------
+#
+# A type checker reads `name: str` in a class body as declaring an instance
+# variable, whether or not a value follows or `__init__` sets it;
+# `name: ClassVar[str]` as declaring a class variable; and a dataclass's
+# `InitVar[...]` / `KW_ONLY` as declaring no attribute at all. Each satisfies
+# a protocol member of its own kind only.
+#
+# An annotation that is still text (`from __future__ import annotations`) is
+# parsed, not executed: the dotted name it starts with is looked up, by
+# dictionary lookups alone, where the evaluated annotation would find it,
+# and the marker it names is recognised by identity -- so an alias
+# (`CV = ClassVar`) is read as what it stands for, and a class of the user's
+# that happens to be called `InitVar` as the class it is. Nothing is called,
+# and nothing but the leading name is looked up.
+
+_INSTANCE_VARIABLE = 0
+_CLASS_VARIABLE = 1
+_NOT_AN_ATTRIBUTE = 2
+
+_CLASSVAR_FORMS = spellings("ClassVar")
+_ANNOTATED_FORMS = spellings("Annotated")
+
+# `KW_ONLY` is new in 3.10; before that, nothing can be annotated with it.
+_KW_ONLY = getattr(dataclasses, "KW_ONLY", _ABSENT)
+
+# The kinds a marker declares, by the name it is written with: for an
+# annotation still text whose leading name cannot be looked up.
+_MARKER_KINDS = {
+    "ClassVar": _CLASS_VARIABLE,
+    "InitVar": _NOT_AN_ATTRIBUTE,
+    "KW_ONLY": _NOT_AN_ATTRIBUTE,
+}
+
+# The dotted name an annotation written as text starts with, and whether a
+# `[` follows it.
+_LEADING_NAME = re.compile(r"\s*((?:\w+\s*\.\s*)*\w+)\s*(\[?)")
+
+
+if tx.TYPE_CHECKING:
+    from annotationlib import Format, get_annotations
+else:
+    try:
+        from annotationlib import Format, get_annotations
+    except ImportError:  # pragma: no cover  -- Python < 3.14
+        Format = get_annotations = None
+
+
+def _own_annotations(cls: type) -> tx.Mapping[str, tx.Any]:
+    """The annotations written in the body of `cls` itself, by name.
+
+    Not its bases': the caller walks the MRO. Read from the class's own
+    namespace up to 3.13; from 3.14, where annotations are evaluated lazily,
+    through `annotationlib` -- a name that is not defined comes back as a
+    forward reference rather than raising, and an annotation that cannot be
+    evaluated at all reads as none.
+    """
+    if get_annotations is None:  # pragma: no cover  -- Python < 3.14
+        annotations = cls.__dict__.get("__annotations__")
+        # `type` holds the descriptor that serves every class's
+        # `__annotations__`, not annotations of its own.
+        return annotations if isinstance(annotations, dict) else {}
+    try:
+        return get_annotations(cls, format=Format.FORWARDREF)
+    except Exception:  # noqa: BLE001 -- the class's own code raised
+        return {}
+
+
+def _own_annotation_kinds(cls: type) -> tx.Dict[str, int]:
+    """What each annotation in the body of `cls` declares, by name.
+
+    A `TypedDict`'s annotations declare its keys, not attributes: an
+    instance is a plain `dict`, so they declare nothing here.
+    """
+    if is_typeddict(cls):
+        return {}
+    return {
+        name: _annotation_kind(annotation, cls)
+        for name, annotation in _own_annotations(cls).items()
+    }
+
+
+def _annotation_kind(annotation: tx.Any, cls: tx.Any = None) -> int:
+    """What one annotation, written in the body of `cls`, declares: an
+    instance or a class variable, or no attribute.
+
+    `Annotated[...]` is looked through. An annotation that is still text --
+    a string, or a forward reference -- is read by the name it starts with
+    ([`_text_annotation_kind`][]).
+    """
+    if isinstance(annotation, tx.ForwardRef):
+        annotation = annotation.__forward_arg__
+    if isinstance(annotation, str):
+        return _text_annotation_kind(annotation, cls)
+    annotation = unwrap(annotation)
+    return _marker_kind(safe_get_origin(annotation) or annotation)
+
+
+def _marker_kind(marker: tx.Any) -> int:
+    """What an annotation whose outermost form is `marker` declares."""
+    if any(marker is form for form in _CLASSVAR_FORMS):
+        return _CLASS_VARIABLE
+    if (
+        marker is dataclasses.InitVar
+        or isinstance(marker, dataclasses.InitVar)
+        or marker is _KW_ONLY
+    ):
+        return _NOT_AN_ATTRIBUTE
+    return _INSTANCE_VARIABLE
+
+
+def _text_annotation_kind(text: str, cls: tx.Any = None) -> int:
+    """[`_annotation_kind`][] for an annotation written as text in `cls`.
+
+    The dotted name the text starts with is looked up where the evaluated
+    annotation would find it ([`_look_up_marker`][]) and recognised by
+    identity; `Annotated[...]` is looked through. A name that cannot be
+    looked up is read by its last part instead -- `typing.ClassVar[int]`
+    and `ClassVar[int]` alike. The text is never evaluated.
+    """
+    match = _LEADING_NAME.match(text)
+    if match is None:
+        return _INSTANCE_VARIABLE
+    parts = [part.strip() for part in match.group(1).split(".")]
+    marker = _look_up_marker(parts, cls)
+    if marker is _ABSENT:
+        annotated = parts[-1] == "Annotated"
+        kind = _MARKER_KINDS.get(parts[-1], _INSTANCE_VARIABLE)
+    else:
+        annotated = any(marker is form for form in _ANNOTATED_FORMS)
+        kind = _marker_kind(marker)
+    if annotated and match.group(2):
+        return _text_annotation_kind(text[match.end() :], cls)
+    return kind
+
+
+def _look_up_marker(parts: tx.Sequence[str], cls: tx.Any) -> tx.Any:
+    """What the dotted name `parts`, written in the body of `cls`, names.
+
+    The first part is looked up in the class's own namespace, then its
+    module's, then the builtins -- where evaluating the annotation would
+    look -- and each further part in the module the name so far names.
+    Only dictionaries are read: no attribute is fetched, so nothing of the
+    user's code runs. `_ABSENT` when a part is not found, or when a name
+    before the last one is not a module.
+    """
+    namespaces = []  # type: tx.List[tx.Mapping[str, tx.Any]]
+    if isinstance(cls, type):
+        namespaces.append(cls.__dict__)
+        module = sys.modules.get(cls.__dict__.get("__module__"))
+        if module is not None:
+            namespaces.append(module.__dict__)
+    namespaces.append(builtins.__dict__)
+    found = _ABSENT
+    for namespace in namespaces:
+        found = namespace.get(parts[0], _ABSENT)
+        if found is not _ABSENT:
+            break
+    for part in parts[1:]:
+        if not isinstance(found, types.ModuleType):
+            return _ABSENT
+        found = found.__dict__.get(part, _ABSENT)
+    return found
 
 
 def _reads_instance_dict(cls: type) -> bool:
@@ -598,66 +891,57 @@ def _ishintstance_protocol(
 
     A class that names `proto` among its bases is one, as Python's
     `isinstance` counts it, whatever its instances hold. Otherwise every
-    method must be defined by the value's class and every data member be
-    present on the value ([`_present_data_members`][]).
+    method must be defined by the value's class, every `ClassVar` member be
+    declared by it ([`_holds_class_variables`][]), and every instance
+    variable be present on the value ([`_present_data_members`][]).
 
     Methods are read off the class, as a method-only protocol is decided,
-    so only the data members depend on the instance -- and those are all
-    the call cache keys on. A method set on the instance alone is therefore
-    not counted, where Python's `isinstance` would count it.
+    so only the instance variables depend on the instance -- and those are
+    all the call cache keys on. A method set on the instance alone is
+    therefore not counted, where Python's `isinstance` would count it, and
+    neither is a `ClassVar` member, which a type checker rejects too.
     """
     cls = type(obj)
     if any(base is proto for base in cls.__mro__):
         return True
-    return all(_has_method(cls, name) for name in members.methods) and all(
-        _present_data_members(obj, members.data)
-    )
-
-
-def _dataclass_fields(cls: type) -> tx.FrozenSet[str]:
-    """The fields of the dataclass `cls` its `__init__` sets, by name.
-
-    Only an `init=True` field is always set by the generated `__init__`. One
-    written `field(init=False)` is left for the class to set, so it promises
-    nothing (one with a plain default is a class attribute, and found as
-    such). Nothing for a class that is not a dataclass.
-    """
-    if not dataclasses.is_dataclass(cls):
-        return frozenset()
-    return frozenset(
-        field.name for field in dataclasses.fields(cls) if field.init
+    return (
+        all(_has_method(cls, name) for name in members.methods)
+        and _holds_class_variables(cls, members.class_variables)
+        and all(_present_data_members(obj, members.data))
     )
 
 
 def _declares_protocol(
     cls: tx.Any, proto: type, members: _ProtocolMembers
 ) -> bool:
-    """Whether every instance of `cls` is one of the data protocol `proto`.
+    """Whether the class `cls` is a structural subtype of the data protocol
+    `proto`, much as a type checker reads it.
 
-    The hint-level twin of [`_ishintstance_protocol`][], and deliberately
-    conservative, since it has to hold for every instance and not just one:
+    The hint-level twin of [`_ishintstance_protocol`][]:
 
     * a class that names `proto` among its bases is below it, a sub-protocol
       included, as it is at the value level;
     * another protocol that does not is not, even when it lists the same
       members -- a protocol stands for what it says it extends;
-    * any other class must define every method (not as `#!python None`), and
-      must define every data member itself -- a class attribute, a property,
-      a slot -- or declare it as a dataclass field.
+    * any other class must define every method (not as `#!python None`),
+      and declare every data member as its kind anywhere in its MRO
+      ([`_read_class`][]): an instance variable by an annotation
+      (`#!python name: str`, a dataclass field included, whether or not
+      `__init__` sets it) or by a class attribute, a property or a slot not
+      annotated `ClassVar`; a class variable by a `ClassVar` annotation
+      alone.
 
-    A bare annotation on a plain class (`#!python name: str` with no value)
-    does **not** count. It promises nothing at runtime: an instance that
-    never sets the attribute is not an instance of `proto`, so counting it
-    would put the class below `proto` while one of its instances fails the
-    value check -- the one thing the order must never do (a value of a
-    sub-hint is a value of the super-hint). A dataclass field its generated
-    `__init__` sets -- an `init=True` one -- does count, because a dataclass
-    promises it on every instance; a `field(init=False)` does not, unless it
-    has a plain default, which is a class attribute. Only a hand-written
-    `__init__` that skips a field, a `del`, a call made on `self` from inside
-    `__init__` before the field is set, or a subclass that redeclares an
-    inherited field `init=False` can break that promise; each is breaking
-    the dataclass itself.
+    An annotation that is never set promises nothing at runtime, so the
+    value level counts it as present too ([`_present_data_members`][]):
+    every instance of `cls` is then an instance of `proto`, which is the
+    one thing the order must guarantee. Both levels read the same
+    per-class record, gathered over the whole MRO, so a subclass declares
+    what its bases do.
+
+    Unlike a type checker, a read-only member -- a property without a
+    setter, or `#!python name: Final = ...` -- counts for a protocol's
+    (settable) instance variable: the value has it, and dispatch only
+    reads it.
     """
     if not isinstance(cls, type):
         return False
@@ -667,11 +951,10 @@ def _declares_protocol(
         return False
     if not all(_has_method(cls, name) for name in members.methods):
         return False
-    fields = _dataclass_fields(cls)
-    return all(
-        name in fields or _class_attribute(cls, name) is not _ABSENT
-        for name in members.data
-    )
+    if not _holds_class_variables(cls, members.class_variables):
+        return False
+    declared = _class_reading(cls).instance_variables
+    return all(name in declared for name in members.data)
 
 
 def _protocol_below_protocol(
@@ -1106,13 +1389,19 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     !!! note
         A class is a sub-hint of a
         [`runtime_checkable`][typing.runtime_checkable] protocol with data
-        members (`#!python name: str`) only when **every** instance of it
-        has them: the class names the protocol among its bases, or defines
-        each member itself (a class attribute, a property, a method) or as a
-        dataclass field. A bare annotation on a plain class does not count,
-        since an instance may never set it; such instances are matched one
-        by one by
-        [`ishintstance`][bagof.dispatchers.core.ishintstance] instead.
+        members (`#!python name: str`) when it **declares** them, much as
+        a type checker reads it: the class names the protocol among its
+        bases, or declares each member as the member's kind. An ordinary
+        member is declared by an annotation such as `#!python name: str`
+        (a dataclass field included) or by a class attribute, a property or
+        a slot -- but not by a `#!python ClassVar`. A member the protocol
+        declares `#!python ClassVar` is declared by a `#!python ClassVar`
+        annotation alone. An annotation counts whether or not the attribute
+        is ever set, and
+        [`ishintstance`][bagof.dispatchers.core.ishintstance] counts it on
+        every instance too. Unlike a type checker, a read-only member (a
+        property without a setter, a `#!python Final`) counts for an
+        ordinary one.
 
     !!! example
         ```pycon

@@ -7,9 +7,11 @@ registered on one never ran. Three layers, each with its own section:
 * **value level** -- `ishintstance(v, P)` reads each data member off the
   value (its instance `__dict__` or its class) and each method off its class;
   a class that names `P` among its bases is one outright;
-* **hint level** -- `issubhint(C, P)` holds when every instance of `C` is
-  one: `C` names `P` among its bases, or defines every member itself (a bare
-  annotation does not count; a dataclass field does);
+* **hint level** -- `issubhint(C, P)` holds when `C` is a structural subtype
+  of `P` as a type checker reads it: `C` names `P` among its bases, or
+  holds or declares every member -- an annotation declares one, set or not,
+  and the value level then counts it as present on every instance, so the
+  order stays sound; a `ClassVar` member is declared only as a `ClassVar`;
 * **cache** -- such a position keys on the value's type and which of the
   protocol's data members it has, never on the value, and combines with a
   value- or declaration-dependent key at the same position.
@@ -32,7 +34,7 @@ import pytest
 import typing_extensions as tx
 
 # locals
-from bagof.dispatchers import NoMethodError
+from bagof.dispatchers import AmbiguousMethodError, NoMethodError
 from bagof.dispatchers._function import Function, _call_key, _Plan
 from bagof.dispatchers._lattice import (
     instance_members,
@@ -85,16 +87,91 @@ def _family(module: tx.Any) -> types.SimpleNamespace:
     class NotRuntime(module.Protocol):
         name: str
 
+    @module.runtime_checkable
+    class HasKind(module.Protocol):
+        """A class variable: read off the class alone."""
+
+        kind: module.ClassVar[str]
+
+    @module.runtime_checkable
+    class HasNameKind(module.Protocol):
+        """An instance variable and a class variable."""
+
+        name: str
+        kind: module.ClassVar[str]
+
+    class NameClassVar:
+        """Declares `name` as a class variable, and holds no value."""
+
+        name: module.ClassVar[str]
+
+    class NameCVSet:
+        """A class variable with a value: still not an instance variable."""
+
+        name: module.ClassVar[str] = "class-level"
+
+    class KindDeclared:
+        """Declares `kind` as a class variable, with no value."""
+
+        kind: module.ClassVar[str]
+
+    class KindCVSet:
+        """Declares `kind` as a class variable, with a value."""
+
+        kind: module.ClassVar[str] = "class-level"
+
+    class KindPlainAttr:
+        """A plain class attribute: an instance variable's default."""
+
+        kind = "class-level"
+
+    class KindInstance:
+        """Declares `kind` as an instance variable: not a class variable."""
+
+        kind: str
+
+    class NameKind:
+        name: str
+        kind: module.ClassVar[str]
+
     class Plain:
         """Declares nothing: an instance has `name` only if it is set."""
 
     class ClassAttr:
         name = "class-level"
 
+    class SubCV(ClassAttr):
+        """Redeclares an inherited instance variable `ClassVar`: a type
+        checker rejects the override, and the base's declaration stands."""
+
+        name: module.ClassVar[str] = "sub"  # type: ignore[misc]
+
+    class FinalName:
+        """Read-only: a type checker rejects it for a settable member."""
+
+        name: tx.Final = "final"
+
+    @dataclasses.dataclass
+    class WithInitVarDefault:
+        """An init-only variable with a default: still no attribute."""
+
+        name: dataclasses.InitVar[str] = "d"
+
     class Annotated:
-        """A bare annotation: promises nothing at runtime."""
+        """A bare annotation: declares `name`, as a type checker reads it."""
 
         name: str
+
+    class User:
+        """Annotates `name` and sets it in `__init__`."""
+
+        name: str
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class Inherits(Annotated):
+        """Declares `name` through its base's annotation."""
 
     @dataclasses.dataclass
     class Record:
@@ -107,7 +184,7 @@ def _family(module: tx.Any) -> types.SimpleNamespace:
 
     @dataclasses.dataclass
     class InitFalse:
-        """`__init__` never sets `name`: the class promises nothing."""
+        """`__init__` never sets `name`, but the field annotates it."""
 
         name: str = dataclasses.field(init=False)
 
@@ -124,6 +201,12 @@ def _family(module: tx.Any) -> types.SimpleNamespace:
 
     class Slotted:
         __slots__ = ("name",)
+
+    @dataclasses.dataclass
+    class WithInitVar:
+        """`name` is an init-only variable: never an attribute."""
+
+        name: dataclasses.InitVar[str]
 
     class Nominal(HasName):
         """Names `HasName` among its bases, and sets nothing."""
@@ -152,6 +235,12 @@ def _with_name(cls: type, value: tx.Any = "x") -> tx.Any:
     return obj
 
 
+def _with_kind(cls: type) -> tx.Any:
+    obj = cls()
+    obj.kind = "instance-level"
+    return obj
+
+
 # --- value level -------------------------------------------------------
 
 
@@ -171,7 +260,6 @@ def test_the_issue_repro(p: types.SimpleNamespace) -> None:
         (lambda p: p.Prop(), True),
         (lambda p: p.Nominal(), True),
         (lambda p: p.Plain(), False),
-        (lambda p: p.Annotated(), False),
         (lambda p: _with_name(p.Annotated), True),
         (lambda p: _with_name(p.Plain, None), True),
     ],
@@ -182,7 +270,6 @@ def test_the_issue_repro(p: types.SimpleNamespace) -> None:
         "property",
         "names-it-as-a-base",
         "missing",
-        "annotated-but-unset",
         "annotated-and-set",
         "set-to-none",
     ],
@@ -314,7 +401,7 @@ def test_a_class_made_at_runtime_is_not_kept_alive(
     def make() -> weakref.ReferenceType:
         throwaway = type("Throwaway", (), {})
         assert ishintstance(_with_name(throwaway), p.HasName) is True
-        assert throwaway in _relation._LOOKUPS
+        assert throwaway in _relation._CLASS_READINGS
         return weakref.ref(throwaway)
 
     ref = make()
@@ -380,17 +467,25 @@ def test_type_of_a_data_protocol(p: types.SimpleNamespace) -> None:
     "name, expected",
     [
         ("ClassAttr", True),
+        ("Annotated", True),
+        ("User", True),
+        ("Inherits", True),
         ("Record", True),
         ("Person", True),
+        ("InitFalse", True),
         ("InitFalseDefault", True),
+        ("SubCV", True),
         ("Prop", True),
+        ("FinalName", True),
         ("Slotted", True),
         ("Nominal", True),
         ("HasNameAge", True),
         ("HasName", True),
         ("Plain", False),
-        ("Annotated", False),
-        ("InitFalse", False),
+        ("NameClassVar", False),
+        ("NameCVSet", False),
+        ("WithInitVar", False),
+        ("WithInitVarDefault", False),
         ("OtherName", False),
         ("SupportsClose", False),
     ],
@@ -401,15 +496,107 @@ def test_what_is_below_a_data_protocol(
     assert issubhint(getattr(p, name), p.HasName) is expected
 
 
-def test_an_annotated_but_unset_attribute_is_not_declared(
+def test_an_annotation_declares_the_member(
     p: types.SimpleNamespace,
 ) -> None:
-    """Soundness: `Annotated <= HasName` would let an instance of a sub-hint
-    fail the super-hint's value check."""
+    """A type checker accepts `Annotated` as a `HasName`, set or not.
+
+    So the value level counts an annotated member as present on every
+    instance -- the order is sound only if an instance of a sub-hint is an
+    instance of the super-hint. That is where it parts from `isinstance`,
+    which finds no attribute on an instance that never set it.
+    """
     value = p.Annotated()
+    assert issubhint(p.Annotated, p.HasName) is True
     assert ishintstance(value, p.Annotated) is True
-    assert ishintstance(value, p.HasName) is False
-    assert issubhint(p.Annotated, p.HasName) is False
+    assert ishintstance(value, p.HasName) is True
+    assert isinstance(value, p.HasName) is False
+    # Declared by a base, it is declared by the subclass too.
+    assert issubhint(p.Inherits, p.HasName) is True
+    assert ishintstance(p.Inherits(), p.HasName) is True
+    # A dataclass field `__init__` never sets is annotated all the same.
+    assert issubhint(p.InitFalse, p.HasName) is True
+    assert ishintstance(p.InitFalse(), p.HasName) is True
+    assert isinstance(p.InitFalse(), p.HasName) is False
+
+
+def test_what_an_annotation_does_not_declare(
+    p: types.SimpleNamespace,
+) -> None:
+    """A `ClassVar` is not an instance variable, with a value or not, and
+    an `InitVar` is no attribute at all: a type checker rejects each of
+    them as a `HasName`."""
+    for cls in (
+        p.NameClassVar,
+        p.NameCVSet,
+        p.WithInitVar,
+        p.WithInitVarDefault,
+    ):
+        assert issubhint(cls, p.HasName) is False, cls
+    assert ishintstance(p.NameClassVar(), p.HasName) is False
+    assert ishintstance(p.NameCVSet(), p.HasName) is False
+    assert ishintstance(p.WithInitVar("n"), p.HasName) is False
+    assert ishintstance(p.WithInitVarDefault(), p.HasName) is False
+    # Unlike Python's `isinstance`, which finds the class attribute.
+    assert isinstance(p.NameCVSet(), p.HasName) is True
+
+
+def test_an_inherited_instance_variable_stays_declared(
+    p: types.SimpleNamespace,
+) -> None:
+    """Redeclared `ClassVar` in a subclass, it is still the base's
+    instance variable: every class stays below what its bases are below,
+    so `SubCV <= ClassAttr <= HasName` holds end to end."""
+    assert issubhint(p.SubCV, p.ClassAttr) is True
+    assert issubhint(p.ClassAttr, p.HasName) is True
+    assert issubhint(p.SubCV, p.HasName) is True
+    assert ishintstance(p.SubCV(), p.HasName) is True
+
+
+def test_a_read_only_member_counts(p: types.SimpleNamespace) -> None:
+    """A documented divergence: a type checker rejects a read-only member
+    for a settable one; dispatch only reads it, so it counts."""
+    for cls in (p.Prop, p.FinalName):
+        assert issubhint(cls, p.HasName) is True
+        assert ishintstance(cls(), p.HasName) is True
+
+
+def test_a_class_variable_member(p: types.SimpleNamespace) -> None:
+    """A `ClassVar` member is declared by the class, and only as a class
+    variable -- never by an instance, an instance variable's annotation, or
+    a plain class attribute (an instance variable's default)."""
+    assert issubhint(p.KindDeclared, p.HasKind) is True
+    assert issubhint(p.KindCVSet, p.HasKind) is True
+    assert issubhint(p.KindPlainAttr, p.HasKind) is False
+    assert issubhint(p.KindInstance, p.HasKind) is False
+    assert issubhint(p.Plain, p.HasKind) is False
+    assert ishintstance(p.KindDeclared(), p.HasKind) is True
+    assert ishintstance(p.KindCVSet(), p.HasKind) is True
+    assert ishintstance(p.KindPlainAttr(), p.HasKind) is False
+    assert ishintstance(p.KindInstance(), p.HasKind) is False
+    assert ishintstance(_with_kind(p.Plain), p.HasKind) is False
+    # Read off the class alone, so it adds nothing to the call cache's key.
+    assert instance_members(p.HasKind) == ()
+    assert instance_members(p.HasNameKind) == ("name",)
+
+
+def test_an_instance_and_a_class_variable_together(
+    p: types.SimpleNamespace,
+) -> None:
+    assert issubhint(p.NameKind, p.HasNameKind) is True
+    assert ishintstance(p.NameKind(), p.HasNameKind) is True
+    assert issubhint(p.Annotated, p.HasNameKind) is False
+    assert issubhint(p.KindDeclared, p.HasNameKind) is False
+    named = _with_name(p.KindCVSet)
+    assert ishintstance(named, p.HasNameKind) is True
+    assert ishintstance(p.KindCVSet(), p.HasNameKind) is False
+    f = Function("f")
+    f.register((p.HasNameKind,))(lambda x: "name-kind")
+    f.register((object,))(lambda x: "object")
+    for _ in range(2):
+        assert f(named) == "name-kind"
+        assert f(p.KindCVSet()) == "object"
+        assert f(p.NameKind()) == "name-kind"
 
 
 def test_protocols_order_by_their_bases(p: types.SimpleNamespace) -> None:
@@ -457,6 +644,23 @@ _VALUES = [
     lambda p: p.ClassAttr(),
     lambda p: p.Annotated(),
     lambda p: _with_name(p.Annotated),
+    lambda p: p.User("u"),
+    lambda p: p.User.__new__(p.User),
+    lambda p: p.Inherits(),
+    lambda p: p.WithInitVar("n"),
+    lambda p: p.NameClassVar(),
+    lambda p: p.NameCVSet(),
+    lambda p: p.SubCV(),
+    lambda p: p.FinalName(),
+    lambda p: p.WithInitVarDefault(),
+    lambda p: _with_name(p.NameCVSet),
+    lambda p: p.KindDeclared(),
+    lambda p: p.KindCVSet(),
+    lambda p: _with_name(p.KindCVSet),
+    lambda p: p.KindPlainAttr(),
+    lambda p: _with_kind(p.Plain),
+    lambda p: p.KindInstance(),
+    lambda p: p.NameKind(),
     lambda p: p.Record("r"),
     lambda p: p.Person("r", 1),
     lambda p: p.InitFalse(),
@@ -479,6 +683,21 @@ _HINTS = [
     "Plain",
     "ClassAttr",
     "Annotated",
+    "User",
+    "Inherits",
+    "WithInitVar",
+    "NameClassVar",
+    "NameCVSet",
+    "SubCV",
+    "FinalName",
+    "WithInitVarDefault",
+    "HasKind",
+    "HasNameKind",
+    "KindDeclared",
+    "KindCVSet",
+    "KindPlainAttr",
+    "KindInstance",
+    "NameKind",
     "Record",
     "Person",
     "InitFalse",
@@ -504,6 +723,201 @@ def test_dispatch_soundness(p: types.SimpleNamespace) -> None:
                     assert ishintstance(value, base), (value, sub, base)
 
 
+# --- what an annotation declares ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "annotation, kind",
+    [
+        (str, _relation._INSTANCE_VARIABLE),
+        (tx.List[int], _relation._INSTANCE_VARIABLE),
+        (tx.Annotated[str, "m"], _relation._INSTANCE_VARIABLE),
+        (typing.ClassVar, _relation._CLASS_VARIABLE),
+        (typing.ClassVar[int], _relation._CLASS_VARIABLE),
+        (tx.ClassVar[int], _relation._CLASS_VARIABLE),
+        (dataclasses.InitVar, _relation._NOT_AN_ATTRIBUTE),
+        (dataclasses.InitVar[int], _relation._NOT_AN_ATTRIBUTE),
+        (tx.ForwardRef("Undefined"), _relation._INSTANCE_VARIABLE),
+        (tx.ForwardRef("ClassVar[int]"), _relation._CLASS_VARIABLE),
+        ("int", _relation._INSTANCE_VARIABLE),
+        ("ClassVar", _relation._CLASS_VARIABLE),
+        ("ClassVar[int]", _relation._CLASS_VARIABLE),
+        (" typing . ClassVar [int]", _relation._CLASS_VARIABLE),
+        ("tx.Annotated[ClassVar[int], 'm']", _relation._CLASS_VARIABLE),
+        ("Annotated[int, 'm']", _relation._INSTANCE_VARIABLE),
+        ("Annotated", _relation._INSTANCE_VARIABLE),
+        ("dataclasses.InitVar[int]", _relation._NOT_AN_ATTRIBUTE),
+        ("KW_ONLY", _relation._NOT_AN_ATTRIBUTE),
+        ("List[ClassVar[int]]", _relation._INSTANCE_VARIABLE),
+        ("", _relation._INSTANCE_VARIABLE),
+        ("'int'", _relation._INSTANCE_VARIABLE),
+    ],
+)
+def test_the_kind_an_annotation_declares(
+    annotation: tx.Any, kind: int
+) -> None:
+    """Read by its marker; text is read by name, never evaluated."""
+    assert _relation._annotation_kind(annotation) == kind
+
+
+def test_a_class_variable_inside_annotated() -> None:
+    try:
+        annotation = tx.Annotated[tx.ClassVar[int], "m"]
+    except TypeError:  # pragma: no cover -- refused before 3.11
+        pytest.skip("Annotated[ClassVar[...]] is refused on this Python")
+    assert _relation._annotation_kind(annotation) == _relation._CLASS_VARIABLE
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="KW_ONLY is 3.10+")
+def test_a_kw_only_marker_declares_nothing(p: types.SimpleNamespace) -> None:
+    @dataclasses.dataclass
+    class KeywordOnly:
+        _: dataclasses.KW_ONLY  # type: ignore[name-defined]
+        name: str
+
+    @tx.runtime_checkable
+    class HasUnderscore(tx.Protocol):
+        _: int
+
+    assert issubhint(KeywordOnly, p.HasName) is True
+    assert issubhint(KeywordOnly, HasUnderscore) is False
+    assert ishintstance(KeywordOnly(name="k"), HasUnderscore) is False
+
+
+def test_annotations_written_as_text(p: types.SimpleNamespace) -> None:
+    """Under `from __future__ import annotations` every annotation is a
+    string; what it declares is read from its text."""
+    import _future_annotations_protocols as fa
+
+    for cls in (fa.Annotated, fa.Quoted, fa.ShadowedInitVar):
+        assert issubhint(cls, p.HasName) is True, cls
+        assert ishintstance(cls(), p.HasName) is True, cls
+    for cls in (
+        fa.NameClassVar,
+        fa.NameDottedClassVar,
+        fa.NameAnnotatedClassVar,
+        fa.AliasClassVar,
+        fa.QualifiedClassVar,
+        fa.BodyAliasClassVar,
+        fa.WithInitVar,
+    ):
+        assert issubhint(cls, p.HasName) is False, cls
+    assert ishintstance(fa.WithInitVar("n"), p.HasName) is False
+    assert ishintstance(fa.AliasClassVar(), p.HasName) is False
+    for cls in (fa.KindDeclared, fa.AliasKind):
+        assert issubhint(cls, p.HasKind) is True, cls
+    assert issubhint(fa.KindInstance, p.HasKind) is False
+
+
+def test_a_marker_is_looked_up_where_it_is_written() -> None:
+    """By dictionary lookups alone: the class, its module, the builtins,
+    and a module's attributes; a name that is not found is read by its
+    last part."""
+    import _future_annotations_protocols as fa
+
+    kind = _relation._text_annotation_kind
+    assert kind("CV[int]", fa.AliasClassVar) == _relation._CLASS_VARIABLE
+    assert kind("InitVar", fa.ShadowedInitVar) == (
+        _relation._INSTANCE_VARIABLE
+    )
+    assert kind("InitVar", None) == _relation._NOT_AN_ATTRIBUTE
+    assert kind("t.ClassVar[int]", fa.Annotated) == _relation._CLASS_VARIABLE
+    assert kind("t.Nope[int]", fa.Annotated) == _relation._INSTANCE_VARIABLE
+    # `str` is found, but is not a module: read by the last part.
+    assert kind("str.ClassVar", fa.Annotated) == _relation._CLASS_VARIABLE
+    assert kind("str", fa.Annotated) == _relation._INSTANCE_VARIABLE
+    assert kind("tx.Annotated[CV[int], 'm']", fa.Annotated) == (
+        _relation._CLASS_VARIABLE
+    )
+    assert kind("tx.Annotated", fa.Annotated) == (
+        _relation._INSTANCE_VARIABLE
+    )
+    # A class whose module is not loaded: its own namespace and builtins.
+    orphan = type("Orphan", (), {"__module__": "_no_such_module"})
+    assert kind("CV[int]", orphan) == _relation._INSTANCE_VARIABLE
+
+
+def test_a_protocol_written_as_text() -> None:
+    """A protocol's own `ClassVar` members are read the same way."""
+    namespace = {}  # type: tx.Dict[str, tx.Any]
+    exec(  # noqa: S102 -- a fixed source, for the future import
+        "from __future__ import annotations\n"
+        "import typing_extensions as tx\n"
+        "@tx.runtime_checkable\n"
+        "class HasKind(tx.Protocol):\n"
+        "    kind: tx.ClassVar[str]\n"
+        "    name: str\n",
+        namespace,
+    )
+    members = _relation._data_protocol_members(namespace["HasKind"])
+    assert members is not None
+    assert members.data == ("name",)
+    assert members.class_variables == ("kind",)
+
+
+def test_a_sub_protocol_redeclares_a_member() -> None:
+    """The nearest annotation says which kind a protocol's member is."""
+
+    @tx.runtime_checkable
+    class HasKind(tx.Protocol):
+        kind: tx.ClassVar[str]
+
+    @tx.runtime_checkable
+    class HasInstanceKind(HasKind, tx.Protocol):
+        kind: str  # type: ignore[misc]
+
+    assert _relation._data_protocol_members(HasKind).class_variables == (
+        "kind",
+    )
+    members = _relation._data_protocol_members(HasInstanceKind)
+    assert members.data == ("kind",)
+    assert members.class_variables == ()
+
+
+def test_a_typeddict_declares_keys_not_attributes(
+    p: types.SimpleNamespace,
+) -> None:
+    """A `TypedDict` value is a plain `dict`, which has no `name`."""
+
+    class Movie(tx.TypedDict):
+        name: str
+
+    assert issubhint(Movie, p.HasName) is False
+    assert ishintstance(Movie(name="m"), p.HasName) is False
+
+
+def test_a_metaclass_annotation_declares_for_its_classes(
+    p: types.SimpleNamespace,
+) -> None:
+    """A class object is an instance of its metaclass: the metaclass's
+    annotations are what declare its members, not the class's own."""
+
+    class Meta(type):
+        name: str
+
+    class Made(metaclass=Meta):
+        pass
+
+    assert issubhint(Meta, p.HasName) is True
+    assert ishintstance(Made, p.HasName) is True
+    assert ishintstance(p.Annotated, p.HasName) is False
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 14), reason="annotations are lazy from 3.14"
+)
+def test_an_annotation_that_cannot_be_evaluated_declares_nothing(
+    p: types.SimpleNamespace,
+) -> None:
+    namespace = {}  # type: tx.Dict[str, tx.Any]
+    exec(  # noqa: S102 -- raises only when the annotation is evaluated
+        "class Broken:\n    name: 1 / 0\n", namespace
+    )
+    broken = namespace["Broken"]
+    assert issubhint(broken, p.HasName) is False
+    assert ishintstance(broken(), p.HasName) is False
+
+
 # --- dispatch and the cache --------------------------------------------
 
 
@@ -526,9 +940,10 @@ def test_a_data_protocol_overload_beats_object(
     assert f(p.Plain()) == "object"
     assert f(p.ClassAttr()) == "named"
     assert f(p.Record("r")) == "named"
-    assert f(p.Annotated()) == "object"
+    assert f(p.Annotated()) == "named"
     assert f.resolve(p.ClassAttr).function(None) == "named"
-    assert f.resolve(p.Annotated).function(None) == "object"
+    assert f.resolve(p.Annotated).function(None) == "named"
+    assert f.resolve(p.WithInitVar).function(None) == "object"
 
 
 def test_the_more_specific_protocol_wins(p: types.SimpleNamespace) -> None:
@@ -552,6 +967,81 @@ def test_a_class_that_declares_the_members_is_more_specific(
     f.register((p.Record,))(lambda x: "record")
     assert f(p.Record("r")) == "record"
     assert f(p.ClassAttr()) == "protocol"
+
+
+def _user_or_named(p: types.SimpleNamespace, cls: type) -> Function:
+    f = Function("f")
+    f.register((p.HasName,))(lambda x: "protocol")
+    f.register((cls,))(lambda x: "class")
+    return f
+
+
+def test_a_class_that_annotates_the_members_is_more_specific(
+    p: types.SimpleNamespace,
+) -> None:
+    """`User` annotates `name` and sets it in `__init__`: a type checker
+    accepts it as a `HasName`, so its overload is the more specific one."""
+    assert issubhint(p.User, p.HasName) is True
+    assert issubhint(p.HasName, p.User) is False
+    f = _user_or_named(p, p.User)
+    for _ in range(2):
+        assert f(p.User("u")) == "class"
+        assert f(_with_name(p.Plain)) == "protocol"
+    g = Function("g")
+
+    @g.register
+    def _protocol(*, x: p.HasName) -> str:  # type: ignore[name-defined]
+        return "protocol"
+
+    @g.register
+    def _class(*, x: p.User) -> str:  # type: ignore[name-defined]
+        return "class"
+
+    for _ in range(2):
+        assert g(x=p.User("u")) == "class"
+        assert g(x=_with_name(p.Plain)) == "protocol"
+    assert f.ambiguities() == []
+
+
+def test_an_annotated_member_never_set(p: types.SimpleNamespace) -> None:
+    """The value check and dispatch take the annotation at its word."""
+    unset = p.User.__new__(p.User)
+    assert ishintstance(unset, p.User) is True
+    assert ishintstance(unset, p.HasName) is True
+    f = _user_or_named(p, p.User)
+    assert f(unset) == "class"
+    g = _named_or_not(p)
+    assert g(unset) == "named"
+    assert g(p.Annotated()) == "named"
+
+
+def test_a_class_that_declares_nothing_stays_ambiguous(
+    p: types.SimpleNamespace,
+) -> None:
+    """`Plain` declares no `name`: an instance that gains one is in both,
+    and neither overload is more specific."""
+    assert issubhint(p.Plain, p.HasName) is False
+    assert issubhint(p.HasName, p.Plain) is False
+    f = _user_or_named(p, p.Plain)
+    for _ in range(2):
+        with pytest.raises(AmbiguousMethodError):
+            f(_with_name(p.Plain))
+        assert f(p.Plain()) == "class"
+
+
+def test_an_annotated_member_keys_the_same_for_every_instance(
+    p: types.SimpleNamespace,
+) -> None:
+    """Declared by the class, `name` is present on every instance, so set
+    or not, they share one key -- and one cache entry."""
+    f = _named_or_not(p)
+    f(p.User("u"))
+    plan = _plan_of(f, (1, ()))
+    unset = p.User.__new__(p.User)
+    assert _call_key((unset,), {}, plan) == (1, (p.User, (True,)))
+    assert _call_key((p.User("u"),), {}, plan) == (1, (p.User, (True,)))
+    f(unset)
+    assert len(f._cache.call_cache) == 1
 
 
 def test_a_union_with_a_data_protocol(p: types.SimpleNamespace) -> None:
