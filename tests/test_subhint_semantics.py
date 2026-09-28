@@ -356,3 +356,46 @@ def test_nan_maps_to_a_recognisable_marker() -> None:
     from bagof.dispatchers.core import eq_safenan
 
     assert repr(eq_safenan(float("nan"))) == "<NaN>"
+
+
+# --- the argument guard: issubhint mimics issubclass (0.2.0) ------------
+
+
+def test_issubhint_raises_on_a_non_hint_argument() -> None:
+    # A non-hint on either side is a caller error, like `issubclass`.
+    with pytest.raises(TypeError):
+        issubhint(1, tx.Any)
+    with pytest.raises(TypeError):
+        issubhint(1, 1)
+    with pytest.raises(TypeError):
+        issubhint(1, int)
+    with pytest.raises(TypeError):
+        issubhint(int, 1)
+
+
+def test_issubhint_left_error_wins_when_both_are_non_hints() -> None:
+    # The message names the left (first) offending argument.
+    with pytest.raises(TypeError, match="123"):
+        issubhint(123, 456)
+
+
+def test_issubhint_accepts_a_string_on_the_left_only() -> None:
+    # A bare string is a forward reference: a hint on the left (answered as
+    # unknown), but unresolvable on the right, where it keeps raising.
+    assert issubhint("Foo", int) is False
+    with pytest.raises(TypeError):
+        issubhint(int, "Foo")
+
+
+def test_ishintstance_guards_only_the_hint_side() -> None:
+    # The value may be anything; the hint must be a hint.
+    assert ishintstance(1, int) is True
+    with pytest.raises(TypeError):
+        ishintstance(1, 123)
+
+
+def test_bare_annotated_super_hint_is_structural() -> None:
+    # A bare `Annotated` accepts only an `Annotated` form, not a plain type.
+    assert issubhint(int, tx.Annotated) is False
+    assert issubhint(tx.Annotated[int, "meta"], tx.Annotated) is True
+    assert issubhint(tx.Annotated, tx.Annotated) is True
