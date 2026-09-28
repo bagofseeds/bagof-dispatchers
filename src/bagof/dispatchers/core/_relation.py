@@ -1,4 +1,4 @@
-"""The hint-level subtype relation: `issubhint` and `ishintstance`."""
+"""The hint-level subtype relation: [`issubhint`][] and [`ishintstance`][]."""
 
 # stdlib
 import builtins
@@ -78,32 +78,32 @@ _BARE_TUPLE_FORMS = spellings("Tuple") + (tuple,)
 
 
 def _is_any(hint: tx.Any) -> bool:
-    """Whether `hint` is `Any`, in any spelling."""
+    """Report whether `hint` is `Any`, in any spelling."""
     return any(hint is form for form in _ANY_FORMS)
 
 
 def _is_literal(origin: tx.Any) -> bool:
-    """Whether `origin` is the `Literal` form, in any spelling."""
+    """Report whether `origin` is the `Literal` form, in any spelling."""
     return any(origin is form for form in _LITERAL_FORMS)
 
 
 def _is_never(hint: tx.Any) -> bool:
-    """Whether `hint` is a bottom type (`Never`/`NoReturn`)."""
+    """Report whether `hint` is a bottom type, `Never` or `NoReturn`."""
     return any(hint is form for form in _NEVER_FORMS)
 
 
 def _is_unpack(hint: tx.Any) -> bool:
-    """Whether `hint` is an `Unpack[...]`, in any spelling.
+    """Report whether `hint` is an `Unpack[...]`, in any spelling.
 
-    On 3.11 `typing.Unpack is not typing_extensions.Unpack`, and the star
-    syntax `Tuple[int, *Ts]` and `tx.Unpack[Ts]` produce the two different
-    spellings -- so the origin is tested against both.
+    On Python 3.11, `typing.Unpack is not typing_extensions.Unpack`,
+    and the star syntax `Tuple[int, *Ts]` and `tx.Unpack[Ts]` produce
+    the two different spellings, so the origin is tested against both.
     """
     return any(safe_get_origin(hint) is form for form in _UNPACK_FORMS)
 
 
 def _is_unpacked_typevartuple(hint: tx.Any) -> bool:
-    """Whether `hint` is `Unpack[Ts]` for a `TypeVarTuple` `Ts`."""
+    """Report whether `hint` is `Unpack[Ts]` for a `TypeVarTuple` `Ts`."""
     if not _is_unpack(hint):
         return False
     args = tx.get_args(hint)
@@ -113,11 +113,11 @@ def _is_unpacked_typevartuple(hint: tx.Any) -> bool:
 def _known_form(hint: tx.Any) -> tx.Any:
     """Map a known non-class form to the class it dispatches as.
 
-    `LiteralString` dispatches as [`str`][], and `TypeGuard[...]` /
-    `TypeIs[...]` as [`bool`][]. An unpacked `TypeVarTuple` (`*Ts`) is an open
-    run of `Any` elements, so on its own -- an `*args: *Ts` tail read as a
-    single slot -- it dispatches as [`Any`][typing.Any]. Every other hint is
-    returned unchanged.
+    `LiteralString` dispatches as [`str`][], and `TypeGuard[...]` or
+    `TypeIs[...]` dispatches as [`bool`][]. An unpacked `TypeVarTuple`,
+    `*Ts`, is an open run of `Any` elements, so on its own, as an
+    `*args: *Ts` tail read as a single slot, it dispatches as
+    [`Any`][typing.Any]. Every other hint is returned unchanged.
     """
     if any(hint is form for form in _LITERALSTRING_FORMS):
         return str
@@ -132,12 +132,13 @@ def _known_form(hint: tx.Any) -> tx.Any:
 
 
 def _typevar_upper(tv: tx.Any) -> tx.Any:
-    """The upper bound of a `TypeVar`, for dispatch.
+    """Return the upper bound of a `TypeVar`, for dispatch.
 
-    Its bound, the union of its constraints, or [`Any`][typing.Any] -- and
-    **not** its PEP 696 default, which is a static-checker fallback that
-    dispatch ignores (so `#!python TypeVar("T", bound=float, default=int)`
-    dispatches as `float`).
+    This is its bound, the union of its constraints, or
+    [`Any`][typing.Any], and never its PEP 696 default, which is a
+    static-checker fallback that dispatch ignores, so
+    `#!python TypeVar("T", bound=float, default=int)` dispatches as
+    `float`.
     """
     constraints = getattr(tv, "__constraints__", ())
     if constraints:
@@ -149,7 +150,7 @@ def _typevar_upper(tv: tx.Any) -> tx.Any:
 
 
 def _equivalent(a: tx.Any, b: tx.Any) -> bool:
-    """Whether two hints accept exactly the same values."""
+    """Report whether two hints accept exactly the same values."""
     return issubhint(a, b) and issubhint(b, a)
 
 
@@ -157,11 +158,12 @@ _WARNED_UNKNOWN = set()  # type: set
 
 
 def _warn_key(hint: tx.Any) -> tx.Any:
-    """A stable, hashable key identifying an unknown *form*.
+    """Return a stable, hashable key identifying an unknown form.
 
-    A future form and every hint built from it (`Unpack[Ts]`, `Unpack[Us]`,
-    ...) share one origin, so the origin -- or the form itself when it has
-    none -- keys the warning, deduping per form rather than per `repr`.
+    A future form and every hint built from it, such as `Unpack[Ts]`
+    and `Unpack[Us]`, share one origin, so the origin, or the form
+    itself when it has none, keys the warning, deduping per form rather
+    than per `repr`.
     """
     origin = safe_get_origin(hint)
     try:
@@ -193,7 +195,7 @@ def _warn_unknown(hint: tx.Any) -> None:
 
 
 def _not_a_hint_message(obj: tx.Any) -> str:
-    """The error text for an object that is not a usable type hint."""
+    """Return the error text for an object that is not a usable type hint."""
     if isinstance(obj, str):
         # A bare string is a forward reference, which cannot be resolved
         # without the namespace it was written in -- not available here.
@@ -211,66 +213,75 @@ def _not_a_hint_message(obj: tx.Any) -> str:
 
 
 def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
-    """
-    Like isinstance, but the second argument can be a type hint.
+    """Report whether `obj` is a value of `hint`, a type hint rather
+    than a class.
 
-    * If `hint` is [`type`][] or [`Type[...]`][tx.Type], checks
-      that `obj` is a type and that it is valid subclass of the hint argument.
-    * If `hint` is a [`Literal`][tx.Literal], checks that `obj` is one of
-      its values. The value must match in type as well: `#!python True` is
-      not a valid `#!python Literal[1]`, even though `#!python True == 1`.
-    * If `hint` is a [`Union`][tx.Union], checks `obj` against each of
-      its members.
-    * If `hint` is a [`TypedDict`][tx.TypedDict], checks the *shape* of
-      `obj`: it must be a [`dict`][] that holds every required key, and each
-      declared key it holds must carry a value of that field's type. Keys
-      beyond the declared ones follow the `TypedDict`: an open one (the
-      default) allows them, a `closed=True` one rejects them, and an
-      `extra_items=` one checks each against that type. A nested `TypedDict`
-      or container field is read recursively.
-    * If `hint` is a [`runtime_checkable`][typing.runtime_checkable]
-      protocol with **data members** (`#!python name: str`), checks the
-      value itself, much as [`isinstance`][] does: its class names the
-      protocol among its bases, or every data member is present on the
-      value -- set on the instance, or declared by its class: an
-      annotation, a class attribute, a property or a slot, but not a
-      `#!python ClassVar` -- and every method is defined by its class. An
-      annotated member counts even on an instance that never set it, where
-      [`isinstance`][] finds nothing: that is how a type checker reads the
-      annotation, and it keeps this check in step with
-      [`issubhint`][bagof.dispatchers.core.issubhint]. A member the protocol
-      declares `#!python ClassVar` is read off the class alone, and only a
-      `#!python ClassVar` annotation declares it. Members are looked up
-      without running the value's code: a property is not called and
-      `__getattr__` is not asked. A protocol with methods only is checked
-      on the value's type.
-    * If `hint` is a parametrised generic (`#!python List[int]`,
-      `#!python Box[int]`), checks that `obj` is an instance of its class,
-      and checks the type arguments only when `obj` **declares** them: an
-      instance built as `#!python Box[int]()`, or an instance of a class
-      written against a parametrised base
-      (`#!python class IntList(List[int])`). The arguments are then compared
-      as [`issubhint`][bagof.dispatchers.core.issubhint] compares them, so
-      an invariant position asks for the same type: `#!python Box[int]()` is
-      not a `#!python Box[object]`, and an `#!python IntList` is not a
-      `#!python List[object]` (it is a `#!python List[Any]`, a
-      `#!python list` and a `#!python Sequence[object]`).
+    Like [`isinstance`][], but the second argument can be any type hint,
+    not only a class. Each kind of hint is checked according to what it
+    means.
+
+    A [`type`][] or [`Type[...]`][tx.Type] hint checks that `obj` is
+    itself a type, and a valid subclass of the hint's argument. A
+    [`Literal`][tx.Literal] hint checks that `obj` is one of its
+    values, matching in type as well as value, so `#!python True` is
+    not a valid `#!python Literal[1]` even though
+    `#!python True == 1`. A [`Union`][tx.Union] hint checks `obj`
+    against each of its members in turn.
+
+    A [`TypedDict`][tx.TypedDict] hint checks the shape of `obj`: it
+    must be a [`dict`][] holding every required key, and each declared
+    key it holds must carry a value of that field's type. Keys beyond
+    the declared ones follow the `TypedDict`'s own policy: an open one,
+    the default, allows them, a `closed=True` one rejects them, and an
+    `extra_items=` one checks each against that type. A nested
+    `TypedDict` or container field is read recursively.
+
+    A [`runtime_checkable`][typing.runtime_checkable] protocol with
+    data members, such as one declaring `#!python name: str`, checks
+    the value itself, much as [`isinstance`][] does: either its class
+    names the protocol among its bases, or every data member is
+    present on the value, whether set on the instance or declared by
+    its class through an annotation, a class attribute, a property, or
+    a slot, but not a `#!python ClassVar`, and every method is defined
+    by its class. An annotated member counts even on an instance that
+    never set it, where [`isinstance`][] finds nothing, because that is
+    how a type checker reads the annotation, and it keeps this check in
+    step with [`issubhint`][]. A member the protocol declares
+    `#!python ClassVar` is read off the class alone, and only a
+    `#!python ClassVar` annotation declares one. Members are looked up
+    without running the value's code: a property is not called, and
+    `__getattr__` is not asked. A protocol with methods only is checked
+    on the value's type instead.
+
+    A parametrised generic, such as `#!python List[int]` or
+    `#!python Box[int]`, checks that `obj` is an instance of its class,
+    and checks the type arguments only when `obj` declares them, as an
+    instance built with `#!python Box[int]()` does, or an instance of a
+    class written against a parametrised base such as
+    `#!python class IntList(List[int])`. The arguments are then
+    compared the way [`issubhint`][] compares them, so an invariant
+    position asks for the same type: `#!python Box[int]()` is not a
+    `#!python Box[object]`, and an `#!python IntList` is not a
+    `#!python List[object]`, though it is a `#!python List[Any]`, a
+    `#!python list`, and a `#!python Sequence[object]`.
+
+    Anything else returns `#!python issubhint(type(obj), hint)`.
 
     !!! note
-        `#!python Box[int]()` writes its record onto the instance only after
-        `__init__` returns, so a call dispatched on `self` from inside
-        `__init__` sees a value that declares nothing yet. An instance that
-        cannot hold the record -- a class with `__slots__` and no
-        `__dict__`, or a frozen dataclass -- never declares its arguments.
-    * Otherwise, returns `#!python  issubhint(type(obj), hint)`.
+        `#!python Box[int]()` writes its record onto the instance only
+        after `__init__` returns, so a call dispatched on `self` from
+        inside `__init__` sees a value that declares nothing yet. An
+        instance that cannot hold the record, such as a class with
+        `__slots__` and no `__dict__`, or a frozen dataclass, never
+        declares its arguments.
 
     !!! warning
-        A container's **item types are not checked**. A plain
+        A container's item types are not checked. A plain
         `#!python [1, 2]` declares no type arguments, so it is a valid
-        `#!python List[str]` as far as this function is concerned. (Python
-        itself refuses `#!python isinstance(x, list[int])` for the same
-        reason.) Checking the items means iterating them, which is the
-        caller's decision to make - `bagof.validators` does it.
+        `#!python List[str]` as far as this function is concerned;
+        Python itself refuses `#!python isinstance(x, list[int])` for
+        the same reason. Checking the items means iterating them, which
+        is the caller's decision to make; `bagof.validators` does it.
 
     !!! example
         ```pycon
@@ -354,17 +365,17 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
 
 
 def _literal_value_eq(a: tx.Any, b: tx.Any) -> bool:
-    """Type-aware equality of two Literal values (PEP 586).
+    """Report the type-aware equality of two `Literal` values, per PEP 586.
 
-    ``1 == True`` and ``1 == 1.0`` are True in Python but denote different
-    literal values, so the types must match too. ``eq_safenan`` keeps a NaN
-    literal equal to itself.
+    `#!python 1 == True` and `#!python 1 == 1.0` are `#!python True` in
+    Python, but they denote different literal values, so the types must
+    match too. [`eq_safenan`][] keeps a NaN literal equal to itself.
     """
     return type(a) is type(b) and eq_safenan(a) == eq_safenan(b)
 
 
 def _ishintstance_literal(obj: tx.Any, hint: tx.Any) -> bool:
-    """Check that a value is one of a `Literal`'s values."""
+    """Report whether a value is one of a `Literal`'s values."""
     # Both the type and the value must match. Python compares `True == 1`
     # and `1 == 1.0` as equal, but PEP 586 makes literal matching
     # type-aware, so `Literal[1]` must reject `True` and `1.0`.
@@ -372,7 +383,7 @@ def _ishintstance_literal(obj: tx.Any, hint: tx.Any) -> bool:
 
 
 def _ishintstance_type(obj: tx.Any, hint: tx.Any) -> bool:
-    """Like isinstance, but the second argument can be a type hint."""
+    """Report whether `obj` is a valid subclass named by a `type[...]` hint."""
     # Unwrap the hint, do *not* take its origin: the origin of `type[T]`
     # is the bare `type`, whose `get_args` is always empty, which would
     # make every `type[T]` behave like an unparametrised `type`.
@@ -420,11 +431,12 @@ def _ishintstance_type(obj: tx.Any, hint: tx.Any) -> bool:
 class _ProtocolMembers(tx.NamedTuple):
     """A runtime-checkable protocol's members, split by where they are read.
 
-    `data` are its instance variables, read off the value (its instance
-    `__dict__`, its class, or its class's annotations). `methods` and
-    `class_variables` -- the data members it declares `ClassVar` -- are read
-    off the value's class. All are sorted, so a caller that keys on them
-    always reads them in the same order.
+    `data` holds its instance variables, read off the value: its
+    instance `__dict__`, its class, or its class's annotations.
+    `methods` and `class_variables`, the data members it declares
+    `ClassVar`, are read off the value's class instead. All three are
+    sorted, so a caller that keys on them always reads them in the same
+    order.
     """
 
     data: tx.Tuple[str, ...]
@@ -438,14 +450,16 @@ _ABSENT = object()
 
 
 def _data_protocol_members(cls: tx.Any) -> tx.Optional[_ProtocolMembers]:
-    """The members of `cls` if it is a runtime protocol with data members.
+    """Return the members of `cls` if it is a runtime protocol with
+    data members.
 
-    Returns `#!python None` for anything else: a class that is not a
-    protocol (a concrete class that merely inherits one included), a protocol
-    that is not [`runtime_checkable`][typing.runtime_checkable] -- Python
-    refuses to instance-check it, and so does the relation -- and a protocol
-    whose members are all methods, which Python decides from the class and
-    the relation keeps reading by type.
+    This returns `#!python None` for anything else: a class that is not
+    a protocol, including a concrete class that merely inherits one; a
+    protocol that is not
+    [`runtime_checkable`][typing.runtime_checkable], which Python
+    refuses to instance-check and so does the relation; and a protocol
+    whose members are all methods, which Python decides from the class
+    alone and the relation keeps reading by type as well.
     """
     if not isinstance(cls, type):
         return None
@@ -466,12 +480,14 @@ def _data_protocol_members(cls: tx.Any) -> tx.Optional[_ProtocolMembers]:
 
 @functools.lru_cache(maxsize=None)
 def _read_protocol_members(cls: type) -> tx.Optional[_ProtocolMembers]:
-    """[`_data_protocol_members`][] for a runtime-checkable class, memoised.
+    """Compute [`_data_protocol_members`][] for a runtime-checkable
+    class, memoised.
 
-    A member is a method when the protocol holds a callable under its name,
-    and a data member otherwise -- an annotation alone, a property, or a
-    plain default -- the same split Python makes. A data member is a class
-    variable when the protocol's nearest annotation of it is `ClassVar`.
+    A member is a method when the protocol holds a callable under its
+    name, and a data member otherwise, whether an annotation alone, a
+    property, or a plain default, the same split Python itself makes.
+    A data member is a class variable when the protocol's nearest
+    annotation of it is `ClassVar`.
     """
     if not tx.is_protocol(cls):
         return None
@@ -495,10 +511,11 @@ def _read_protocol_members(cls: type) -> tx.Optional[_ProtocolMembers]:
 
 
 def _class_attribute(cls: type, name: str) -> tx.Any:
-    """What `cls` defines under `name`, anywhere in its MRO, or `_ABSENT`.
+    """Return what `cls` defines under `name`, anywhere in its MRO,
+    or `_ABSENT`.
 
-    Read out of each class's own namespace, so a property is found, not
-    called, and nothing of the class's own code runs.
+    This reads out of each class's own namespace, so a property is
+    found, not called, and none of the class's own code runs.
     """
     for base in cls.__mro__:
         namespace = base.__dict__
@@ -508,10 +525,10 @@ def _class_attribute(cls: type, name: str) -> tx.Any:
 
 
 def _has_method(cls: type, name: str) -> bool:
-    """Whether `cls` defines the protocol method `name`.
+    """Report whether `cls` defines the protocol method `name`.
 
     A class that sets the name to `#!python None` declares that it does
-    *not* support it, as Python reads a protocol method too.
+    not support it, the same way Python reads a protocol method too.
     """
     found = _class_attribute(cls, name)
     return found is not _ABSENT and found is not None
@@ -520,32 +537,34 @@ def _has_method(cls: type, name: str) -> bool:
 def _present_data_members(
     obj: tx.Any, names: tx.Sequence[str]
 ) -> tx.Tuple[bool, ...]:
-    """Whether the value `obj` has each instance variable in `names`, in order.
+    """Report whether `obj` has each instance variable in `names`, in order.
 
-    A name is present when it is in the instance's own `__dict__`, or when
-    the value's class declares it an instance variable anywhere in its MRO
-    ([`_class_reading`][]): an annotation (`#!python name: str`), or a class
-    attribute, a property, a slot or a method that the same class does not
-    annotate `ClassVar`. Nothing of the value's code runs: a property is
-    found, not called, and `__getattr__` is never asked, as Python's own
-    `isinstance` reads a protocol member from 3.12 on (earlier versions of
-    `typing` call `hasattr`). Two differences from `isinstance`, both the
-    type checker's reading and the one the hint level
-    ([`_declares_protocol`][]) takes, so that the two agree: an annotated
-    name is present on an instance that never set it, and a `ClassVar` is
-    not an instance variable, so a class attribute declared one is not
-    present.
+    A name is present when it is in the instance's own `__dict__`, or
+    when the value's class declares it an instance variable anywhere in
+    its MRO ([`_class_reading`][]): through an annotation
+    (`#!python name: str`), or through a class attribute, a property, a
+    slot, or a method that the same class does not annotate `ClassVar`.
+    None of the value's code runs: a property is found, not called, and
+    `__getattr__` is never asked, the same way Python's own
+    `isinstance` reads a protocol member from 3.12 on, though earlier
+    versions of `typing` call `hasattr`. This differs from `isinstance`
+    in two ways, both shared with the type checker's reading and with
+    the one the hint level ([`_declares_protocol`][]) takes, so that the
+    two agree: an annotated name is present even on an instance that
+    never set it, and a `ClassVar` is not an instance variable, so a
+    class attribute declared one is not present.
 
-    This is the one reader both the value check and the call cache use, so
-    the key always covers what the check reads. It runs on every call the
-    cache answers at such an argument, so what depends on the class alone
-    is worked out once per class ([`_class_reading`][]): how the value's
-    attributes are looked up -- an ordinary instance reads its own
-    `__dict__`, a class read as a value takes [`inspect.getattr_static`][],
-    and any other is read through its class alone -- and which names the
-    class declares. A declared name is present on every instance, so its
-    entry in the key is the same for all of them, and reading it costs a
-    set lookup.
+    This is the one reader that both the value check and the call cache
+    use, so the key always covers what the check reads. It runs on
+    every call the cache answers at such an argument, so whatever
+    depends on the class alone is worked out once per class
+    ([`_class_reading`][]): how the value's attributes are looked up,
+    whether an ordinary instance reads its own `__dict__`, a class read
+    as a value takes [`inspect.getattr_static`][], or any other value
+    is read through its class alone, and which names the class
+    declares. A declared name is present on every instance, so its
+    entry in the key is the same for all of them, and reading it costs
+    only a set lookup.
     """
     cls = type(obj)
     reading = _class_reading(cls)
@@ -570,14 +589,14 @@ def _present_data_members(
 
 
 def _holds_class_variables(cls: type, names: tx.Sequence[str]) -> bool:
-    """Whether `cls` declares every `ClassVar` member in `names`.
+    """Report whether `cls` declares every `ClassVar` member in `names`.
 
-    A class variable lives on the class, so it is read off the class alone,
-    at the value level and the hint level alike: a `ClassVar` annotation
-    anywhere in the MRO, with a value or not. A plain class attribute, an
-    instance variable's annotation, and an attribute an instance sets on
-    itself do not count -- a type checker rejects each of them for a
-    `ClassVar` member.
+    A class variable lives on the class, so it is read off the class
+    alone, at the value level and the hint level alike: a `ClassVar`
+    annotation anywhere in the MRO, with a value or not. A plain class
+    attribute, an instance variable's annotation, and an attribute an
+    instance sets on itself do not count, since a type checker rejects
+    each of them for a `ClassVar` member.
     """
     declared = _class_reading(cls).class_variables
     return all(name in declared for name in names)
@@ -588,7 +607,7 @@ _NO_ATTRIBUTES = frozenset()  # type: tx.FrozenSet[str]
 
 
 def _found_statically(obj: tx.Any, name: str) -> bool:
-    """Whether [`inspect.getattr_static`][] finds `name` on `obj`."""
+    """Report whether [`inspect.getattr_static`][] finds `name` on `obj`."""
     try:
         inspect.getattr_static(obj, name)
     except (AttributeError, TypeError):
@@ -612,9 +631,10 @@ _CLASS_ONLY = 2
 class _ClassReading(tx.NamedTuple):
     """What reading an instance of a class needs, worked out once per class.
 
-    `lookup` says how its attributes are looked up (`_PLAIN`, `_STATIC` or
-    `_CLASS_ONLY`); `instance_variables` and `class_variables` are the names
-    the class declares, anywhere in its MRO, as each kind.
+    `lookup` says how its attributes are looked up, one of `_PLAIN`,
+    `_STATIC`, or `_CLASS_ONLY`. `instance_variables` and
+    `class_variables` are the names the class declares, anywhere in its
+    MRO, as each kind.
     """
 
     lookup: int
@@ -629,28 +649,31 @@ _CLASS_READINGS = weakref.WeakKeyDictionary()  # type: weakref.WeakKeyDictionary
 
 
 def _class_reading(cls: type) -> _ClassReading:
-    """How [`_present_data_members`][] reads an instance of `cls`, memoised.
+    """Compute how [`_present_data_members`][] reads an instance of
+    `cls`, memoised.
 
     Its lookup is `_PLAIN` for an ordinary class
-    ([`_reads_instance_dict`][]); `_STATIC` -- `inspect.getattr_static` --
-    for a metaclass, whose instances are classes holding attributes of
-    their own in their bases and their metaclass; and `_CLASS_ONLY` for a
-    class that redefines `__dict__`, whose instances' own attributes cannot
-    be read without running its code.
+    ([`_reads_instance_dict`][]); `_STATIC`, meaning
+    `inspect.getattr_static`, for a metaclass, whose instances are
+    classes holding attributes of their own in their bases and their
+    metaclass; and `_CLASS_ONLY` for a class that redefines
+    `__dict__`, whose instances' own attributes cannot be read without
+    running its code.
 
     Its declared names are read from each class of its MRO
-    ([`_read_class`][]): a name counts when *any* of them declares it, so a
-    subclass declares everything its bases do, and an instance of a class
-    below a protocol is always an instance of the protocol too. The memo is
-    read once per class: an attribute or an annotation added to a class
-    after it was first dispatched on is not seen.
+    ([`_read_class`][]): a name counts when any of them declares it, so
+    a subclass declares everything its bases do, and an instance of a
+    class below a protocol is always an instance of the protocol too.
+    The memo is read once per class, so an attribute or an annotation
+    added to a class after it was first dispatched on is not seen.
 
-    A class that cannot key the memo -- one whose metaclass makes it
-    unhashable -- is worked out afresh on each call. It cannot key
+    A class that cannot key the memo, because its metaclass makes it
+    unhashable, is worked out afresh on each call. It cannot key
     `getattr_static`'s own memo either, which raises `TypeError` for an
-    instance of it from 3.13 on (as Python's own `isinstance` does against a
-    protocol, on every version), so an instance of such a metaclass is read
-    through what its class declares alone, `_CLASS_ONLY`, too.
+    instance of it from 3.13 on, the same way Python's own `isinstance`
+    does against a protocol on every version, so an instance of such a
+    metaclass is read through what its class declares alone,
+    `_CLASS_ONLY`, too.
     """
     try:
         return _CLASS_READINGS[cls]
@@ -663,22 +686,21 @@ def _class_reading(cls: type) -> _ClassReading:
 
 
 def _read_class(cls: type, metaclass_lookup: int) -> _ClassReading:
-    """[`_class_reading`][], unmemoised.
+    """Compute [`_class_reading`][], unmemoised.
 
-    `metaclass_lookup` is the lookup for a metaclass. Each class of the MRO
-    declares, as a type checker reads it:
+    `metaclass_lookup` is the lookup used for a metaclass. Each class of
+    the MRO declares, the way a type checker reads it, an instance
+    variable for each of its annotations that is not a `ClassVar`, nor
+    an `InitVar` or `KW_ONLY`, which declare nothing, and for each name
+    its namespace holds, such as a class attribute, a property, a slot,
+    or a method, that it does not annotate; a value in the class body is
+    then an instance variable's default. It declares a class variable
+    for each `ClassVar` annotation, whether or not it carries a value.
 
-    * an instance variable for each of its annotations that is not a
-      `ClassVar` (nor an `InitVar` or `KW_ONLY`, which declare nothing), and
-      for each name its namespace holds -- a class attribute, a property, a
-      slot, a method -- that it does not annotate: a value in the class
-      body is an instance variable's default;
-    * a class variable for each `ClassVar` annotation, with a value or not.
-
-    The two are gathered over the whole MRO, never decided class by class:
-    a subclass that redeclares an inherited instance variable `ClassVar`
-    keeps it (a type checker rejects the override), so a class is always
-    below whatever its bases are below.
+    The two kinds are gathered over the whole MRO, never decided class
+    by class: a subclass that redeclares an inherited instance variable
+    as a `ClassVar` keeps it as one, since a type checker rejects the
+    override, so a class is always below whatever its bases are below.
     """
     instance_variables = set()  # type: tx.Set[str]
     class_variables = set()  # type: tx.Set[str]
@@ -752,13 +774,14 @@ else:
 
 
 def _own_annotations(cls: type) -> tx.Mapping[str, tx.Any]:
-    """The annotations written in the body of `cls` itself, by name.
+    """Return the annotations written in the body of `cls` itself, by name.
 
-    Not its bases': the caller walks the MRO. Read from the class's own
-    namespace up to 3.13; from 3.14, where annotations are evaluated lazily,
-    through `annotationlib` -- a name that is not defined comes back as a
-    forward reference rather than raising, and an annotation that cannot be
-    evaluated at all reads as none.
+    Not its bases' annotations: the caller walks the MRO on its own.
+    These are read from the class's own namespace up to Python 3.13;
+    from 3.14 on, where annotations are evaluated lazily, they are read
+    through `annotationlib` instead, where a name that is not defined
+    comes back as a forward reference rather than raising, and an
+    annotation that cannot be evaluated at all reads as none.
     """
     if get_annotations is None:  # pragma: no cover  -- Python < 3.14
         annotations = cls.__dict__.get("__annotations__")
@@ -772,10 +795,10 @@ def _own_annotations(cls: type) -> tx.Mapping[str, tx.Any]:
 
 
 def _own_annotation_kinds(cls: type) -> tx.Dict[str, int]:
-    """What each annotation in the body of `cls` declares, by name.
+    """Return what each annotation in the body of `cls` declares, by name.
 
-    A `TypedDict`'s annotations declare its keys, not attributes: an
-    instance is a plain `dict`, so they declare nothing here.
+    A `TypedDict`'s annotations declare its keys, not attributes, since
+    an instance is a plain `dict`, so they declare nothing here.
     """
     if is_typeddict(cls):
         return {}
@@ -786,12 +809,12 @@ def _own_annotation_kinds(cls: type) -> tx.Dict[str, int]:
 
 
 def _annotation_kind(annotation: tx.Any, cls: tx.Any = None) -> int:
-    """What one annotation, written in the body of `cls`, declares: an
-    instance or a class variable, or no attribute.
+    """Return what one annotation, written in the body of `cls`, declares.
 
-    `Annotated[...]` is looked through. An annotation that is still text --
-    a string, or a forward reference -- is read by the name it starts with
-    ([`_text_annotation_kind`][]).
+    The result names an instance variable, a class variable, or no
+    attribute at all. `Annotated[...]` is looked through. An annotation
+    that is still text, whether a string or a forward reference, is
+    read by the name it starts with ([`_text_annotation_kind`][]).
     """
     if isinstance(annotation, tx.ForwardRef):
         annotation = annotation.__forward_arg__
@@ -802,7 +825,7 @@ def _annotation_kind(annotation: tx.Any, cls: tx.Any = None) -> int:
 
 
 def _marker_kind(marker: tx.Any) -> int:
-    """What an annotation whose outermost form is `marker` declares."""
+    """Return what an annotation whose outermost form is `marker` declares."""
     if any(marker is form for form in _CLASSVAR_FORMS):
         return _CLASS_VARIABLE
     if (
@@ -815,13 +838,15 @@ def _marker_kind(marker: tx.Any) -> int:
 
 
 def _text_annotation_kind(text: str, cls: tx.Any = None) -> int:
-    """[`_annotation_kind`][] for an annotation written as text in `cls`.
+    """Compute [`_annotation_kind`][] for an annotation written as
+    text in `cls`.
 
-    The dotted name the text starts with is looked up where the evaluated
-    annotation would find it ([`_look_up_marker`][]) and recognised by
-    identity; `Annotated[...]` is looked through. A name that cannot be
-    looked up is read by its last part instead -- `typing.ClassVar[int]`
-    and `ClassVar[int]` alike. The text is never evaluated.
+    The dotted name the text starts with is looked up where the
+    evaluated annotation would find it ([`_look_up_marker`][]) and
+    recognised by identity; `Annotated[...]` is looked through. A name
+    that cannot be looked up is read by its last part instead, so
+    `typing.ClassVar[int]` and `ClassVar[int]` are read alike. The text
+    itself is never evaluated.
     """
     match = _LEADING_NAME.match(text)
     if match is None:
@@ -840,14 +865,16 @@ def _text_annotation_kind(text: str, cls: tx.Any = None) -> int:
 
 
 def _look_up_marker(parts: tx.Sequence[str], cls: tx.Any) -> tx.Any:
-    """What the dotted name `parts`, written in the body of `cls`, names.
+    """Return what the dotted name `parts`, written in the body of
+    `cls`, names.
 
-    The first part is looked up in the class's own namespace, then its
-    module's, then the builtins -- where evaluating the annotation would
-    look -- and each further part in the module the name so far names.
-    Only dictionaries are read: no attribute is fetched, so nothing of the
-    user's code runs. `_ABSENT` when a part is not found, or when a name
-    before the last one is not a module.
+    The first part is looked up in the class's own namespace, then in
+    its module's, and then in the builtins, following where evaluating
+    the annotation would look, and each further part is looked up in
+    the module the name so far names. Only dictionaries are read: no
+    attribute is fetched, so none of the user's code runs. The result
+    is `_ABSENT` when a part is not found, or when a name before the
+    last one is not a module.
     """
     namespaces = []  # type: tx.List[tx.Mapping[str, tx.Any]]
     if isinstance(cls, type):
@@ -869,14 +896,16 @@ def _look_up_marker(parts: tx.Sequence[str], cls: tx.Any) -> tx.Any:
 
 
 def _reads_instance_dict(cls: type) -> bool:
-    """Whether an instance of `cls` has its attributes looked up plainly.
+    """Report whether an instance of `cls` has its attributes looked
+    up plainly.
 
-    True for an ordinary class: an instance's attributes are its own
-    `__dict__` -- read through the standard descriptor, which runs no code
-    -- and its class's MRO. False for a metaclass, whose instances are
-    classes (their attributes are their bases' and their own metaclass's),
-    and for a class that redefines `__dict__` (a property, say), which a
-    plain read would run.
+    This is `#!python True` for an ordinary class: an instance's
+    attributes are its own `__dict__`, read through the standard
+    descriptor, which runs no code, together with its class's MRO. It
+    is `#!python False` for a metaclass, whose instances are classes
+    with their attributes coming from their bases and their own
+    metaclass, and for a class that redefines `__dict__`, such as with
+    a property, which a plain read would run.
     """
     if issubclass(cls, type):
         return False
@@ -895,19 +924,21 @@ def _reads_instance_dict(cls: type) -> bool:
 def _ishintstance_protocol(
     obj: tx.Any, proto: type, members: _ProtocolMembers
 ) -> bool:
-    """Whether `obj` is an instance of the data-member protocol `proto`.
+    """Report whether `obj` is an instance of the data-member protocol `proto`.
 
-    A class that names `proto` among its bases is one, as Python's
-    `isinstance` counts it, whatever its instances hold. Otherwise every
-    method must be defined by the value's class, every `ClassVar` member be
-    declared by it ([`_holds_class_variables`][]), and every instance
-    variable be present on the value ([`_present_data_members`][]).
+    A class that names `proto` among its bases is one, the way Python's
+    `isinstance` counts it, whatever its instances hold. Otherwise,
+    every method must be defined by the value's class, every `ClassVar`
+    member must be declared by it ([`_holds_class_variables`][]), and
+    every instance variable must be present on the value
+    ([`_present_data_members`][]).
 
-    Methods are read off the class, as a method-only protocol is decided,
-    so only the instance variables depend on the instance -- and those are
-    all the call cache keys on. A method set on the instance alone is
-    therefore not counted, where Python's `isinstance` would count it, and
-    neither is a `ClassVar` member, which a type checker rejects too.
+    Methods are read off the class, the same way a method-only
+    protocol is decided, so only the instance variables depend on the
+    instance, and those are all that the call cache keys on. A method
+    set on the instance alone is therefore not counted, where Python's
+    `isinstance` would count it, and neither is a `ClassVar` member,
+    which a type checker rejects too.
     """
     cls = type(obj)
     if any(base is proto for base in cls.__mro__):
@@ -922,34 +953,32 @@ def _ishintstance_protocol(
 def _declares_protocol(
     cls: tx.Any, proto: type, members: _ProtocolMembers
 ) -> bool:
-    """Whether the class `cls` is a structural subtype of the data protocol
-    `proto`, much as a type checker reads it.
+    """Report whether `cls` is a structural subtype of the data
+    protocol `proto`, much as a type checker reads it.
 
-    The hint-level twin of [`_ishintstance_protocol`][]:
-
-    * a class that names `proto` among its bases is below it, a sub-protocol
-      included, as it is at the value level;
-    * another protocol that does not is not, even when it lists the same
-      members -- a protocol stands for what it says it extends;
-    * any other class must define every method (not as `#!python None`),
-      and declare every data member as its kind anywhere in its MRO
-      ([`_read_class`][]): an instance variable by an annotation
-      (`#!python name: str`, a dataclass field included, whether or not
-      `__init__` sets it) or by a class attribute, a property or a slot not
-      annotated `ClassVar`; a class variable by a `ClassVar` annotation
-      alone.
+    This is the hint-level twin of [`_ishintstance_protocol`][]. A
+    class that names `proto` among its bases is below it, including a
+    sub-protocol. Another protocol that does not name it is not below
+    it, even when it lists the same members, since a protocol stands
+    for what it says it extends. Any other class must define every
+    method, and not as `#!python None`, and must declare every data
+    member as its kind anywhere in its MRO ([`_read_class`][]): an
+    instance variable through an annotation, `#!python name: str`,
+    including a dataclass field whether or not `__init__` sets it, or
+    through a class attribute, a property, or a slot not annotated
+    `ClassVar`; a class variable through a `ClassVar` annotation alone.
 
     An annotation that is never set promises nothing at runtime, so the
     value level counts it as present too ([`_present_data_members`][]):
-    every instance of `cls` is then an instance of `proto`, which is the
-    one thing the order must guarantee. Both levels read the same
-    per-class record, gathered over the whole MRO, so a subclass declares
-    what its bases do.
+    every instance of `cls` is then an instance of `proto`, which is
+    the one guarantee the order must uphold. Both levels read the same
+    per-class record, gathered over the whole MRO, so a subclass
+    declares whatever its bases do.
 
-    Unlike a type checker, a read-only member -- a property without a
-    setter, or `#!python name: Final = ...` -- counts for a protocol's
-    (settable) instance variable: the value has it, and dispatch only
-    reads it.
+    Unlike a type checker, a read-only member, such as a property
+    without a setter or `#!python name: Final = ...`, counts as a
+    protocol's settable instance variable here: the value has it, and
+    dispatch only ever reads it.
     """
     if not isinstance(cls, type):
         return False
@@ -968,15 +997,17 @@ def _declares_protocol(
 def _protocol_below_protocol(
     sub: type, members: _ProtocolMembers, sup: type
 ) -> bool:
-    """Whether the data protocol `sub` is below the method-only protocol `sup`.
+    """Report whether the data protocol `sub` is below the
+    method-only protocol `sup`.
 
-    `sup` is runtime-checkable, and `members` are `sub`'s. A protocol that
-    names `sup` among its bases is below it. So is one whose methods cover
-    every member of `sup` -- read the way the value level reads them, off
-    the class, so the class of an instance of `sub` passes Python's check
-    for `sup` too. A data member of `sub` never stands in for a method of
-    `sup` (Python's own `issubclass` would let an annotation do so): it may
-    be set on the instance alone, and then the instance's class does not
+    `sup` is runtime-checkable, and `members` are `sub`'s. A protocol
+    that names `sup` among its bases is below it. So is one whose
+    methods cover every member of `sup`, read the way the value level
+    reads them, off the class, so that the class of an instance of
+    `sub` passes Python's check for `sup` too. A data member of `sub`
+    never stands in for a method of `sup`, even though Python's own
+    `issubclass` would let an annotation do so, because it may be set on
+    the instance alone, in which case the instance's class does not
     satisfy `sup`.
     """
     if any(base is sup for base in sub.__mro__):
@@ -990,23 +1021,22 @@ _NO_EXTRA_ITEMS = object()
 
 
 def _typeddict_extra_policy(td: tx.Any) -> tx.Tuple[str, tx.Any]:
-    """How a `TypedDict` treats keys beyond the ones it declares.
+    """Return how a `TypedDict` treats keys beyond the ones it declares.
 
-    Returns one of:
-
-    * `("open", None)` -- extra keys are allowed (the default).
-    * `("closed", None)` -- extra keys are rejected.
-    * `("typed", hint)` -- extra keys are allowed, but each such key's value
-      must satisfy `hint`.
+    The result is `("open", None)` when extra keys are allowed, which
+    is the default; `("closed", None)` when extra keys are rejected;
+    or `("typed", hint)` when extra keys are allowed but each such
+    key's value must satisfy `hint`.
 
     A `TypedDict` written `closed=True` reports `"closed"`; one written
     `extra_items=SomeType` reports `("typed", SomeType)`. Closedness is
-    **inherited**: a subclass of a closed (or `extra_items=`) `TypedDict` is
-    itself closed/typed even when it does not repeat the keyword, so the base
-    chain is walked nearest-first and the first class that states a policy
-    wins. A class built by an older `typing_extensions` that cannot express
-    either -- so whose closedness cannot be read -- is reported `"open"`, the
-    permissive default, so the check never fails on it.
+    inherited: a subclass of a closed, or `extra_items=`, `TypedDict`
+    is itself closed or typed even when it does not repeat the keyword,
+    so the base chain is walked nearest first, and the first class that
+    states a policy wins. A class built by an older `typing_extensions`
+    that cannot express either, so that its closedness cannot be read,
+    is reported `"open"`, the permissive default, so the check never
+    fails on it.
     """
     # `extra_items=SomeType` records the type on the declaring class's own
     # `__extra_items__`; when none was given `typing_extensions` leaves a
@@ -1032,25 +1062,28 @@ def _typeddict_extra_policy(td: tx.Any) -> tx.Tuple[str, tx.Any]:
 
 
 def _skippable_extra_hint(hint: tx.Any) -> bool:
-    """Whether an `extra_items` / field hint cannot be judged here.
+    """Report whether an `extra_items` or field hint cannot be judged here.
 
-    An unresolvable forward reference -- a bare string or a
-    [`ForwardRef`][typing.ForwardRef] -- carries no type to compare, and a
-    missing hint is `#!python None`. In either case the well-formedness of a
-    key or policy against it is left unjudged rather than guessed at, exactly
-    as the value-level shape check skips such a field.
+    An unresolvable forward reference, whether a bare string or a
+    [`ForwardRef`][typing.ForwardRef], carries no type to compare, and
+    a missing hint is `#!python None`. In either case, the
+    well-formedness of a key or policy against it is left unjudged
+    rather than guessed at, exactly as the value-level shape check
+    skips such a field.
     """
     return hint is None or isinstance(hint, (str, tx.ForwardRef))
 
 
 def _is_any_hint(hint: tx.Any) -> bool:
-    """Whether a field / `extra_items` hint is `Any`, through its qualifiers.
+    """Report whether a field or `extra_items` hint is `Any`, through its
+    qualifiers.
 
-    Looks through the transparent qualifiers (`Required` / `NotRequired` /
-    `ReadOnly` / `Final` / `ClassVar`, via `normalise_hint`) and any
-    [`Annotated`][typing.Annotated] wrapper, then asks `_is_any`. An
-    `Any`-typed key or `extra_items` accepts every value, so it can never break
-    a base's contract and is treated as compatible.
+    This looks through the transparent qualifiers `Required`,
+    `NotRequired`, `ReadOnly`, `Final`, and `ClassVar`, via
+    `normalise_hint`, and any [`Annotated`][typing.Annotated] wrapper,
+    before asking `_is_any`. An `Any`-typed key or `extra_items`
+    accepts every value, so it can never break a base's contract, and
+    is treated as compatible.
     """
     return _is_any(unwrap(normalise_hint(hint), tx.Annotated))
 
@@ -1062,15 +1095,16 @@ _NUMERIC_RANK = {bool: 0, int: 1, float: 2, complex: 3}
 
 
 def _numeric_consistent(sub: tx.Any, sup: tx.Any) -> bool:
-    """Whether `sub` promotes to `sup` under the PEP 484 numeric tower.
+    """Report whether `sub` promotes to `sup` under the PEP 484 numeric tower.
 
-    `bool`, `int`, `float` and `complex` form a promotion chain, and a type
-    checker treats each as assignable to any wider one (`int` where `float` is
-    expected). Both hints are read to their bare builtin type (through
-    `normalise_hint` and any `Annotated` wrapper); the result is `#!python
-    True` only when both are numeric and `sub` sits at or below `sup` in that
-    chain. `bool` -> `int` is a real subclass and already consistent; listing
-    it keeps the check self-contained.
+    `bool`, `int`, `float`, and `complex` form a promotion chain, and a
+    type checker treats each as assignable to any wider one, such as
+    `int` where `float` is expected. Both hints are read to their bare
+    builtin type, through `normalise_hint` and any `Annotated` wrapper;
+    the result is `#!python True` only when both are numeric and `sub`
+    sits at or below `sup` in that chain. `bool` to `int` is already a
+    real subclass relationship and so already consistent on its own;
+    listing it here keeps the check self-contained.
     """
     sub = unwrap(normalise_hint(sub), tx.Annotated)
     sup = unwrap(normalise_hint(sup), tx.Annotated)
@@ -1082,16 +1116,15 @@ def _numeric_consistent(sub: tx.Any, sup: tx.Any) -> bool:
 
 
 def _own_extra_policy(cls: tx.Any) -> tx.Tuple[str, tx.Any]:
-    """The policy a class declares *itself*, ignoring what it inherits.
+    """Return the policy a class declares itself, ignoring what it inherits.
 
     A `TypedDict`'s base is not in its MRO, and `__closed__` and
-    `__extra_items__` are set from the class's own keyword alone, so a plain
-    attribute read gives the class's own declaration. Returns one of:
-
-    * `("typed", hint)` -- the class wrote `extra_items=hint`;
-    * `("closed", None)` -- the class wrote `closed=True`;
-    * `("reopened", None)` -- the class wrote `closed=False`;
-    * `("none", None)` -- the class declared no policy of its own.
+    `__extra_items__` are set from the class's own keyword alone, so a
+    plain attribute read gives the class's own declaration. The result
+    is `("typed", hint)` when the class wrote `extra_items=hint`,
+    `("closed", None)` when it wrote `closed=True`,
+    `("reopened", None)` when it wrote `closed=False`, and
+    `("none", None)` when the class declared no policy of its own.
     """
     no_extra = getattr(tx, "NoExtraItems", _NO_EXTRA_ITEMS)
     extra = getattr(cls, "__extra_items__", _NO_EXTRA_ITEMS)
@@ -1106,10 +1139,12 @@ def _own_extra_policy(cls: tx.Any) -> tx.Tuple[str, tx.Any]:
 
 
 def _typeddict_bases(cls: tx.Any) -> tx.Tuple[tx.Any, ...]:
-    """The direct `TypedDict` bases of a class, by origin, skipping the marker.
+    """Return the direct `TypedDict` bases of a class, by origin,
+    skipping the marker.
 
-    A parametrised base (`Base[int]`) is read through its origin (`Base`), the
-    same way [`_typeddict_extra_policy`][] reaches a generic base.
+    A parametrised base, such as `Base[int]`, is read through its
+    origin, `Base`, the same way [`_typeddict_extra_policy`][] reaches
+    a generic base.
     """
     bases = ()  # type: tx.Tuple[tx.Any, ...]
     for base in getattr(cls, "__orig_bases__", ()):
@@ -1124,11 +1159,12 @@ def _typeddict_bases(cls: tx.Any) -> tx.Tuple[tx.Any, ...]:
 def _inherited_extra_policy(
     cls: tx.Any,
 ) -> tx.Tuple[str, tx.Any, tx.Any]:
-    """The `("open"/"closed"/"typed", hint, base)` policy `cls` inherits.
+    """Return the `("open"/"closed"/"typed", hint, base)` policy
+    `cls` inherits.
 
-    The effective policy of `cls`'s nearest constrained base, together with
-    that base -- so a violation can name where the contract came from. `cls`'s
-    own declaration is not read here.
+    This is the effective policy of `cls`'s nearest constrained base,
+    together with that base, so a violation can name where the
+    contract came from. `cls`'s own declaration is not read here.
     """
     for base in _typeddict_bases(cls):
         policy, hint = _typeddict_extra_policy(base)
@@ -1138,21 +1174,25 @@ def _inherited_extra_policy(
 
 
 def _malformed_class_reason(cls: tx.Any) -> tx.Optional[str]:
-    """Why `cls` violates a constrained base's PEP 728 contract, or `None`.
+    """Return why `cls` violates a constrained base's PEP 728
+    contract, or `None`.
 
-    Reads `cls`'s own declaration and the policy it inherits from its nearest
-    closed / `extra_items` base, and reports the first key or policy that would
-    let a value of `cls` carry something that base refuses -- which the nominal
-    hint order would still call a sub-hint, so it would mis-dispatch. A closed
-    base is read as `extra_items=Never` (it admits no extra key), so adding a
-    key to it and adding an `extra_items`-incompatible key are the one check.
+    This reads `cls`'s own declaration and the policy it inherits from
+    its nearest closed or `extra_items` base, and reports the first key
+    or policy that would let a value of `cls` carry something that base
+    refuses, which the nominal hint order would still call a sub-hint,
+    so it would mis-dispatch. A closed base is read as
+    `extra_items=Never`, since it admits no extra key, so adding a key
+    to it and adding an `extra_items`-incompatible key become the same
+    check.
 
-    Every key `cls` carries -- from its own body **or any base**, not only the
-    keys it declares itself -- is checked against the constrained base: a key
-    the base does not declare, whose value type it does not admit, is a
-    dispatch-unsound diamond (a sibling open base contributing a key a closed
-    base would reject). An `Any`-typed key or `extra_items` accepts every
-    value, so it can never break the contract and is treated as compatible.
+    Every key `cls` carries, from its own body or any base, not only
+    the keys it declares itself, is checked against the constrained
+    base: a key the base does not declare, whose value type it does not
+    admit, is a dispatch-unsound diamond, as when a sibling open base
+    contributes a key a closed base would reject. An `Any`-typed key or
+    `extra_items` accepts every value, so it can never break the
+    contract, and is treated as compatible.
     """
     inherited, inherited_hint, base = _inherited_extra_policy(cls)
     if inherited == "open":
@@ -1215,10 +1255,11 @@ def _malformed_class_reason(cls: tx.Any) -> tx.Optional[str]:
 
 
 def _typeddict_chain(td: tx.Any) -> tx.List[tx.Any]:
-    """Every `TypedDict` class in `td`'s inheritance, `td` first, by origin.
+    """Return every `TypedDict` class in `td`'s inheritance, `td`
+    first, by origin.
 
-    Origins are resolved (`Base[int]` -> `Base`) and each class is visited
-    once, so a diamond is not walked twice.
+    Origins are resolved, so `Base[int]` becomes `Base`, and each class
+    is visited once, so a diamond is not walked twice.
     """
     chain = []  # type: tx.List[tx.Any]
     stack = [td]
@@ -1235,39 +1276,42 @@ def _typeddict_chain(td: tx.Any) -> tx.List[tx.Any]:
 
 
 def _malformed_typeddict_reason(td: tx.Any) -> tx.Optional[str]:
-    """Why a `TypedDict` `td` would break dispatch soundness, or `None`.
+    """Return why a `TypedDict` `td` would break dispatch soundness, or `None`.
 
-    This rejects a **dispatch-sound subset**, not everything a type checker
-    forbids: it names a `TypedDict` whose nominal hint order (`issubhint` /
-    `ishintstance` are nominal on a concrete `TypedDict`) would disagree with
-    the value-level shape check, breaking `v in Sub and Sub <= Base => v in
-    Base`. Such a class is refused at registration rather than left to
-    mis-dispatch. The shapes named are: a key added to a closed base, a key
-    whose value type a base's `extra_items` does not admit (including a key
-    from a sibling open base in a diamond), a widened `extra_items`, and a
-    reopened closed base (`extra_items=` or `closed=False`).
+    This rejects a dispatch-sound subset, not everything a type checker
+    forbids: it names a `TypedDict` whose nominal hint order, since
+    `issubhint` and `ishintstance` are nominal on a concrete
+    `TypedDict`, would disagree with the value-level shape check,
+    breaking the rule that `v in Sub` and `Sub <= Base` together imply
+    `v in Base`. Such a class is refused at registration rather than
+    left to mis-dispatch. The shapes named are a key added to a closed
+    base, a key whose value type a base's `extra_items` does not admit,
+    including a key from a sibling open base in a diamond, a widened
+    `extra_items`, and a reopened closed base, through `extra_items=` or
+    `closed=False`.
 
-    For the added-key / `extra_items` compatibility check, two cases are read
-    as consistent to match a type checker rather than resting purely on this
-    library's nominal relation:
+    For the added-key and `extra_items` compatibility check, two cases
+    are read as consistent to match a type checker, rather than resting
+    purely on this library's nominal relation. Top-level `Any` is
+    accepted: an `Any`-typed key or `extra_items` admits every value, so
+    it can never carry something a base refuses. The numeric tower is
+    also accepted: a key typed `int` under `extra_items=float`, or
+    `int` or `float` under `complex`, is consistent, because a type
+    checker promotes it under PEP 484 §Numeric, and rejecting it would
+    be surprising.
 
-    * **top-level `Any` is accepted** -- an `Any`-typed key or `extra_items`
-      admits every value, so it can never carry something a base refuses.
-    * **the numeric tower is accepted** -- a key typed `int` under
-      `extra_items=float` (or `int` / `float` under `complex`) is consistent,
-      because a type checker promotes it under PEP 484 §Numeric and rejecting
-      it would be surprising.
+    The deeper gradual-consistency cases that a type checker also
+    accepts stay strict here, as a documented residual: nested `Any`,
+    as in `List[Any]` under `List[int]`, a `Callable[..., R]` argument
+    list, and non-runtime protocols are all judged by the nominal
+    relation.
 
-    The deeper gradual-consistency cases a type checker also accepts stay
-    strict here, as a documented residual: nested `Any` (`List[Any]` under
-    `List[int]`), a `Callable[..., R]` argument list, and non-runtime
-    protocols are all judged by the nominal relation.
-
-    A well-formed `TypedDict` -- a plain subclass of a closed base, one that
-    narrows `extra_items`, or a subclass of an open base -- returns `#!python
-    None`. So does anything that is not a concrete `TypedDict`, and any class
-    built by a `typing_extensions` too old to record closedness (its policy
-    cannot be read, so nothing can be judged malformed).
+    A well-formed `TypedDict`, whether a plain subclass of a closed
+    base, one that narrows `extra_items`, or a subclass of an open
+    base, returns `#!python None`. So does anything that is not a
+    concrete `TypedDict`, and any class built by a `typing_extensions`
+    too old to record closedness, since its policy cannot be read and
+    so nothing about it can be judged malformed.
     """
     if not is_typeddict(td) or is_typeddict_marker(td):
         return None
@@ -1279,39 +1323,39 @@ def _malformed_typeddict_reason(td: tx.Any) -> tx.Optional[str]:
 
 
 def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
-    """Check that a value has the shape a `TypedDict` describes.
+    """Report whether a value has the shape a `TypedDict` describes.
 
-    A value matches when it is a [`dict`][], holds every **required** key, and
-    every declared key it *does* hold carries a value that satisfies that
-    field's hint (checked through `ishintstance`, so a nested `TypedDict` or a
-    container field is read the same way as any other value). `Required` /
-    `NotRequired` and the class's `total=` are honoured through
-    `typeddict_required_keys`.
+    A value matches when it is a [`dict`][], holds every required key,
+    and every declared key it does hold carries a value that satisfies
+    that field's hint, checked through `ishintstance`, so a nested
+    `TypedDict` or a container field is read the same way as any other
+    value. `Required`, `NotRequired`, and the class's `total=` are
+    honoured through `typeddict_required_keys`.
 
-    Only a `dict` is accepted, not any [`Mapping`][collections.abc.Mapping].
-    This keeps the value level in step with the hint level, where
-    `TypedDict <= dict`: since every `TypedDict`-shaped value must also be a
-    valid `dict`, a non-`dict` mapping that matched the shape but is not a
-    `dict` would break `v in S and S <= T => v in T`.
+    Only a `dict` is accepted, not any
+    [`Mapping`][collections.abc.Mapping]. This keeps the value level in
+    step with the hint level, where `TypedDict <= dict`: since every
+    `TypedDict`-shaped value must also be a valid `dict`, a non-`dict`
+    mapping that matched the shape but is not a `dict` would break the
+    rule that `v in S` and `S <= T` together imply `v in T`.
 
-    Keys **beyond** the declared ones are treated as the `TypedDict` itself
-    says (PEP 728):
+    Keys beyond the declared ones are treated as the `TypedDict` itself
+    says, following PEP 728. An open `TypedDict`, the default, allows
+    extra keys: a `dict` with keys beyond the declared ones still
+    matches, so long as the declared keys check out; such a `TypedDict`
+    names a minimum shape rather than a closed one, the way pydantic's
+    `TypeAdapter` reads it too. A closed `TypedDict`, written
+    `closed=True`, rejects any extra key, so a value carrying a key it
+    does not declare does not match. A `TypedDict` written
+    `extra_items=SomeType` allows extra keys but checks each one's
+    value against `SomeType`, through `ishintstance`, the same way a
+    declared field is read; `extra_items=Never` therefore admits no
+    extra key at all, since no value satisfies `Never`.
 
-    * An **open** `TypedDict` -- the default -- allows extra keys: a `dict`
-      with keys beyond the declared ones still matches, so long as the
-      declared keys check out. Such a `TypedDict` names a minimum shape, not a
-      closed one (as `pydantic`'s `TypeAdapter` reads it too).
-    * A **closed** `TypedDict`, written `closed=True`, rejects any extra key:
-      a value carrying a key it does not declare does not match.
-    * A `TypedDict` written `extra_items=SomeType` allows extra keys but
-      checks each one's value against `SomeType` (through `ishintstance`, the
-      same way a declared field is read). `extra_items=Never` therefore admits
-      no extra key at all, since no value satisfies `Never`.
-
-    Two *unrelated* `TypedDict`s that happen to share a satisfiable shape are
-    not ordered by this check, so a value matching both dispatches to neither
-    on its own: selection raises `AmbiguousMethodError`, the same outcome two
-    equally-matched `Protocol`s give (RFC 0001 §5).
+    Two unrelated `TypedDict`s that happen to share a satisfiable shape
+    are not ordered by this check, so a value matching both dispatches
+    to neither on its own: selection raises `AmbiguousMethodError`, the
+    same outcome two equally matched `Protocol`s give, per RFC 0001 §5.
     """
     if not isinstance(obj, dict):
         return False
@@ -1366,50 +1410,50 @@ def _ishintstance_typeddict(obj: tx.Any, td: tx.Any) -> bool:
 
 
 def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
-    """
-    Check that a hint is a sub-hint for another hint.
+    """Report whether `hint` is a sub-hint of `superhint`.
 
-    A hint is a valid subhint if all values that are valid for the hint
-    are also valid for the superhint.
+    A hint is a valid sub-hint of another when every value valid for
+    the first is also valid for the second.
 
-    Each argument position is compared by the **variance the generic
-    declares for it** (PEP 484): a covariant position (a
-    `#!python Sequence`'s item) forwards the relation, so
-    `#!python Sequence[bool]` is a sub-hint of `#!python Sequence[int]`; a
-    contravariant one reverses it; an invariant one -- a mutable container
-    like `#!python list`, or an unflagged user `#!python TypeVar` -- demands
-    that the two arguments accept the same values, so `#!python List[bool]`
-    is **not** a sub-hint of `#!python List[int]`. A free `#!python TypeVar`
-    or `#!python Any` on the super side is a top an invariant position may
-    still widen to. A hint with no arguments is *not* a subhint of one that
-    has them - a bare `#!python list` may hold anything, so it cannot stand
-    in for a `#!python List[int]`.
+    Each argument position is compared by the variance the generic
+    declares for it, following PEP 484. A covariant position, such as
+    a `#!python Sequence`'s item, forwards the relation, so
+    `#!python Sequence[bool]` is a sub-hint of `#!python Sequence[int]`.
+    A contravariant position reverses it. An invariant position, such
+    as a mutable container like `#!python list`, or an unflagged user
+    `#!python TypeVar`, demands that the two arguments accept the same
+    values, so `#!python List[bool]` is not a sub-hint of
+    `#!python List[int]`. A free `#!python TypeVar` or `#!python Any`
+    on the super side is a top that an invariant position may still
+    widen to. A hint with no arguments is not a sub-hint of one that
+    has them, since a bare `#!python list` may hold anything, so it
+    cannot stand in for a `#!python List[int]`.
 
     !!! note
-        An **unparametrised** `#!python Union` or `#!python Literal` asks
-        a different question: *is this hint one of those?* So
-        `#!python issubhint(int, Union)` is `#!python False` (an
-        `#!python int` is not a union) even though
+        An unparametrised `#!python Union` or `#!python Literal` asks a
+        different question: is this hint one of those? So
+        `#!python issubhint(int, Union)` is `#!python False`, since an
+        `#!python int` is not a union, even though
         `#!python issubhint(int, Union[int, str])` is `#!python True`.
         This makes them usable as a `#!python BOUND`, and it is why the
         relation is not transitive through a bare `#!python Union`.
 
     !!! note
         A class is a sub-hint of a
-        [`runtime_checkable`][typing.runtime_checkable] protocol with data
-        members (`#!python name: str`) when it **declares** them, much as
-        a type checker reads it: the class names the protocol among its
-        bases, or declares each member as the member's kind. An ordinary
-        member is declared by an annotation such as `#!python name: str`
-        (a dataclass field included) or by a class attribute, a property or
-        a slot -- but not by a `#!python ClassVar`. A member the protocol
-        declares `#!python ClassVar` is declared by a `#!python ClassVar`
-        annotation alone. An annotation counts whether or not the attribute
-        is ever set, and
-        [`ishintstance`][bagof.dispatchers.core.ishintstance] counts it on
-        every instance too. Unlike a type checker, a read-only member (a
-        property without a setter, a `#!python Final`) counts for an
-        ordinary one.
+        [`runtime_checkable`][typing.runtime_checkable] protocol with
+        data members, such as one declaring `#!python name: str`, when
+        it declares them, much as a type checker reads it: the class
+        names the protocol among its bases, or declares each member as
+        the member's kind. An ordinary member is declared by an
+        annotation such as `#!python name: str`, including a dataclass
+        field, or by a class attribute, a property, or a slot, but not
+        by a `#!python ClassVar`. A member the protocol declares
+        `#!python ClassVar` is declared by a `#!python ClassVar`
+        annotation alone. An annotation counts whether or not the
+        attribute is ever set, and [`ishintstance`][] counts it on
+        every instance too. Unlike a type checker, a read-only member,
+        such as a property without a setter or a `#!python Final`,
+        counts for an ordinary one.
 
     !!! example
         ```pycon
@@ -1605,7 +1649,9 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
 
 
 def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
-    """Check that a hint is a sub-hint for a hint whose origin is a class."""
+    """Report whether `hint` is a sub-hint of a `superhint` whose
+    origin is a class.
+    """
     # Compare origins, not the hints themselves: a parametrised alias
     # (`List[int]`) and an `Annotated` wrapper are not instances of
     # `type`, so handing either to `safe_issubclass` directly would
@@ -1652,9 +1698,11 @@ def _issubclassargs(
     superargs: tx.Tuple[tx.Any, ...],
     variances: tx.Optional[tx.Tuple[str, ...]],
 ) -> bool:
-    """Whether a class hint's arguments fit a super-hint's, slot by slot.
+    """Report whether a class hint's arguments fit a super-hint's,
+    slot by slot.
 
-    `variances` is the super-hint's origin's, from [`_generic_variances`][].
+    `variances` belongs to the super-hint's origin, from
+    [`_generic_variances`][].
     """
     if not args:
         # `list` cannot stand in for `List[int]`: it may hold anything.
@@ -1674,12 +1722,13 @@ def _issubclassargs(
 
 
 def _issubclass_origin(sub: tx.Any, origin: tx.Any) -> bool:
-    """Whether the class `sub` is below the class `origin`, for the relation.
+    """Report whether the class `sub` is below the class `origin`,
+    for the relation.
 
-    [`safe_issubclass`][], except where a runtime-checkable protocol with
-    data members is involved, which `issubclass` refuses (as the super side)
-    or reads too loosely (as the sub side) -- see [`_declares_protocol`][]
-    and [`_protocol_below_protocol`][].
+    This is [`safe_issubclass`][], except where a runtime-checkable
+    protocol with data members is involved, which `issubclass` refuses
+    as the super side or reads too loosely as the sub side; see
+    [`_declares_protocol`][] and [`_protocol_below_protocol`][].
     """
     members = _data_protocol_members(origin)
     if members is not None:
@@ -1697,23 +1746,23 @@ def _issubclass_origin(sub: tx.Any, origin: tx.Any) -> bool:
 
 
 def _issubslot(sub: tx.Any, sup: tx.Any, variance: str) -> bool:
-    """Whether a sub-side argument fits a super-side one at one slot (#50).
+    """Report whether a sub-side argument fits a super-side one at one slot.
 
-    `variance` is a generic parameter position's declared variance (the string
-    constants from [`_introspect`][], read off the super-hint's origin). Per
-    PEP 484:
-
-    * **covariant** -- `sub` must be a sub-hint of `sup`, so a covariant
-      container narrows with its item (`Sequence[bool] <= Sequence[int]`). A
-      `TypeVar` is read as its bound (or its constraints), which is already
-      what solving it would give: `G[A] <= G[T]` for some `T <= B` exactly
-      when `A <= B`.
-    * **contravariant** -- `sup` must be a sub-hint of `sub`, so a consumer of
-      `int` stands in for a consumer of `bool`. A `TypeVar` is read as its
-      bound here too; see [`_issubslot_invariant`][] for why it is not solved.
-    * **invariant** -- see [`_issubslot_invariant`][]: the two must accept the
-      same values, or the super side is a `TypeVar` that can be solved to the
-      sub side, or a top (`Any`, a free `TypeVar`).
+    `variance` is a generic parameter position's declared variance, one
+    of the string constants from [`_introspect`][], read off the
+    super-hint's origin. Following PEP 484, a covariant position
+    requires `sub` to be a sub-hint of `sup`, so a covariant container
+    narrows with its item, as in `Sequence[bool] <= Sequence[int]`; a
+    `TypeVar` here is read as its bound or its constraints, which is
+    already what solving it would give, so `G[A] <= G[T]` for some
+    `T <= B` exactly when `A <= B`. A contravariant position requires
+    `sup` to be a sub-hint of `sub`, so a consumer of `int` stands in
+    for a consumer of `bool`; a `TypeVar` is read as its bound here too,
+    and [`_issubslot_invariant`][] explains why it is not solved. An
+    invariant position is handled by [`_issubslot_invariant`][]: the two
+    must accept the same values, or the super side must be a `TypeVar`
+    that can be solved to the sub side, or a top such as `Any` or a
+    free `TypeVar`.
     """
     if variance == _COVARIANT:
         return issubhint(sub, sup)
@@ -1729,28 +1778,28 @@ def _issubslot(sub: tx.Any, sup: tx.Any, variance: str) -> bool:
 
 
 def _issubslot_invariant(sub: tx.Any, sup: tx.Any) -> bool:
-    """Whether `G[sub] <= G[sup]` at an invariant slot (#50, V5).
+    """Report whether `G[sub] <= G[sup]` holds at an invariant slot.
 
-    A `TypeVar` on the super side stands for *some* type within its bound or
-    constraints, as a type checker solves it; on the sub side it stands for a
-    whole family, which a single type cannot contain:
+    A `TypeVar` on the super side stands for some type within its
+    bound or constraints, the way a type checker solves it; on the sub
+    side, it stands for a whole family, which a single type cannot
+    contain. When `sup` is `Any` or a free `TypeVar`, it is the top
+    that the slot may widen to under gradual consistency, so a
+    generic-fallback overload stays above every specialisation. When
+    `sup` is a bounded `TypeVar` `T <= B`, `T` can be solved to `sub`
+    exactly when `sub <= B`, reading a `TypeVar` `sub` by its own
+    bound, so `Box[bool] <= Box[T <= int]`, and
+    `Box[T1 <= B1] <= Box[T2 <= B2]` exactly when `B1 <= B2`. When
+    `sup` is a constrained `TypeVar`, `T` is solved to one constraint,
+    so `sub` must be equivalent to one of them, or, for a constrained
+    `sub`, each of its constraints must be equivalent to one of them.
+    Otherwise `sup` is a concrete type, and `sub` must be equivalent to
+    it; a `TypeVar` `sub` never is, since `Box[T <= int]` is not a
+    `Box[int]`, because `T` may be `bool`.
 
-    * `sup` is `Any` or a free `TypeVar` -- the top the slot may widen to
-      (gradual consistency), so a generic-fallback overload stays above every
-      specialisation;
-    * `sup` is a bounded `TypeVar` `T <= B` -- `T` can be solved to `sub`
-      exactly when `sub <= B` (a `TypeVar` `sub` read by its own bound), so
-      `Box[bool] <= Box[T <= int]`, and `Box[T1 <= B1] <= Box[T2 <= B2]` iff
-      `B1 <= B2`;
-    * `sup` is a constrained `TypeVar` -- `T` is solved to one constraint, so
-      `sub` must be equivalent to one of them (a constrained `sub`: each of its
-      constraints to one of them);
-    * otherwise `sup` is a concrete type, and `sub` must be equivalent to it.
-      A `TypeVar` `sub` never is: `Box[T <= int]` is not a `Box[int]`, since
-      `T` may be `bool`.
-
-    This is transitive: each rule reduces to `<=` or to equivalence against
-    the super side's bound or constraints, which chain.
+    This relation is transitive: each rule reduces to `<=` or to
+    equivalence against the super side's bound or constraints, and
+    those chain.
     """
     if sub is sup or issubhint(tx.Any, sup):
         return True
@@ -1787,23 +1836,23 @@ _PARAMETER_MARKERS = spellings("Generic") + spellings("Protocol")
 
 
 def _own_bases(cls: type) -> tx.Tuple[tx.Any, ...]:
-    """The bases `cls` was written with, parametrised where they were.
+    """Return the bases `cls` was written with, parametrised where they were.
 
-    `__orig_bases__` is read off the class's *own* namespace: an attribute
-    read would find a parent's, which describes the parent's bases, not these.
-    A class written without a parametrised base has none of its own, and its
-    plain `__bases__` are the answer.
+    `__orig_bases__` is read off the class's own namespace: attribute
+    access would instead find a parent's, describing the parent's bases
+    rather than these. A class written without a parametrised base has
+    none of its own, and its plain `__bases__` are the answer.
     """
     return _own_orig_bases(cls) or cls.__bases__
 
 
 def _free_parameters(node: tx.Any) -> tx.Tuple[tx.Any, ...]:
-    """The type variables a generic class or alias takes (else `()`).
+    """Return the type variables a generic class or alias takes, or `()`.
 
-    A class is read through [`_class_parameters`][], so one written against
-    a PEP 585 base (`#!python class GL(list[T])`) takes the variables that
-    base mentions; an alias (`#!python Box[T]`, `#!python list[T]`) lists
-    its own.
+    A class is read through [`_class_parameters`][], so one written
+    against a PEP 585 base, such as `#!python class GL(list[T])`, takes
+    the variables that base mentions; an alias, such as
+    `#!python Box[T]` or `#!python list[T]`, lists its own.
     """
     if _looks_like_class(node):
         return _class_parameters(node)
@@ -1814,21 +1863,23 @@ def _free_parameters(node: tx.Any) -> tx.Tuple[tx.Any, ...]:
 def _filled_bases(
     node: tx.Any, cls: type
 ) -> tx.Optional[tx.Tuple[tx.Any, ...]]:
-    """`cls`'s written bases, with `node`'s arguments filled in.
+    """Return `cls`'s written bases, with `node`'s arguments filled in.
 
-    `node` is `cls` itself or a parametrisation of it (`Sub[bool]`). Each base
-    that mentions one of `cls`'s type variables is subscripted with what
-    `node` gives that variable -- typing's own substitution, `Box[T][bool]` is
-    `Box[bool]`, the mechanism that resolves a generic type alias too -- and
-    one that mentions none (`Box[int]`, a plain class) is kept as written.
-    The arguments are paired by variable, not by position, because a class
-    may list its variables in another order than a base does (`class
-    Flip(Pair[B, A], Generic[A, B])`).
+    `node` is `cls` itself or a parametrisation of it, such as
+    `Sub[bool]`. Each base that mentions one of `cls`'s type variables
+    is subscripted with what `node` gives that variable, using typing's
+    own substitution, where `Box[T][bool]` is `Box[bool]`, the same
+    mechanism that resolves a generic type alias too, and one that
+    mentions none, such as `Box[int]` or a plain class, is kept as
+    written. The arguments are paired by variable, not by position,
+    because a class may list its variables in a different order than a
+    base does, as in `class Flip(Pair[B, A], Generic[A, B])`.
 
-    Returns `#!python None` when `node` leaves the bases undetermined: a
-    generic class written without arguments (a bare `Sub`), or a
-    `ParamSpec` / `TypeVarTuple` generic, whose arguments do not pair one to
-    one with its variables. A base whose substitution raises is dropped.
+    The result is `#!python None` when `node` leaves the bases
+    undetermined: a generic class written without arguments, a bare
+    `Sub`, or a `ParamSpec` or `TypeVarTuple` generic, whose arguments
+    do not pair one to one with its variables. A base whose
+    substitution raises is dropped.
     """
     params = _free_parameters(cls)
     if not params:
@@ -1865,43 +1916,47 @@ def _filled_bases(
 def _as_base_args(
     hint: tx.Any, target: type
 ) -> tx.Iterator[tx.Tuple[tx.Any, ...]]:
-    """`hint` re-expressed as parametrisations of `target`: their arguments.
+    """Yield `hint` re-expressed as parametrisations of `target`, as
+    their arguments.
 
-    `hint` is a class or a parametrised generic whose origin is a subclass of
-    `target`. Each answer is what `hint` fills `target`'s parameters with,
-    read through the bases each class was written with (`__orig_bases__`),
-    filling in each class's own arguments as it goes:
+    `hint` is a class or a parametrised generic whose origin is a
+    subclass of `target`. Each answer is what `hint` fills `target`'s
+    parameters with, read through the bases each class was written
+    with, `__orig_bases__`, filling in each class's own arguments along
+    the way.
 
-    * `class IntBox(Box[int])` is `Box[int]`, so `IntBox` gives `(int,)`;
-    * `class Sub(Box[T])` passes its argument on, so `Sub[bool]` gives
-      `(bool,)`, and a subclass written without a parametrised base (`class
-      Leaf(IntBox)`) is followed through its plain bases;
-    * every base is followed, so a class that reaches `target` along two
-      paths gives both: in a diamond `class D(A, B)` with `class A(Box[int])`
-      and `class B(Box[str])`, `D` gives `(int,)` and then `(str,)`, and so
-      does `class Two(List[T], Container[U])`, whose `Two[int, str]` is a
-      `Container[int]` through `List` and a `Container[str]` through its own
-      base. A type checker rejects such a class, and the relation accepts a
-      hint that any of them satisfies;
-    * a standard-library class reached on the way (`class Child(List[int])`
-      reaches `List[int]`) is read positionally against a standard-library
-      `target` it subclasses (`Sequence`), as two such origins always are.
+    `class IntBox(Box[int])` is `Box[int]`, so `IntBox` gives `(int,)`.
+    `class Sub(Box[T])` passes its argument on, so `Sub[bool]` gives
+    `(bool,)`, and a subclass written without a parametrised base, such
+    as `class Leaf(IntBox)`, is followed through its plain bases. Every
+    base is followed, so a class that reaches `target` along two paths
+    gives both: in a diamond `class D(A, B)` with `class A(Box[int])`
+    and `class B(Box[str])`, `D` gives `(int,)` and then `(str,)`, and
+    so does `class Two(List[T], Container[U])`, whose `Two[int, str]`
+    is a `Container[int]` through `List` and a `Container[str]`
+    through its own base; a type checker rejects such a class, and the
+    relation accepts a hint that any of them satisfies. A
+    standard-library class reached along the way, such as
+    `class Child(List[int])` reaching `List[int]`, is read positionally
+    against a standard-library `target` it subclasses, such as
+    `Sequence`, as two such origins always are.
 
-    `hint`'s own arguments are the answer when its origin *is* `target` and
-    it has any. Nothing is yielded when nothing maps -- no base reaches
-    `target` with arguments, as for a `collections.Counter` (a runtime
-    subclass of `dict` that records no parametrised base), or a generic class
-    written without arguments -- and the caller then keeps its positional
-    comparison.
+    `hint`'s own arguments are the answer when its origin is `target`
+    itself and it has any. Nothing is yielded when nothing maps, as
+    when no base reaches `target` with arguments, for instance for a
+    `collections.Counter`, a runtime subclass of `dict` that records no
+    parametrised base, or for a generic class written without
+    arguments; the caller then keeps its positional comparison.
 
-    A generator, walking depth first with each class's bases in the order
-    they are listed, so a caller that needs one answer stops the walk there
-    and a class whose first base maps gives it after as many steps as it is
-    deep. Each node -- a class with the arguments it was reached with -- is
-    walked once, and each answer given once ([`_first_time`][]); a hierarchy
-    that reaches `target` along many paths with other arguments on each (a
-    diamond at every level) still has as many answers as paths, and a caller
-    that needs all of them walks them all.
+    This is a generator, walking depth first with each class's bases in
+    the order they are listed, so a caller that needs only one answer
+    stops the walk there, and a class whose first base maps gives it
+    after as many steps as it is deep. Each node, a class with the
+    arguments it was reached with, is walked once, and each answer is
+    given once ([`_first_time`][]); a hierarchy that reaches `target`
+    along many paths with different arguments on each, such as a
+    diamond at every level, still has as many answers as paths, and a
+    caller that needs all of them walks them all.
     """
     pending = [hint]
     walked = {}  # type: tx.Dict[tx.Tuple[int, ...], tx.Any]
@@ -1950,14 +2005,16 @@ def _first_time(
     holder: tx.Any,
     met: tx.Dict[tx.Tuple[int, ...], tx.Any],
 ) -> bool:
-    """Record `parts` in `met` by identity; whether they were new there.
+    """Record `parts` in `met` by identity, and report whether they
+    were new there.
 
     The key is the `id` of each part, so no argument's own `__eq__` or
-    `__hash__` runs, and two equal objects built apart (`list[int]` twice)
-    count as different: the node is then read a second time, which gives
-    the same answers again. `holder` -- the node, or the answer -- is stored
-    as the entry's value, so every object whose `id` is in a key stays alive,
-    and keeps its `id`, for as long as the walk runs.
+    `__hash__` runs, and two equal objects built apart, such as
+    `list[int]` written twice, count as different: the node is then
+    read a second time, which gives the same answers again. `holder`,
+    either the node or the answer, is stored as the entry's value, so
+    every object whose `id` is in a key stays alive, and keeps its
+    `id`, for as long as the walk runs.
     """
     key = tuple(map(id, parts))
     if key in met:
@@ -1967,13 +2024,15 @@ def _first_time(
 
 
 def _is_fully_declared(args: tx.Optional[tx.Sequence[tx.Any]]) -> bool:
-    """Whether declared arguments say what each parameter holds.
+    """Report whether declared arguments say what each parameter holds.
 
-    `#!python False` for no arguments at all, and for arguments that mention a
-    type variable (`class Child(List[T])` leaves `T` open),
-    [`Any`][typing.Any], or a name not yet resolved (`Box["int"]()` records
-    `Box[ForwardRef('int')]`) anywhere inside them: each leaves what the value
-    holds undeclared, so none may narrow which parametrisations it matches.
+    This is `#!python False` for no arguments at all, and for
+    arguments that mention a type variable anywhere inside them, as
+    `class Child(List[T])` leaves `T` open, or that mention
+    [`Any`][typing.Any], or a name not yet resolved, as
+    `Box["int"]()` records `Box[ForwardRef('int')]`. Each of these
+    leaves what the value holds undeclared, so none of them may narrow
+    which parametrisations it matches.
     """
     if not args:
         return False
@@ -2012,19 +2071,22 @@ _RECORDER_REFS = {}  # type: tx.Dict[int, weakref.ref]
 
 
 def _may_record_parametrisation(cls: type) -> bool:
-    """Whether an instance of `cls` is asked for `__orig_class__`, memoised.
+    """Report whether an instance of `cls` is asked for
+    `__orig_class__`, memoised.
 
     Calling a subscripted generic class records the subscription on the
-    instance it builds, and two classes can be subscripted that way: a
-    [`Generic`][typing.Generic] subclass (`#!python Box[int]()`), and a
-    class written against a PEP 585 alias (`#!python class GL(list[T])`,
-    whose `#!python GL[int]()` is recorded by the runtime alias type), which
-    has no `Generic` in its MRO. An instance of any other class -- a builtin
-    container, a lazy proxy whose `__getattr__` does work -- is never probed.
+    instance it builds, and two kinds of class can be subscripted that
+    way: a [`Generic`][typing.Generic] subclass, as in
+    `#!python Box[int]()`, and a class written against a PEP 585 alias,
+    such as `#!python class GL(list[T])`, whose `#!python GL[int]()` is
+    recorded by the runtime alias type, even though it has no `Generic`
+    in its MRO. An instance of any other class, such as a builtin
+    container or a lazy proxy whose `__getattr__` does work, is never
+    probed.
 
-    The value check ([`_declared_parametrisation`][]) and the call cache's
-    key (`_declared_key`) both ask this, so the key always covers what the
-    check reads.
+    The value check ([`_declared_parametrisation`][]) and the call
+    cache's key (`_declared_key`) both ask this, so the key always
+    covers what the check reads.
     """
     try:
         return _RECORDERS[id(cls)]
@@ -2038,13 +2100,15 @@ def _may_record_parametrisation(cls: type) -> bool:
 
 
 def _forget(key: int, _ref: tx.Any) -> None:
-    """Drop `_may_record_parametrisation`'s answer for a collected class."""
+    """Drop [`_may_record_parametrisation`][]'s answer for a
+    collected class.
+    """
     _RECORDERS.pop(key, None)
     _RECORDER_REFS.pop(key, None)
 
 
 def _records_parametrisation(cls: type) -> bool:
-    """[`_may_record_parametrisation`][], worked out."""
+    """Compute [`_may_record_parametrisation`][]."""
     if issubclass(cls, tx.Generic):
         return True
     return any(
@@ -2055,18 +2119,19 @@ def _records_parametrisation(cls: type) -> bool:
 
 
 def _orig_class(obj: tx.Any) -> tx.Any:
-    """The parametrisation `obj` was built from, or `#!python None`.
+    """Return the parametrisation `obj` was built from, or `#!python None`.
 
-    Calling a subscripted user generic -- `Box[int]()`, or `GL[int]()` for
-    `class GL(list[T])` -- records the subscription on the new instance as
-    `__orig_class__`. It is absent from a builtin container, from any
-    instance built by calling the bare class, and from one typing cannot
-    write it onto: a class built with `__slots__` and no `__dict__`, and a
-    frozen dataclass (typing swallows the `FrozenInstanceError`). It is also
-    written only *after* `__init__` returns, so a dispatch on `self` from
-    inside `__init__` sees an instance that declares nothing yet. Whatever
-    the attribute holds is only trusted when it is a parametrisation of a
-    class `obj` is an instance of.
+    Calling a subscripted user generic, such as `Box[int]()`, or
+    `GL[int]()` for `class GL(list[T])`, records the subscription on
+    the new instance as `__orig_class__`. It is absent from a builtin
+    container, from any instance built by calling the bare class, and
+    from one typing cannot write it onto, such as a class built with
+    `__slots__` and no `__dict__`, or a frozen dataclass, where typing
+    swallows the `FrozenInstanceError`. It is also written only after
+    `__init__` returns, so a dispatch on `self` from inside `__init__`
+    sees an instance that declares nothing yet. Whatever the attribute
+    holds is trusted only when it is a parametrisation of a class
+    `obj` is an instance of.
     """
     try:
         declared = obj.__orig_class__
@@ -2081,29 +2146,34 @@ def _orig_class(obj: tx.Any) -> tx.Any:
 
 
 def _declared_parametrisation(obj: tx.Any, origin: type) -> tx.Any:
-    """What `obj` declares itself to be, as a parametrisation of `origin`.
+    """Return what `obj` declares itself to be, as a parametrisation
+    of `origin`.
 
-    `origin` is the class a parametrised hint (`G[args]`) is written on, and
-    `type(obj)` is already known to be a subclass of it. The answer is a hint
-    to compare with `G[args]` through the relation. Returns, in order:
+    `origin` is the class a parametrised hint, `G[args]`, is written
+    on, and `type(obj)` is already known to be a subclass of it. The
+    answer is a hint to compare with `G[args]` through the relation,
+    and it is worked out in order.
 
-    1. the instance's `__orig_class__` (`Box[int]` for `Box[int]()`), when
-       `obj` is an instance of a `Generic` subclass or of a class written
-       against a PEP 585 alias (`GL[int]()` for `class GL(list[T])`,
-       [`_may_record_parametrisation`][]) and the record declares
-       every argument of `origin` -- against a user generic or a
-       standard-library one alike (`Row[int]()` for `class Row(Sequence[T])`
-       is a `Sequence[int]`) -- along every base that reaches it
-       ([`_declares_arguments`][]);
-    2. else `type(obj)`, when the class declares every argument of `origin`
-       along every base that reaches it (`class Child(List[int])`);
-    3. else `#!python None`: the value declares nothing, and only its origin
-       can be checked.
+    First, the instance's `__orig_class__`, such as `Box[int]` for
+    `Box[int]()`, is used when `obj` is an instance of a `Generic`
+    subclass, or of a class written against a PEP 585 alias, such as
+    `GL[int]()` for `class GL(list[T])`
+    ([`_may_record_parametrisation`][]), and the record declares every
+    argument of `origin`, whether against a user generic or a
+    standard-library one alike, so `Row[int]()` for
+    `class Row(Sequence[T])` is a `Sequence[int]`, along every base
+    that reaches it ([`_declares_arguments`][]). Failing that,
+    `type(obj)` is used when the class declares every argument of
+    `origin` along every base that reaches it, as in
+    `class Child(List[int])`. Failing that too, the answer is
+    `#!python None`: the value declares nothing, and only its origin
+    can be checked.
 
     Only an origin with one readable argument per parameter is read
-    ([`_reads_declared_arguments`][]): `Tuple` and `Callable` (whose argument
-    lists are shapes), a `ParamSpec` / `TypeVarTuple` generic (`Hook[[int]]`),
-    and any origin whose parameters cannot be read keep the shallow check.
+    ([`_reads_declared_arguments`][]): `Tuple` and `Callable`, whose
+    argument lists are shapes, a `ParamSpec` or `TypeVarTuple` generic
+    such as `Hook[[int]]`, and any origin whose parameters cannot be
+    read all keep the shallow check instead.
     """
     if not _reads_declared_arguments(origin):
         return None
@@ -2121,16 +2191,18 @@ def _declared_parametrisation(obj: tx.Any, origin: type) -> tx.Any:
 
 
 def _declares_arguments(hint: tx.Any, origin: type) -> bool:
-    """Whether `hint` says what `origin`'s parameters hold, through its bases.
+    """Report whether `hint` says what `origin`'s parameters hold,
+    through its bases.
 
-    Every parametrisation of `origin` the bases reach ([`_as_base_args`][])
-    has to be fully declared. The hint is then compared with the super-hint
-    through the relation, which accepts it when any of them fits. One that
-    leaves an argument open (`class Two(List[T], Container[U])` built as
-    `Two[Any, str]()` reaches `Container[Any]` through `List`) makes the whole
-    value undeclared, so only its origin is checked: reading it by its other
-    base alone would reject it as a `Container[bytes]` while it is accepted as
-    a `Collection[bytes]`, which is below that.
+    Every parametrisation of `origin` that the bases reach
+    ([`_as_base_args`][]) has to be fully declared. The hint is then
+    compared with the super-hint through the relation, which accepts
+    it when any of them fits. One that leaves an argument open, as
+    `class Two(List[T], Container[U])` built as `Two[Any, str]()`
+    reaches `Container[Any]` through `List`, makes the whole value
+    undeclared, so only its origin is checked: reading it by its other
+    base alone would reject it as a `Container[bytes]`, while it is
+    accepted as a `Collection[bytes]`, which is below that.
     """
     declared = False
     for args in _as_base_args(hint, origin):
@@ -2141,16 +2213,18 @@ def _declares_arguments(hint: tx.Any, origin: type) -> bool:
 
 
 def _is_subscripted_tuple(hint: tx.Any) -> bool:
-    """Whether a tuple hint is subscripted (`Tuple[int]`, `Tuple[()]`).
+    """Report whether a tuple hint is subscripted, `Tuple[int]` or `Tuple[()]`.
 
-    Told apart from a bare, unparametrised `Tuple`/`tuple`. The empty-tuple
-    type `Tuple[()]` reports its arguments as the phantom `#!python ((),)` on
-    Python 3.8-3.10 and as genuinely empty `#!python ()` on 3.11+, so an empty
+    This tells a subscripted tuple apart from a bare, unparametrised
+    `Tuple` or `tuple`. The empty-tuple type `Tuple[()]` reports its
+    arguments as the phantom `#!python ((),)` on Python 3.8 through
+    3.10 and as genuinely empty `#!python ()` from 3.11 on, so an empty
     argument list alone cannot distinguish it from a bare `Tuple`. A
-    subscripted alias with no arguments still carries an `__args__` attribute
-    where a bare form does not -- the load-bearing fallback for a genuinely
-    empty argument list, which includes the PEP 585 `#!python tuple[()]`
-    spelling on 3.9-3.10 as well as every empty-args form on 3.11+.
+    subscripted alias with no arguments still carries an `__args__`
+    attribute where a bare form does not; that is the load-bearing
+    fallback for a genuinely empty argument list, which covers both the
+    PEP 585 `#!python tuple[()]` spelling on 3.9 and 3.10 and every
+    empty-args form from 3.11 on.
     """
     if any(hint is form for form in _BARE_TUPLE_FORMS):
         return False
@@ -2163,7 +2237,7 @@ def _is_subscripted_tuple(hint: tx.Any) -> bool:
 
 
 def _issubtuplehint(hint_uw: tx.Any, superhint_uw: tx.Any) -> bool:
-    """Whether a tuple hint is a sub-hint of a tuple superhint."""
+    """Report whether a tuple hint is a sub-hint of a tuple superhint."""
     if not _is_subscripted_tuple(superhint_uw):
         # A bare `Tuple`/`tuple` constrains nothing: any tuple is a sub-hint.
         return True
@@ -2179,22 +2253,24 @@ def _issubargs(
 ) -> bool:
     """Check a hint's arguments against a superhint's, covariantly.
 
-    The covariant fallback for a generic with no readable per-position
-    variance (a `ParamSpec`/`TypeVarTuple` origin, or an arity mismatch); an
-    origin whose variance is known is compared slot by slot (each by its
-    declared variance) in [`_issubclasshint`][] instead.
+    This is the covariant fallback for a generic with no readable
+    per-position variance, such as a `ParamSpec` or `TypeVarTuple`
+    origin, or an arity mismatch; an origin whose variance is known is
+    instead compared slot by slot, each by its declared variance, in
+    [`_issubclasshint`][].
 
-    The arguments are read as tuple *shapes* (a fixed prefix, an optional open
-    run, a fixed suffix) so a trailing ellipsis (`Tuple[int, ...]`) and an
-    unpacked `TypeVarTuple` (`Tuple[int, *Ts]`) are ordered the same way. A
-    plain, fully fixed argument list (`List[int]`, `Dict[str, int]`) is a
-    closed shape, so it is compared element by element as before.
+    The arguments are read as tuple shapes, a fixed prefix, an optional
+    open run, and a fixed suffix, so that a trailing ellipsis, as in
+    `Tuple[int, ...]`, and an unpacked `TypeVarTuple`, as in
+    `Tuple[int, *Ts]`, are ordered the same way. A plain, fully fixed
+    argument list, such as `List[int]` or `Dict[str, int]`, is a closed
+    shape, so it is compared element by element as before.
     """
     return _issubtupleshape(_tuple_shape(args), _tuple_shape(superargs))
 
 
 def _issubnone(hint: tx.Any, superhint: tx.Any) -> bool:
-    """Check that a hint is a sub-hint for NoneType."""
+    """Report whether a hint is a sub-hint of `NoneType`."""
     none_uw = get_origin_uw(superhint)
     if none_uw is not type(None):
         raise TypeError(f"nonehint {superhint} is not a NoneType")
@@ -2203,7 +2279,7 @@ def _issubnone(hint: tx.Any, superhint: tx.Any) -> bool:
 
 
 def _issubliteral(hint: tx.Any, superhint: tx.Any) -> bool:
-    """Check that a hint is a sub-hint for a Literal."""
+    """Report whether a hint is a sub-hint of a `Literal`."""
     hint_uw = unwrap(hint)
     superhint_uw = unwrap(superhint)
     if not _is_literal(safe_get_origin(superhint_uw)):
@@ -2232,7 +2308,7 @@ def _issubliteral(hint: tx.Any, superhint: tx.Any) -> bool:
 
 
 def _issubtypevar(hint: tx.Any, superhint: tx.Any) -> bool:
-    """Check that a hint is a sub-hint for a TypeVar."""
+    """Report whether a hint is a sub-hint of a `TypeVar`."""
     hint_uw = unwrap(hint)
     superhint_uw = unwrap(superhint)
     if not isinstance(superhint_uw, tx.TypeVar):
@@ -2294,7 +2370,7 @@ def _issubtypevar(hint: tx.Any, superhint: tx.Any) -> bool:
 
 
 def _issubunion(hint: tx.Any, superhint: tx.Any) -> bool:
-    """Check that a hint is a sub-hint for a Union."""
+    """Report whether a hint is a sub-hint of a `Union`."""
     hint_uw = unwrap(hint)
     superhint_uw = unwrap(superhint)
     if safe_get_origin(superhint_uw) not in UNION_TYPES:
@@ -2330,7 +2406,7 @@ def _issubunion(hint: tx.Any, superhint: tx.Any) -> bool:
 
 
 def _issubtype(hint: tx.Any, superhint: tx.Any) -> bool:
-    """Check that a hint is a sub-hint for a type[...] hint."""
+    """Report whether a hint is a sub-hint of a `type[...]` hint."""
     hint_uw = unwrap(hint)
     superhint_uw = unwrap(superhint)
     if safe_get_origin(superhint_uw) is not type:
@@ -2352,17 +2428,18 @@ def _issubtype(hint: tx.Any, superhint: tx.Any) -> bool:
 
 
 def _issubcallable(hint: tx.Any, superhint: tx.Any) -> bool:
-    """Check that a hint is a sub-hint for a `Callable[...]`.
+    """Report whether a hint is a sub-hint of a `Callable[...]`.
 
-    Parameters are compared contravariantly and the return type covariantly.
-    A `#!python ...` or a bare `ParamSpec` parameter list is the **top** of
-    parameter lists -- the widest, describing every callable -- so a fixed
-    list is a sub-hint of it but not the other way round; a
-    `#!python Concatenate[X, P]` list is a contravariant fixed prefix followed
-    by an open tail, sitting between the fixed lists and the top (RFC 11.1). A
-    callable *class* -- a function type, `#!python type`, `#!python Type[C]`,
-    or a class with `__call__` -- has no parameter list, so it stands in only
-    for an unparametrised `Callable`.
+    Parameters are compared contravariantly and the return type
+    covariantly. A `#!python ...` or a bare `ParamSpec` parameter list
+    is the top of parameter lists, the widest, describing every
+    callable, so a fixed list is a sub-hint of it but not the other way
+    round; a `#!python Concatenate[X, P]` list is a contravariant fixed
+    prefix followed by an open tail, sitting between the fixed lists
+    and the top, per RFC 11.1. A callable class, such as a function
+    type, `#!python type`, `#!python Type[C]`, or a class with
+    `__call__`, has no parameter list, so it stands in only for an
+    unparametrised `Callable`.
     """
     hint_uw = unwrap(hint)
     superhint_uw = unwrap(superhint)
@@ -2395,18 +2472,17 @@ def _issubcallable(hint: tx.Any, superhint: tx.Any) -> bool:
 
 
 class _ParamShape(tx.NamedTuple):
-    """A `Callable` parameter list as a shape (RFC 11.1).
+    """A `Callable` parameter list as a shape, per RFC 11.1.
 
-    A fixed, contravariant `prefix` followed by a `tail` saying how the list
-    ends:
+    This is a fixed, contravariant `prefix` followed by a `tail` that
+    says how the list ends: `#!python None` for a closed, fixed-arity
+    list such as `[int, str]`, or `#!python Ellipsis` or a
+    [`ParamSpec`][typing.ParamSpec] for an open list, one that may be
+    called with arbitrarily many further arguments.
 
-    * `#!python None` -- a **closed** (fixed-arity) list, e.g. `[int, str]`;
-    * `#!python Ellipsis` or a [`ParamSpec`][typing.ParamSpec] -- an **open**
-      list, one that may be called with arbitrarily many further arguments.
-
-    An open list is the *top* of parameter lists, the way `#!python Tuple[X,
-    ...]` tops the fixed-length tuples: a fixed list is a sub-hint of it, but
-    it is not a sub-hint of any fixed list.
+    An open list is the top of parameter lists, the way
+    `#!python Tuple[X, ...]` tops the fixed-length tuples: a fixed list
+    is a sub-hint of it, but it is not a sub-hint of any fixed list.
     """
 
     prefix: tx.Tuple[tx.Any, ...]
@@ -2419,11 +2495,12 @@ _CLOSED_MATCH = _ParamShape((), None)
 
 
 def _callable_param_shape(alias: tx.Any, params: tx.Any) -> _ParamShape:
-    """Classify a `Callable` parameter list into a `_ParamShape` (RFC 11.1).
+    """Classify a `Callable` parameter list into a `_ParamShape`, per RFC 11.1.
 
     `alias` is the whole `Callable[...]` hint, needed to reach
-    `#!python __parameters__` where an older Python has erased a `ParamSpec`
-    out of the arguments; `params` is its parameter-list argument.
+    `#!python __parameters__` where an older Python has erased a
+    `ParamSpec` out of the arguments; `params` is its parameter-list
+    argument.
     """
     # `Ellipsis` and the `ParamSpec` forms name the open top. `ParamSpec` is
     # tested before `list`: on 3.8/3.9 a `ParamSpec` *is* a `list` subclass,
@@ -2473,21 +2550,21 @@ def _callable_param_shape(alias: tx.Any, params: tx.Any) -> _ParamShape:
 def _match_params(
     sub: _ParamShape, sup: _ParamShape
 ) -> tx.Optional[_ParamShape]:
-    """Match one parameter-list shape against another (RFC 11.1).
+    """Match one parameter-list shape against another, per RFC 11.1.
 
-    `sub` describes the callables the left `Callable` accepts, `sup` those the
-    right does; the match holds when every callable `sub` describes `sup`
-    describes too, with the committed prefixes compared **contravariantly**.
+    `sub` describes the callables the left `Callable` accepts, and
+    `sup` describes those the right one does; the match holds when
+    every callable `sub` describes is one `sup` describes too, with the
+    committed prefixes compared contravariantly. A closed `sup` accepts
+    exactly its own arity, so `sub` must be closed too, with the same
+    prefix length. An open `sup` accepts its committed prefix and
+    anything after, so `sub` must supply at least that prefix; the
+    variable at `sup`'s tail then captures the rest of `sub`'s list,
+    meaning the leftover prefix plus `sub`'s own tail.
 
-    * A **closed** `sup` accepts exactly its own arity: `sub` must be closed
-      too, with the same prefix length.
-    * An **open** `sup` accepts its committed prefix and anything after: `sub`
-      must supply at least that prefix. The variable at `sup`'s tail then
-      captures the rest of `sub`'s list -- the leftover prefix plus `sub`'s own
-      tail.
-
-    Returns that captured tail shape when `sup` is open, a sentinel closed
-    shape when `sup` is closed and matches, or `#!python None` on no match.
+    The result is that captured tail shape when `sup` is open, a
+    sentinel closed shape when `sup` is closed and matches, or
+    `#!python None` when there is no match.
     """
     sub_closed = sub.tail is None
     sup_closed = sup.tail is None
@@ -2510,25 +2587,26 @@ def _match_params(
 
 
 def _issubparams(sub: _ParamShape, sup: _ParamShape) -> bool:
-    """Whether one parameter-list shape stands in for another (RFC 11.1)."""
+    """Report whether one parameter-list shape stands in for
+    another, per RFC 11.1.
+    """
     return _match_params(sub, sup) is not None
 
 
 class _TupleShape(tx.NamedTuple):
-    """A tuple's arguments as a shape (RFC 0001 §11.1, PEP 646).
+    """A tuple's arguments as a shape, per RFC 0001 §11.1 and PEP 646.
 
-    A tuple is a fixed, front-aligned `prefix`, an optional open middle run,
-    and a fixed, back-aligned `suffix`. The middle run is:
+    A tuple is a fixed, front-aligned `prefix`, an optional open middle
+    run, and a fixed, back-aligned `suffix`. The middle run is closed,
+    fixed-arity, such as `Tuple[int, str]`, when `rep` is
+    `#!python None`; otherwise `rep` is the element upper bound of an
+    open run, as in `Tuple[int, ...]`, bound by `int`, or
+    `Tuple[int, *Ts]`, bound by `Any`.
 
-    * `#!python None` in `rep` -- a **closed** (fixed-arity) tuple, e.g.
-      `Tuple[int, str]`;
-    * otherwise `rep` is the element upper bound of the run -- an **open**
-      tuple, `Tuple[int, ...]` (bound `int`) or `Tuple[int, *Ts]` (bound
-      `Any`).
-
-    `var` is the `TypeVarTuple` an `*Ts` run stands for, or `#!python None`.
-    All fixed positions are covariant; an open run tops the tuples of its
-    shape, as `Tuple[int, ...]` tops the fixed-length tuples beginning `int`.
+    `var` is the `TypeVarTuple` an `*Ts` run stands for, or
+    `#!python None`. All fixed positions are covariant, and an open run
+    tops the tuples of its shape, the way `Tuple[int, ...]` tops the
+    fixed-length tuples beginning with `int`.
     """
 
     prefix: tx.Tuple[tx.Any, ...]
@@ -2545,11 +2623,12 @@ _CLOSED_TUPLE_MATCH = _TupleShape((), None, (), None)
 def _tuple_shape(args: tx.Tuple[tx.Any, ...]) -> _TupleShape:
     """Classify a tuple's arguments into a `_TupleShape`.
 
-    `Tuple[()]` on 3.8-3.10 reports its arguments as the phantom `#!python
-    ((),)`; it is normalised here to no elements, so the empty-tuple type is
-    read the same way on every version. A second open run in one tuple is
-    refused (PEP 646 allows a single unpack; `typing` does not enforce it at
-    runtime, so the relation does).
+    `Tuple[()]` on Python 3.8 through 3.10 reports its arguments as the
+    phantom `#!python ((),)`; it is normalised here to no elements, so
+    the empty-tuple type is read the same way on every version. A
+    second open run in one tuple is refused, since PEP 646 allows only
+    a single unpack and `typing` does not enforce that at runtime, so
+    the relation does instead.
     """
     if args == ((),):
         # The 3.8-3.10 `Tuple[()]` phantom: a single empty-tuple element that
@@ -2615,13 +2694,14 @@ def _tuple_shape(args: tx.Tuple[tx.Any, ...]) -> _TupleShape:
 def _match_tuple(
     sub: _TupleShape, sup: _TupleShape
 ) -> tx.Optional[_TupleShape]:
-    """Match one tuple shape against another, covariantly (the tuple twin of
-    `_match_params`).
+    """Match one tuple shape against another, covariantly.
 
-    Returns the shape a `*Ts` in `sup` would capture from `sub` (the run `sub`
-    supplies beyond `sup`'s fixed prefix and suffix), a sentinel closed shape
-    when `sup` is closed and matches, or `#!python None` on no match. Every
-    fixed position is compared covariantly (`issubhint(sub_i, sup_i)`).
+    This is the tuple twin of [`_match_params`][]. The result is the
+    shape a `*Ts` in `sup` would capture from `sub`, meaning the run
+    `sub` supplies beyond `sup`'s fixed prefix and suffix; a sentinel
+    closed shape when `sup` is closed and matches; or `#!python None`
+    when there is no match. Every fixed position is compared
+    covariantly, through `issubhint(sub_i, sup_i)`.
     """
     sub_open = sub.rep is not None
     sup_open = sup.rep is not None
@@ -2676,5 +2756,5 @@ def _match_tuple(
 
 
 def _issubtupleshape(sub: _TupleShape, sup: _TupleShape) -> bool:
-    """Whether one tuple shape stands in for another."""
+    """Report whether one tuple shape stands in for another."""
     return _match_tuple(sub, sup) is not None

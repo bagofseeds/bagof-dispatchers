@@ -1,12 +1,13 @@
 """Version-pinned typing constants and special-form recognition.
 
-Several typing constructs are classes on some Python versions and not on
-others -- [`Any`][typing.Any] became one in 3.11,
-[`Annotated`][typing.Annotated] was one through 3.12 but not from 3.13, and
-[`Union`][typing.Union] became one in 3.14 -- so
-`#!python isinstance(hint, type)` silently gives different answers across the
-versions this package supports. The names here pin those answers instead of
-inheriting them.
+Several typing constructs are classes on some Python versions and plain
+objects on others. [`Any`][typing.Any] became a class in 3.11,
+[`Annotated`][typing.Annotated] was one through 3.12 and stopped being
+one from 3.13, and [`Union`][typing.Union] became one in 3.14. Because
+of this, `#!python isinstance(hint, type)` gives a different answer for
+the same construct depending on which Python version is running. The
+names defined here pin the answer that matters, a special form or not,
+instead of letting it drift with the interpreter.
 """
 
 # stdlib
@@ -33,24 +34,27 @@ UNION_TYPES = (
 
 
 class UnknownHintWarning(RuntimeWarning):
-    """A type hint the relation does not recognise is treated as `Any`.
+    """Warns that an unrecognised type hint is being treated as `Any`.
 
-    An unrecognised or future construct is opaque: it is accepted by
-    everything as a super-hint and is a sub-hint only of itself and
-    [`Any`][typing.Any], so a method annotated with it stays reachable
-    rather than silently never firing. The warning is emitted once per
-    form.
+    The subtype relation treats a construct it does not recognise, such
+    as one introduced by a future Python version, as opaque: every hint
+    is accepted as a super-hint of it, and it is a sub-hint only of
+    itself and of [`Any`][typing.Any]. This keeps a method annotated
+    with the unrecognised construct reachable, rather than letting it
+    silently never fire. The warning is raised once per distinct
+    construct.
     """
 
 
 def spellings(name: tx.Any) -> tx.Tuple[tx.Any, ...]:
-    """Every distinct object a typing form is spelled as.
+    """Return every distinct object a typing form is spelled as.
 
     A construct such as `Unpack` exists on both [`typing`][] and
-    `typing_extensions`, and on some versions `#!python typing.X is not
-    tx.X`, so an identity check against a single spelling misses the other.
-    Returns the objects both modules provide under `name`, without
-    duplicates -- ready to test a hint against with `is`.
+    `typing_extensions`, and on some Python versions
+    `#!python typing.X is not tx.X`, so checking a hint's identity
+    against a single spelling misses the other one. This returns the
+    objects both modules provide under `name`, with duplicates removed,
+    so that every spelling can be tested against with `is`.
 
     !!! example
         ```pycon
@@ -97,12 +101,14 @@ _PROTOCOL_MARKERS = spellings("Protocol")
 
 
 def is_special_form(hint: tx.Any) -> bool:
-    """Whether a hint is a typing construct rather than a class.
+    """Report whether `hint` is a typing construct rather than a class.
 
-    The explicit [`_SPECIAL_FORMS`][] tuple is the fast path; a structural
-    fallback then recognises any construct that lives in `typing` /
-    `typing_extensions` and has become a class on this version (or a future
-    one), so no such form is mistaken for a subclassable class.
+    Checking `hint` against the explicit [`_SPECIAL_FORMS`][] tuple is
+    the fast path. A structural fallback then recognises any construct
+    that lives in `typing` or `typing_extensions` and has become a
+    class on the running Python version, or would on a future one, so
+    that such a form is never mistaken for a class a user could
+    subclass.
     """
     # Identity, not `in`: `==` on typing objects can be surprising.
     if any(hint is form for form in _SPECIAL_FORMS):
@@ -111,8 +117,13 @@ def is_special_form(hint: tx.Any) -> bool:
 
 
 def _is_typing_class_form(hint: tx.Any) -> bool:
-    """A class living in `typing`/`typing_extensions` that is not a real,
-    subclassable class (`Generic`, `Protocol`, `TypedDict`)."""
+    """Report whether `hint` is a typing special form disguised as a class.
+
+    A special form such as `Generic`, `Protocol` or `TypedDict` lives
+    in `typing` or `typing_extensions` and, on some Python versions, is
+    implemented as a class. This tells such a form apart from a real,
+    subclassable class that merely happens to live in the same module.
+    """
     if not isinstance(hint, type):
         return False
     module = getattr(hint, "__module__", None)
@@ -130,11 +141,12 @@ def _is_typing_class_form(hint: tx.Any) -> bool:
         # single-version coverage job) the marker is a function, excluded by
         # that guard, so this line is not reached there.
         return False
-    # Real, checkable classes that merely live in `typing` -- a Protocol
-    # (`SupportsInt`, `SupportsIndex`, ...), any `Generic` subclass
-    # (`typing.IO`), or an ABC (`Buffer` on <=3.11) -- are not special
-    # forms: they can be subclass/instance-checked, so swallowing them
-    # would make the relation silently reject them.
+    # Real, checkable classes that merely live in `typing`, such as a
+    # Protocol (`SupportsInt`, `SupportsIndex`, ...), a `Generic`
+    # subclass (`typing.IO`), or an ABC (`Buffer` on 3.11 and earlier),
+    # are not special forms: they can be subclass- or instance-checked,
+    # so treating them as special forms would make the relation
+    # silently reject them.
     if getattr(hint, "_is_protocol", False):
         return False
     mro = getattr(hint, "__mro__", ())
@@ -156,14 +168,15 @@ _TYPEVAR_FAMILY = tuple(
 
 
 def is_plausible_hint(obj: tx.Any) -> bool:
-    """Whether `obj` could be a type hint, rather than an obvious non-hint.
+    """Report whether `obj` could plausibly be a type hint.
 
     A hint is a class, a typing special form, a member of the
     [`TypeVar`][typing.TypeVar] family, a [`ForwardRef`][typing.ForwardRef],
-    or any object defined in `typing` / `typing_extensions` -- which covers a
-    future construct of that shape too. An obvious non-hint -- a plain value
-    such as a number, string or container instance, or a plain function -- is
-    not, and the relation raises rather than treating it as `Any`.
+    or any other object defined in `typing` or `typing_extensions`,
+    which also covers a future construct of the same shape. An obvious
+    non-hint, such as a plain value (a number, a string, a container
+    instance) or an ordinary function, is not plausible, and the
+    relation raises for it rather than silently treating it as `Any`.
     """
     if isinstance(obj, type):
         return True
@@ -192,10 +205,10 @@ _TYPEDDICT_MARKERS = tuple(
 
 
 def is_typeddict_marker(cls: tx.Any) -> bool:
-    """Whether `cls` is `TypedDict` itself, in either spelling."""
+    """Report whether `cls` is `TypedDict` itself, in either spelling."""
     return any(cls is marker for marker in _TYPEDDICT_MARKERS)
 
 
 def canonical_typeddict(cls: tx.Any) -> tx.Any:
-    """Collapse either `TypedDict` spelling to the canonical one."""
+    """Return `cls`, collapsing either spelling of `TypedDict` to one."""
     return tx.TypedDict if is_typeddict_marker(cls) else cls

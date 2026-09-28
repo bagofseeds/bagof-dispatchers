@@ -1,19 +1,21 @@
 """Hint-informed multiple dispatch for Python.
 
-`bagof.dispatchers` selects a registered function by the runtime types of its
-arguments, choosing the most specific matching signature and raising a clear
-error when the choice is ambiguous. Dispatch is driven by type hints and
-understands the full hint vocabulary (unions, literals, generics, `TypedDict`,
-`TypeVar`, variance, and more).
+`bagof.dispatchers` chooses which of several registered implementations
+of a function to run by looking at the runtime types of the arguments a
+call actually receives. Among the implementations whose declared types
+accept those arguments, it picks the most specific one, and raises a
+clear error when two implementations are equally specific and neither
+one is more applicable than the other. Dispatch is driven by ordinary
+type hints, and understands the full hint vocabulary: unions, literals,
+generics, `TypedDict`, `TypeVar`, variance, and more.
 
-Register overloads with the ready-made
-[`dispatch`][bagof.dispatchers.dispatch] decorator, or build your own
-[`Dispatcher`][bagof.dispatchers.Dispatcher]; call the resulting function and
-the most specific overload runs. [`Exact`][bagof.dispatchers.Exact] matches a
-type without its subclasses. The hint-level subtype relation and introspection
-helpers -- the shared root the rest of the `bagof` family builds on -- live
-under `bagof.dispatchers.core`. See the design RFC in `docs/rfc/` for the
-model.
+Register overloads with the [`dispatch`][] decorator, or build a
+[`Dispatcher`][] of your own; calling the resulting function then runs
+whichever overload matches best. [`Exact`][] lets an overload match a
+type while excluding its subclasses. The hint-level subtype relation and
+the introspection helpers it is built from, which are the foundation the
+rest of the `bagof` family builds on, live in `bagof.dispatchers.core`.
+The design RFC under `docs/rfc/` describes the underlying model in full.
 """
 
 # local

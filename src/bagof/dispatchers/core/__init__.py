@@ -1,9 +1,11 @@
 """The hint subtype relation and introspection helpers.
 
-`bagof.dispatchers.core` is the shared, dependency-light root of the bagof
-family: the hint-level subtype relation ([`issubhint`][], [`ishintstance`][])
-and the introspection helpers they are built on. The dispatch engine at the
-top level, and the sibling bags, are built on these names.
+`bagof.dispatchers.core` is the shared, dependency-light root of the
+`bagof` family. It provides the hint-level subtype relation,
+[`issubhint`][] and [`ishintstance`][], along with the introspection
+helpers those two are built from. The dispatch engine at the top level
+of this package, and the other `bagof` packages, are all built on the
+names exported here.
 """
 
 # local

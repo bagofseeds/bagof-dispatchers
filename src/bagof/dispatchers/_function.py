@@ -1,26 +1,27 @@
 """The multiple-dispatch callable: [`Function`][].
 
-A [`Function`][bagof.dispatchers._function.Function] is a named group of
-[`Method`][bagof.dispatchers.Method]s. Calling it binds the call to each
-method, keeps those that apply, and runs the most specific one; when two are
-equally specific it raises
-[`AmbiguousMethodError`][bagof.dispatchers.AmbiguousMethodError], and when none
-applies [`NoMethodError`][bagof.dispatchers.NoMethodError].
+A [`Function`][] is a named group of [`Method`][]s.
+Calling it binds the call to each method, keeps the ones that apply, and
+runs the most specific one. When two methods are equally specific, it
+raises [`AmbiguousMethodError`][], and when none applies, it raises
+[`NoMethodError`][].
 
-Selection is name-aware (RFC 0001 §2.2): a call is bound the way Python binds
-it, and specificity compares the hints of the slots the *same* argument landed
-in. The most specific method is the one whose landed hints are a sub-hint of
-every competitor's, position by position; ties are broken by explicit
-`priority`, then the argument's own MRO, then how tightly the signature fits,
-and finally by repeated `TypeVar`s -- a method whose repeated `TypeVar`s
-strictly refine another's grouping (tie every pair it ties, and at least one
-more) wins.
+Selection is name-aware, following RFC 0001 §2.2: a call is bound the
+way Python itself binds it, and specificity compares the hints of the
+slots that the same argument landed in across methods. The most
+specific method is the one whose landed hints are a sub-hint of every
+competitor's, position by position. Ties are broken first by explicit
+`priority`, then by the argument's own MRO, then by how tightly the
+signature fits the call, and finally by repeated `TypeVar`s: a method
+whose repeated `TypeVar`s strictly refine another's grouping, tying
+every pair the other ties and at least one more, wins.
 
-Registration is thread-safe and lock-free to read: each `register` builds a new
-method tuple and publishes it in one assignment, so a concurrent call never
-sees a half-updated group. Results are cached per call shape and per concrete
-argument-type key, and the cache is dropped when the methods change or when an
-[`abc.register`][abc.ABCMeta.register] elsewhere could change what
+Registration is thread-safe, and reading is lock-free: each `register`
+call builds a new method tuple and publishes it in one assignment, so a
+concurrent call never sees a half-updated group. Results are cached per
+call shape and per concrete argument-type key, and the cache is dropped
+whenever the methods change or an
+[`abc.register`][abc.ABCMeta.register] call elsewhere could change what
 `#!python isinstance` answers.
 """
 
@@ -93,11 +94,12 @@ _CALL_CACHE_CAP = 1024
 class _Cache:
     """The two-level dispatch cache, stamped with what it is valid for.
 
-    The cache is thrown away and rebuilt whole when the methods change or the
-    ABC cache token moves, so an entry is never read against a state it was
-    not computed for. Its two dicts are only ever mutated while holding the
-    owning function's lock, and each individual read on the hot path is a
-    single dict lookup -- atomic on every build, free-threaded included.
+    The whole cache is thrown away and rebuilt when the methods change
+    or the ABC cache token moves, so an entry is never read against a
+    state it was not computed for. Its two dicts are mutated only while
+    holding the owning function's lock, and each individual read on the
+    hot path is a single dict lookup, which stays atomic on every
+    build, including a free-threaded one.
     """
 
     __slots__ = ("methods", "token", "shape_plans", "call_cache")
@@ -110,14 +112,15 @@ class _Cache:
 
 
 class _Plan:
-    """What a call *shape* fixes, independent of the argument values.
+    """What a call shape fixes, independent of the argument values.
 
-    Binding depends only on the shape (how many positionals, which keyword
-    names), so it is worked out once per shape: which methods can bind it,
-    where each argument lands in each, the pairwise specificity order, which
-    arguments a hint reads by value rather than by type, which -- short of
-    that -- it reads by the parametrisation the value declares, and which by
-    the protocol data members the value has.
+    Binding depends only on the shape, meaning how many positionals and
+    which keyword names, so it is worked out once per shape: which
+    methods can bind it, where each argument lands in each of them, the
+    pairwise specificity order, which arguments a hint reads by value
+    rather than by type, which ones, short of that, it reads by the
+    parametrisation the value declares, and which by the protocol data
+    members the value has.
     """
 
     __slots__ = (
@@ -173,19 +176,8 @@ class _Plan:
 class Function:
     """A named group of methods dispatched by argument type.
 
-    Build one, register methods on it, then call it: the call runs the most
-    specific method whose parameter types accept the arguments.
-
-    Parameters
-    ----------
-    name
-        The function's name, used in error messages. When omitted it is taken
-        from the first method registered.
-
-    Attributes
-    ----------
-    methods : tuple
-        The registered methods, in registration order (read-only snapshot).
+    Build one, register methods on it, then call it: the call runs the
+    most specific method whose parameter types accept the arguments.
 
     !!! example
         ```pycon
@@ -196,6 +188,18 @@ class Function:
         >>> f(3, 4)
         12
         ```
+
+    Parameters
+    ----------
+    name
+        The function's name, used in error messages. When omitted, it
+        is taken from the first method registered.
+
+    Attributes
+    ----------
+    methods : tuple
+        The registered methods, in registration order. This is a
+        read-only snapshot.
     """
 
     def __init__(self, name: tx.Optional[str] = None) -> None:
@@ -226,58 +230,64 @@ class Function:
     def register(self, *args: tx.Any, **options: tx.Any) -> tx.Any:
         """Register a method, or return a decorator that does.
 
-        `register` takes **either** an implementation **or** hints -- never
-        both in a way that could be confused, since a type is both a callable
-        and a valid hint:
+        `register` takes either an implementation or hints, never both
+        in a way that could be confused, since a type is both a
+        callable and a valid hint.
 
-        * **Implementation form** -- `#!python f.register(impl)`, where `impl`
-          is any callable: a function, a **class** (dispatched on its
-          `#!python __init__` / `#!python __new__`), or a callable instance.
-          The signature is read from `impl` itself. `#!python f.register(int)`
-          registers the `#!python int` **type** as an implementation,
-          dispatched on its constructor -- it is *not* read as a hint.
-        * **Hint-overlay form** -- the argument is a `#!python tuple` of
-          positional hints and/or a `#!python dict` of named hints, and a
-          decorator is returned that overlays those hints onto the wrapped
-          function's own parameters, keeping its names, kinds and defaults:
+        In the implementation form, `#!python f.register(impl)`, `impl`
+        is any callable: a function, a class, dispatched on its
+        `#!python __init__` or `#!python __new__`, or a callable
+        instance. The signature is read from `impl` itself, so
+        `#!python f.register(int)` registers the `#!python int` type as
+        an implementation, dispatched on its constructor; it is not
+        read as a hint.
 
-            * `#!python @f.register((int, float))` -- positional hints (always
-              a tuple, even for one: `#!python (int,)`);
-            * `#!python @f.register({"scale": float})` -- named hints;
-            * `#!python @f.register((int,), {"scale": float})` -- both;
-            * `#!python @f.register()` -- no hints, register by the wrapped
-              function's own signature.
+        In the hint-overlay form, the argument is a `#!python tuple` of
+        positional hints, a `#!python dict` of named hints, or both, and
+        a decorator is returned that overlays those hints onto the
+        wrapped function's own parameters, keeping its names, kinds,
+        and defaults. `#!python @f.register((int, float))` gives
+        positional hints, always as a tuple even for a single one,
+        `#!python (int,)`. `#!python @f.register({"scale": float})`
+        gives named hints. `#!python @f.register((int,), {"scale": float})`
+        gives both. `#!python @f.register()` gives no hints at all,
+        registering the wrapped function by its own signature.
 
-        The form is chosen by the first argument's type: a `#!python tuple` or
-        `#!python dict` is hints, anything else is the implementation, and no
-        argument at all is the hint-overlay decorator with nothing to overlay.
+        The form is chosen by the first argument's type: a
+        `#!python tuple` or `#!python dict` means hints, anything else
+        means an implementation, and no argument at all means the
+        hint-overlay decorator with nothing to overlay.
 
-        **Named hints go in the dict, never as keyword arguments.** A keyword
-        argument to `register` is a registration *option* -- only `#!python
-        priority` is understood -- so `#!python f.register(int, priority=5)`
-        registers `#!python int` at priority 5, while `#!python
-        f.register(scale=float)` is an error pointing to `#!python
-        f.register({"scale": float})`.
+        Named hints go in the dict, never as keyword arguments. A
+        keyword argument to `register` is a registration option, and
+        only `#!python priority` is understood, so
+        `#!python f.register(int, priority=5)` registers
+        `#!python int` at priority 5, while
+        `#!python f.register(scale=float)` is an error pointing to
+        `#!python f.register({"scale": float})`.
+
+        A method registered with the same signature, as written, as one
+        already registered replaces it, with a [`RuntimeWarning`][];
+        this is the case a module reload or a doubled decorator
+        produces.
 
         Parameters
         ----------
         priority
-            A tie-break applied before the type-based order: a higher priority
-            wins between two otherwise equally specific methods. Defaults to
-            `0`. Given as a keyword, alongside either form.
-
-        A method registered with the same signature *as written* as one already
-        registered replaces it, with a [`RuntimeWarning`][] -- the case a
-        module reload or a doubled decorator produces.
+            A tie-break applied before the type-based order: a higher
+            priority wins between two otherwise equally specific
+            methods. Defaults to `0`. Given as a keyword, alongside
+            either form.
 
         Returns
         -------
         Callable
-            The registered callable, in both forms -- so `#!python
-            f.register(fn)`, `#!python @f.register` and `#!python
-            @f.register((int,))` all leave the name bound to the function
-            (the [`functools.singledispatch`][functools.singledispatch]
-            convention).
+            The registered callable, in both forms, so
+            `#!python f.register(fn)`, `#!python @f.register`, and
+            `#!python @f.register((int,))` all leave the name bound to
+            the function, following the
+            [`functools.singledispatch`][functools.singledispatch]
+            convention.
         """
         priority = _registration_priority(options)
         if args and not isinstance(args[0], (tuple, dict)):
@@ -313,10 +323,10 @@ class Function:
     ) -> "Function":
         """Build a function from a mapping of hint-spec to callable.
 
-        Each key describes a signature and each value is the callable to run
-        for it. A key that is a tuple gives one positional hint per element; a
-        single-hint key gives one positional hint; a
-        [`Signature`][bagof.dispatchers.Signature] key is used as-is.
+        Each key describes a signature, and each value is the callable
+        to run for it. A key that is a tuple gives one positional hint
+        per element; a single-hint key gives one positional hint; a
+        [`Signature`][] key is used as is.
 
         !!! example
             ```pycon
@@ -337,7 +347,11 @@ class Function:
         return function
 
     def _add(self, method: Method) -> "Function":
-        """Add `method`, replacing an identical one, and drop the cache."""
+        """Add `method`, replacing an identical one, and drop the cache.
+
+        Returns the wrapped callable, so a decorator leaves the
+        original name bound to it.
+        """
         with self._lock:
             first = not self._methods
             methods = _replace_or_append(self._methods, method)
@@ -356,11 +370,12 @@ class Function:
     def _adopt_metadata(self, fn: tx.Callable[..., tx.Any]) -> None:
         """Take metadata from the first registered function.
 
-        Copies the documentation, module and wrapped callable so the function
-        stands in for its implementation to `#!python help` and introspection.
-        A function reached by name already has that name; it is kept, so
-        registering an anonymous `#!python def _` onto it does not rename it.
-        Only a function that arrived without one takes its name from here.
+        This copies the documentation, module, and wrapped callable, so
+        that the function stands in for its implementation under
+        `#!python help` and introspection. A function reached by name
+        already has that name, and it is kept, so registering an
+        anonymous `#!python def _` onto it does not rename it. Only a
+        function that arrived without a name takes its name from here.
         """
         given = self._name
         try:
@@ -384,13 +399,14 @@ class Function:
     ) -> None:
         """Warn when `method` is guaranteed to be ambiguous with another.
 
-        Only guaranteed ambiguities are warned (RFC 0001 §5): a pair that
-        binds the same shape, is incomparable at equal priority, and whose
-        landed hints are comparable at every argument -- so some call matches
-        both. A pair split by a differing `priority` is resolved
-        deterministically at the call, so it is not warned; and a pair that
-        only clashes for a value neither is written for (a diamond subclass yet
-        to exist) is left for the call to surface.
+        Only guaranteed ambiguities are warned about, following RFC
+        0001 §5: a pair that binds the same shape, is incomparable at
+        equal priority, and whose landed hints are comparable at every
+        argument, so that some call matches both. A pair split by a
+        differing `priority` is resolved deterministically at the call,
+        so it is not warned about, and a pair that only clashes for a
+        value neither is written for, such as a diamond subclass that
+        does not exist yet, is left for the call itself to surface.
         """
         for other in methods:
             if other is method:
@@ -414,12 +430,11 @@ class Function:
         return self.dispatch(*args, **kwargs).function(*args, **kwargs)
 
     def dispatch(self, *args: tx.Any, **kwargs: tx.Any) -> Method:
-        """Choose the method the argument *values* select, without calling it.
+        """Choose the method the argument values select, without calling it.
 
-        Raises [`NoMethodError`][bagof.dispatchers.NoMethodError] when nothing
-        applies, or
-        [`AmbiguousMethodError`][bagof.dispatchers.AmbiguousMethodError] when
-        two methods are equally specific.
+        Raises [`NoMethodError`][] when nothing applies, or
+        [`AmbiguousMethodError`][] when two methods are equally
+        specific.
         """
         token = abc.get_cache_token()
         cache = self._cache
@@ -456,34 +471,33 @@ class Function:
         ambiguity: str = "raise",
         **named_hints: tx.Any,
     ) -> tx.Any:
-        """Choose the method a call described by *hints* would select.
+        """Choose the method a call described by hints would select.
 
-        The hint-level twin of
-        [`dispatch`][bagof.dispatchers.Function.dispatch]: each argument is
-        given as a type hint rather than a value, and selection uses the
-        sub-hint relation. Returns the chosen
-        [`Method`][bagof.dispatchers.Method].
+        This is the hint-level twin of [`dispatch`][]: each argument is
+        given as a type hint rather than a value, and selection uses
+        the sub-hint relation. Returns the chosen
+        [`Method`][].
 
-        As a lookup convenience -- the same one
-        [`resolve_hint`][bagof.dispatchers.core.resolve_hint] grants, and
-        matching RFC 0001 §4 -- a method whose parameter is
-        [`Exact`][bagof.dispatchers.Exact]`[C]` is reachable by a plain-`C`
-        query, even though `#!python C` on its own is not a sub-hint of
-        `#!python Exact[C]`. This does not change the sub-hint relation or the
-        specificity order, only which methods a hint query counts as
-        applicable.
+        As a lookup convenience, the same one
+        [`resolve_hint`][bagof.dispatchers.core.resolve_hint] grants and
+        matching RFC 0001 §4, a method whose parameter is
+        [`Exact`][bagof.dispatchers.Exact]`[C]` is reachable by a
+        plain-`C` query, even though `#!python C` on its own is not a
+        sub-hint of `#!python Exact[C]`. This does not change the
+        sub-hint relation or the specificity order; it only changes
+        which methods a hint query counts as applicable.
 
         Parameters
         ----------
         default
             Returned when no method applies, instead of raising
-            [`NoMethodError`][bagof.dispatchers.NoMethodError].
+            [`NoMethodError`][].
         ambiguity
-            What to do when two methods are equally specific: `#!python
-            "raise"` (the default) raises
-            [`AmbiguousMethodError`][bagof.dispatchers.AmbiguousMethodError];
-            `#!python "warn"` takes the first registered and warns; `#!python
-            "ignore"` takes it silently.
+            What to do when two methods are equally specific.
+            `#!python "raise"`, the default, raises
+            [`AmbiguousMethodError`][]. `#!python "warn"` takes the
+            first registered method and warns. `#!python "ignore"`
+            takes it silently.
         """
         with self._lock:
             cache = self._ensure()
@@ -523,13 +537,14 @@ class Function:
     def __get__(
         self, instance: tx.Any, owner: tx.Optional[type] = None
     ) -> tx.Any:
-        """Bind the function as a method: `self` becomes argument 0.
+        """Bind the function as a method, with `self` as argument 0.
 
-        Accessed on an instance, it returns a bound view that prepends the
-        instance to every call, so a `Function` used as a class attribute
-        dispatches on `#!python self` (unannotated, so on
-        [`Any`][typing.Any]) and the rest. Accessed on the class, it returns
-        the function itself.
+        Accessed on an instance, this returns a bound view that
+        prepends the instance to every call, so a `Function` used as a
+        class attribute dispatches on `#!python self`, unannotated and
+        therefore on [`Any`][typing.Any], together with the rest of the
+        arguments. Accessed on the class itself, it returns the
+        function unchanged.
         """
         if instance is None:
             return self
@@ -538,16 +553,18 @@ class Function:
     # -- diagnostics ----------------------------------------------------
 
     def ambiguities(self) -> tx.List[tx.Tuple[Method, Method]]:
-        """The pairs of methods that could dispatch ambiguously.
+        """Return the pairs of methods that could dispatch ambiguously.
 
-        Each pair binds a common call shape, is incomparable at equal priority,
-        and has comparable hints at every argument of that shape -- so some
-        call matches both with no most specific method. A pair split by a
-        differing `priority` is resolved deterministically at the call, so it
-        is not listed. This is a heuristic over each method's own fully-applied
-        shape (RFC 0001 §5): it finds the ambiguities a call written
-        straightforwardly would hit, not every ambiguity reachable through
-        `#!python *args` spreading or an unforeseen subclass.
+        Each pair binds a common call shape, is incomparable at equal
+        priority, and has comparable hints at every argument of that
+        shape, so that some call matches both with no most specific
+        method to choose between them. A pair split by a differing
+        `priority` is resolved deterministically at the call, so it is
+        not listed. This is a heuristic over each method's own
+        fully-applied shape, following RFC 0001 §5: it finds the
+        ambiguities that a call written straightforwardly would hit,
+        not every ambiguity reachable through `#!python *args`
+        spreading or an unforeseen subclass.
 
         !!! example
             ```pycon
@@ -577,12 +594,12 @@ class Function:
     def _ensure(self) -> _Cache:
         """Return a cache valid for the current ABC token and methods.
 
-        The caller holds the lock. The ABC cache token is re-read here, under
-        the lock, rather than trusted from a value read before it was taken: a
-        token that advanced in between would otherwise stamp the fresh cache
-        with a stale value and let the next reader serve it. A stale cache --
-        built for other methods or an older token -- is replaced with a fresh
-        empty one.
+        The caller holds the lock. The ABC cache token is re-read here,
+        under the lock, rather than trusted from a value read before
+        the lock was taken, because a token that advanced in between
+        would otherwise stamp the fresh cache with a stale value and let
+        the next reader serve it. A stale cache, built for other methods
+        or an older token, is replaced with a fresh, empty one.
         """
         token = abc.get_cache_token()
         cache = self._cache
@@ -592,25 +609,30 @@ class Function:
         return cache
 
     def _refresh(self) -> _Cache:
-        """Take the lock and return a cache valid for the current token."""
+        """Return a cache valid for the current token, taking the lock
+        first.
+        """
         with self._lock:
             return self._ensure()
 
     def clear_cache(self) -> None:
         """Drop the dispatch cache, so the next call recomputes selection.
 
-        The registered methods are untouched; only the cached shape plans and
-        per-call results are discarded. Rarely needed -- registration and an
-        [`abc.register`][abc.ABCMeta.register] elsewhere both invalidate the
-        cache on their own -- but available for a value whose
-        `#!python isinstance` behaviour has changed in a way the ABC cache
-        token does not track.
+        The registered methods are untouched; only the cached shape
+        plans and per-call results are discarded. This is rarely
+        needed, since registration and an
+        [`abc.register`][abc.ABCMeta.register] call elsewhere both
+        invalidate the cache on their own, but it remains available for
+        a value whose `#!python isinstance` behaviour has changed in a
+        way the ABC cache token does not track.
         """
         with self._lock:
             self._cache = _Cache(self._methods, _NO_TOKEN)
 
     def _build_plan(self, shape: tx.Any, cache: _Cache) -> _Plan:
-        """Work out and store the plan for `shape` (caller holds the lock)."""
+        """Work out and store the plan for `shape`; the caller holds
+        the lock.
+        """
         existing = cache.shape_plans.get(shape)
         if existing is not None:
             return existing
@@ -665,7 +687,7 @@ class Function:
         kwargs: tx.Mapping[str, tx.Any],
         plan: _Plan,
     ) -> Method:
-        """Pick the most specific applicable method for a value call."""
+        """Return the most specific applicable method for a value call."""
         applicable = [
             index
             for index, (method, _, _) in enumerate(plan.bindable)
@@ -689,14 +711,16 @@ class Function:
     ) -> tx.Optional[int]:
         """Reduce a set of equally specific methods to one, or `None`.
 
-        Applied in order (RFC 0001 §2.2, §3): explicit `priority` (higher
-        wins), then -- for a value call -- the argument's own MRO (a hint
-        naming a more derived base wins), then tightness (a signature absorbing
-        fewer arguments into catch-alls, with fewer defaults, wins), and last
-        the repeated-`TypeVar` refinement (a method whose repeated `TypeVar`s
-        strictly refine another's grouping wins). A tie that
-        survives every step leaves more than one candidate and is ambiguous
-        (`None`).
+        The tie-breaks are applied in order, following RFC 0001 §2.2 and
+        §3. Explicit `priority` is tried first, with the higher value
+        winning. For a value call, the argument's own MRO is tried
+        next, with the hint naming a more derived base winning. Then
+        tightness is tried, where the signature that absorbs fewer
+        arguments into catch-alls and has fewer defaults wins. Last
+        comes the repeated-`TypeVar` refinement, where a method whose
+        repeated `TypeVar`s strictly refine another's grouping wins. A
+        tie that survives every step leaves more than one candidate and
+        is reported as ambiguous by returning `#!python None`.
         """
         if len(candidates) == 1:
             return candidates[0]
@@ -758,12 +782,13 @@ class Function:
     def _group_dominates(
         self, plan: _Plan, winner: int, loser: int
     ) -> bool:
-        """Whether `winner` refines `loser` by repeated `TypeVar`s (§3).
+        """Report whether `winner` refines `loser` by repeated
+        `TypeVar`s, per §3.
 
-        The last selection tie-break, reached only when two methods are
-        otherwise equally specific. It compares the two methods' landed hints
-        and their repeated-`TypeVar` groupings for the call's shape through
-        [`_group_more_specific`][bagof.dispatchers._function._group_more_specific].
+        This is the last selection tie-break, reached only when two
+        methods are otherwise equally specific. It compares the two
+        methods' landed hints and their repeated-`TypeVar` groupings for
+        the call's shape through [`_group_more_specific`][].
         """
         won_method, won_binding, won_landed = plan.bindable[winner]
         lost_method, lost_binding, lost_landed = plan.bindable[loser]
@@ -785,7 +810,9 @@ class Function:
         args: tx.Sequence[tx.Any],
         kwargs: tx.Mapping[str, tx.Any],
     ) -> bool:
-        """Whether method `winner`'s hints refine `loser`'s by argument MRO."""
+        """Report whether method `winner`'s hints refine `loser`'s by
+        argument MRO.
+        """
         won = plan.bindable[winner][2]
         lost = plan.bindable[loser][2]
         if set(won) != set(lost):  # pragma: no cover
@@ -827,7 +854,7 @@ class Function:
         kwargs: tx.Mapping[str, tx.Any],
         values: bool,
     ) -> NoMethodError:
-        """A [`NoMethodError`][] for a call nothing applies to."""
+        """Build a [`NoMethodError`][] for a call nothing applies to."""
         methods = self._methods
         call_desc = self._call_desc(args, kwargs, values)
         if not methods:
@@ -862,7 +889,9 @@ class Function:
         kwargs: tx.Mapping[str, tx.Any],
         methods: tx.Tuple[Method, ...],
     ) -> tx.Optional[str]:
-        """A did-you-mean line when a keyword names no method's parameter."""
+        """Build a did-you-mean line when a keyword names no method's
+        parameter.
+        """
         names = set()  # type: tx.Set[str]
         takes_varkw = False
         for method in methods:
@@ -888,7 +917,7 @@ class Function:
         kwargs: tx.Mapping[str, tx.Any],
         values: bool,
     ) -> AmbiguousMethodError:
-        """An [`AmbiguousMethodError`][] for equally specific methods."""
+        """Build an [`AmbiguousMethodError`][] for equally specific methods."""
         call_desc = self._call_desc(args, kwargs, values)
         candidates = [plan.bindable[index][0] for index in maximal]
         lines = [method.describe() for method in candidates]
@@ -908,11 +937,13 @@ class Function:
         kwargs: tx.Mapping[str, tx.Any],
         values: bool,
     ) -> str:
-        """The signature of the call's own types -- always the tighter method.
+        """Return the signature of the call's own types, always the
+        tighter method.
 
-        An argument a competitor matched with
-        [`Exact`][bagof.dispatchers.Exact] is spelled `#!python Exact[...]`, so
-        the suggested method wins over that competitor too.
+        An argument that a competitor matched with
+        [`Exact`][bagof.dispatchers.Exact] is spelled
+        `#!python Exact[...]`, so the suggested method wins over that
+        competitor too.
         """
         prototype = plan.bindable[maximal[0]][1]
         parts = []  # type: tx.List[str]
@@ -939,7 +970,7 @@ class Function:
         value: tx.Any,
         values: bool,
     ) -> str:
-        """The hint for one argument in a "possible fix" signature."""
+        """Return the hint for one argument in a "possible fix" signature."""
         if values:
             value_type = type(value)
             base = value_type.__name__
@@ -960,7 +991,7 @@ class Function:
         kwargs: tx.Mapping[str, tx.Any],
         values: bool,
     ) -> str:
-        """The call rendered by argument type (or hint), never by value."""
+        """Render the call by argument type or hint, never by value."""
         parts = [
             (type(arg).__name__ if values else _render_hint(arg))
             for arg in args
@@ -978,7 +1009,9 @@ class Function:
 
 
 class _BoundFunction:
-    """A [`Function`][] with a leading argument fixed, for use as a method."""
+    """A [`Function`][] with a leading argument fixed, so it acts as a
+    method.
+    """
 
     __slots__ = ("_function", "_instance")
 
@@ -990,11 +1023,13 @@ class _BoundFunction:
         return self._function(self._instance, *args, **kwargs)
 
     def dispatch(self, *args: tx.Any, **kwargs: tx.Any) -> Method:
-        """Choose the method for `self` and these arguments, uncalled."""
+        """Choose the method for `self` and these arguments, without
+        calling it.
+        """
         return self._function.dispatch(self._instance, *args, **kwargs)
 
     def resolve(self, *hints: tx.Any, **kwargs: tx.Any) -> tx.Any:
-        """Resolve at the hint level with `self`'s type as argument 0."""
+        """Resolve at the hint level, with `self`'s type as argument 0."""
         return self._function.resolve(
             type(self._instance), *hints, **kwargs
         )
@@ -1009,11 +1044,12 @@ class _BoundFunction:
 
 
 def _maximal(applicable: tx.List[int], plan: _Plan) -> tx.List[int]:
-    """The most specific applicable methods -- those with none below them.
+    """Return the most specific applicable methods: those with none below them.
 
-    A method is kept when no other applicable method is *strictly* more
-    specific than it under the per-shape order. A single survivor is the
-    winner; more than one is a genuine ambiguity for the tie-breaks to settle.
+    A method is kept when no other applicable method is strictly more
+    specific than it under the per-shape order. A single survivor is
+    the winner; more than one is a genuine ambiguity for the
+    tie-breaks to settle.
     """
     matrix = plan.le_matrix
     return [
@@ -1031,11 +1067,13 @@ def _maximal(applicable: tx.List[int], plan: _Plan) -> tx.List[int]:
 def _tightness(
     binding: tx.Any, signature: Signature
 ) -> tx.Tuple[int, int, int, int]:
-    """How tightly a method fits, smaller being tighter (RFC 0001 §2.2).
+    """Return how tightly a method fits, smaller meaning tighter, per
+    RFC 0001 §2.2.
 
-    Ordered by: arguments absorbed by `#!python *args` / `#!python **kwargs`,
-    then parameters left to defaults, then whether the signature has
-    `#!python **kwargs` at all, then whether it has `#!python *args`.
+    The result is ordered by arguments absorbed by `#!python *args` or
+    `#!python **kwargs`, then by parameters left to defaults, then by
+    whether the signature has `#!python **kwargs` at all, and then by
+    whether it has `#!python *args`.
     """
     absorbed = len(binding.extra_positional) + len(binding.extra_keywords)
     return (
@@ -1049,11 +1087,12 @@ def _tightness(
 def _shapes_for_pair(
     first: Method, second: Method
 ) -> tx.FrozenSet[tx.Any]:
-    """The fully-applied shapes to test a pair of methods against.
+    """Return the fully-applied shapes to test a pair of methods against.
 
-    A method whose hints are still forward references cannot be shaped yet, so
-    it contributes no shape -- the pair's ambiguity is left for first dispatch
-    to surface rather than forcing the hints to resolve at registration.
+    A method whose hints are still forward references cannot be shaped
+    yet, so it contributes no shape; the pair's ambiguity is then left
+    for the first dispatch to surface, rather than forcing the hints to
+    resolve at registration.
     """
     shapes = set()  # type: tx.Set[tx.Any]
     for method in (first, second):
@@ -1065,13 +1104,13 @@ def _shapes_for_pair(
 
 
 def _pair_ambiguous(first: Method, second: Method, shape: tx.Any) -> bool:
-    """Whether two methods are guaranteed ambiguous for `shape`.
+    """Report whether two methods are guaranteed ambiguous for `shape`.
 
-    Both must bind the shape, be incomparable at equal priority, land their
-    arguments on the same keys, and have comparable hints at every argument --
-    so the tuple that is most specific at each position matches both. A method
-    with a hint still unresolved cannot be compared, so the pair is treated as
-    not (yet) ambiguous.
+    Both must bind the shape, be incomparable at equal priority, land
+    their arguments on the same keys, and have comparable hints at
+    every argument, so that the tuple that is most specific at each
+    position matches both. A method with a hint still unresolved cannot
+    be compared, so the pair is treated as not, or not yet, ambiguous.
     """
     try:
         return _pair_ambiguous_resolved(first, second, shape)
@@ -1082,7 +1121,7 @@ def _pair_ambiguous(first: Method, second: Method, shape: tx.Any) -> bool:
 def _pair_ambiguous_resolved(
     first: Method, second: Method, shape: tx.Any
 ) -> bool:
-    """The body of [`_pair_ambiguous`][], assuming hints resolve."""
+    """Compute the body of [`_pair_ambiguous`][], assuming hints resolve."""
     first_binding = _bind_shape(first.signature, shape)
     second_binding = _bind_shape(second.signature, shape)
     if first_binding is None or second_binding is None:
@@ -1137,7 +1176,7 @@ def _pair_ambiguous_resolved(
 
 
 def _bind_shape(signature: Signature, shape: tx.Any) -> tx.Any:
-    """Bind a bare shape with placeholder arguments."""
+    """Bind a bare shape, using placeholder arguments."""
     signature._settle()
     count, names = shape
     return signature.bind(
@@ -1146,7 +1185,7 @@ def _bind_shape(signature: Signature, shape: tx.Any) -> tx.Any:
 
 
 def _full_shape(signature: Signature) -> tx.Tuple[int, tx.Tuple[str, ...]]:
-    """The shape of a call filling every parameter of `signature`."""
+    """Return the shape of a call filling every parameter of `signature`."""
     signature._settle()
     positional = 0
     keyword_only = []  # type: tx.List[str]
@@ -1161,7 +1200,7 @@ def _full_shape(signature: Signature) -> tx.Tuple[int, tx.Tuple[str, ...]]:
 def _landed_hints(
     signature: Signature, binding: tx.Any
 ) -> tx.Dict[tx.Any, tx.Any]:
-    """Map each bound argument's key to the hint it landed in."""
+    """Return each bound argument's key mapped to the hint it landed in."""
     result = {}  # type: tx.Dict[tx.Any, tx.Any]
     for key, slot in binding.slots.items():
         # A `*args` / `**kwargs` slot is only ever assigned when the signature
@@ -1180,23 +1219,24 @@ def _typevar_partition(
 ) -> tx.Dict[tx.Any, tx.Any]:
     """Group each bound argument by the repeated `TypeVar` it landed in.
 
-    Returns a label per argument key. Two keys share a label only when they
-    landed in the *same* [`TypeVar`][typing.TypeVar]; an argument on any other
-    hint gets a label unique to its key, so it forms a block of its own. The
-    labels are only ever compared for equality, which is all the group
-    tie-break needs.
+    This returns a label per argument key. Two keys share a label only
+    when they landed in the same [`TypeVar`][typing.TypeVar]; an
+    argument on any other hint gets a label unique to its key, so it
+    forms a block of its own. The labels are only ever compared for
+    equality, which is all the group tie-break needs.
 
-    A `#!python **kwargs: T` slot groups here: every keyword it captures lands
-    the same variable, so the tie-break reads them as one consistent-`T` block
-    and a `#!python **kwargs: T` method is more specific than one with an
-    untyped `#!python **kwargs`. Applicability solves `T` across those same
-    captured keywords too, exactly as it does for `#!python *args: T`.
+    A `#!python **kwargs: T` slot groups here: every keyword it
+    captures lands on the same variable, so the tie-break reads them as
+    one consistent-`T` block, and a `#!python **kwargs: T` method is
+    more specific than one with an untyped `#!python **kwargs`.
+    Applicability solves `T` across those same captured keywords too,
+    exactly as it does for `#!python *args: T`.
 
-    A `#!python *args: *Ts` slot does **not** group: its landed hint is an
-    unpacked [`TypeVarTuple`][typing.TypeVarTuple], not a
-    [`TypeVar`][typing.TypeVar], so it stays solo and never wins this tie-break
-    -- the deliberate opposite of `#!python *args: T` (RFC 0001 §3). Its
-    joint solving lives in applicability, not here.
+    A `#!python *args: *Ts` slot does not group this way: its landed
+    hint is an unpacked [`TypeVarTuple`][typing.TypeVarTuple], not a
+    [`TypeVar`][typing.TypeVar], so it stays solo and never wins this
+    tie-break, the deliberate opposite of `#!python *args: T`, per RFC
+    0001 §3. Its joint solving lives in applicability, not here.
     """
     labels = {}  # type: tx.Dict[tx.Any, tx.Any]
     for key, hint in signature._iter_arguments(binding):
@@ -1219,25 +1259,25 @@ def _group_more_specific(
     b_landed: tx.Dict[tx.Any, tx.Any],
     b_partition: tx.Dict[tx.Any, tx.Any],
 ) -> bool:
-    """Whether `a`'s repeated `TypeVar`s make it strictly more specific (§3).
+    """Report whether `a`'s repeated `TypeVar`s make it strictly more specific.
 
-    The repeated-`TypeVar` tie-break of RFC 0001 §3, reached only when two
-    methods are already equally specific by every earlier measure. `a` wins
-    when two conditions both hold:
-
-    * **nothing else tells them apart** -- at every argument the two land
-      *equivalent* hints, so neither is more specific there (an unbound
-      `#!python T` and an unannotated `#!python Any` are equivalent, as are a
-      bound `#!python TypeVar` and its bound); and
-    * **`a` groups strictly more** -- every pair of arguments `b` ties to one
-      repeated `TypeVar`, `a` ties too, and `a` ties at least one pair `b`
-      leaves independent.
+    This is the repeated-`TypeVar` tie-break of RFC 0001 §3, reached
+    only when two methods are already equally specific by every earlier
+    measure. `a` wins when two conditions both hold. First, nothing
+    else tells them apart: at every argument the two land equivalent
+    hints, so neither is more specific there (an unbound `#!python T`
+    and an unannotated `#!python Any` are equivalent, as are a bound
+    `#!python TypeVar` and its bound). Second, `a` groups strictly more:
+    every pair of arguments that `b` ties to one repeated `TypeVar`, `a`
+    ties too, and `a` ties at least one pair that `b` leaves
+    independent.
 
     Grouping more arguments to a single consistent type is the more
-    constrained, so the more specific, reading. When neither method groups
-    strictly more than the other -- equal groupings, or each grouping a pair
-    the other does not -- the answer is [`False`][] both ways and the pair
-    stays incomparable, hence ambiguous.
+    constrained, and therefore the more specific, reading. When neither
+    method groups strictly more than the other, whether because the
+    groupings are equal or because each groups a pair the other does
+    not, the answer is [`False`][] both ways, and the pair stays
+    incomparable, hence ambiguous.
     """
     if set(a_landed) != set(b_landed):  # pragma: no cover
         # Both methods bind the same shape, so they land the same argument
@@ -1267,11 +1307,12 @@ def _store_call(
 ) -> None:
     """Cache `method` under `key`, bounding the cache and skipping bad keys.
 
-    The per-plan cache is capped: when it is full and the key is new, the
-    oldest entry (dict insertion order) is evicted first, so a function called
-    with unboundedly many distinct keys keeps only a bounded working set. A key
-    that cannot be hashed -- an unhashable value at a value-dependent argument
-    -- is simply not cached.
+    The per-plan cache is capped: when it is full and the key is new,
+    the oldest entry, by dict insertion order, is evicted first, so a
+    function called with unboundedly many distinct keys keeps only a
+    bounded working set. A key that cannot be hashed, such as an
+    unhashable value at a value-dependent argument, is simply not
+    cached.
     """
     try:
         if key not in call_cache and len(call_cache) >= _CALL_CACHE_CAP:
@@ -1287,16 +1328,17 @@ def _call_key(
     kwargs: tx.Mapping[str, tx.Any],
     plan: _Plan,
 ) -> tx.Tuple[tx.Any, ...]:
-    """The cache key for a concrete call under a shape's plan.
+    """Return the cache key for a concrete call under a shape's plan.
 
-    The type of each argument keys it, plus the value itself where the shape's
-    hints read a value rather than a type (a `#!python Literal`, a
-    `#!python type[...]`), the parametrisation the value declares where they
-    read that (a parametrised generic, `#!python Box[int]`), and which of a
-    protocol's data members the value has where they read those. The key
-    tuple is always built; a value-dependent argument whose value is
-    unhashable is wrapped so the tuple builds fine and the [`TypeError`][]
-    surfaces only when the key is hashed (on a `dict` access), where the
+    The type of each argument keys it, plus the value itself where the
+    shape's hints read a value rather than a type, as with a
+    `#!python Literal` or a `#!python type[...]`; the parametrisation
+    the value declares where they read that, as with a parametrised
+    generic such as `#!python Box[int]`; and which of a protocol's data
+    members the value has where they read those. The key tuple is
+    always built; a value-dependent argument whose value is unhashable
+    is wrapped so the tuple still builds, and the [`TypeError`][]
+    surfaces only when the key is hashed, on a `dict` access, where the
     caller catches it and leaves the call uncached.
     """
     dependent = plan.dependent
@@ -1332,14 +1374,15 @@ def _call_key(
 def _dependent_part(
     value: tx.Any, key: tx.Any, plan: _Plan
 ) -> tx.Tuple[tx.Any, ...]:
-    """The key part of an argument whose hints read two things or more.
+    """Return the key part of an argument whose hints read two or more things.
 
-    The value's type, followed by one entry for each thing the hints at `key`
-    read: the value, the parametrisation it declares, the protocol data
-    members it has. None stands in for another: a value's own `==` sees
-    neither the record (a dataclass generic compares its fields) nor which
-    attributes are set. `_call_key` builds the part of an argument that reads
-    only one of them inline.
+    This is the value's type, followed by one entry for each thing the
+    hints at `key` read: the value, the parametrisation it declares,
+    and the protocol data members it has. None of these stands in for
+    another, since a value's own `==` sees neither the record, as a
+    dataclass generic compares its fields, nor which attributes are
+    set. [`_call_key`][] builds the part of an argument that reads only
+    one of them inline.
     """
     part = (type(value),)  # type: tx.Tuple[tx.Any, ...]
     if key in plan.value_dependent:
@@ -1360,20 +1403,23 @@ _members_key = _present_data_members
 
 
 def _declared_key(value: tx.Any) -> tx.Any:
-    """What keys `value` at a declaration-dependent argument, beside its type.
+    """Return what keys `value` at a declaration-dependent argument,
+    beside its type.
 
-    The parametrisation the instance recorded when it was built
-    (`#!python Box[int]` for `#!python Box[int]()`), or `#!python None` when it
-    recorded none -- never the instance itself, so every instance built from
-    one parametrisation shares a cache entry.
+    This is the parametrisation the instance recorded when it was
+    built, such as `#!python Box[int]` for `#!python Box[int]()`, or
+    `#!python None` when it recorded none. It is never the instance
+    itself, so every instance built from one parametrisation shares a
+    cache entry.
 
-    Only an instance of a `Generic` subclass, or of a class written against a
-    PEP 585 alias (`#!python class GL(list[T])`), is asked: the same gate,
-    `_may_record_parametrisation`, the value check applies before reading the
-    record, so the two stay in step. Any other value -- a plain
-    `#!python list` at a `#!python List[int]` argument, a `str` at a
-    `#!python Union[Box[int], str]` one, a lazy proxy whose `__getattr__` does
-    work -- is never probed.
+    Only an instance of a `Generic` subclass, or of a class written
+    against a PEP 585 alias such as `#!python class GL(list[T])`, is
+    asked, through the same gate, `_may_record_parametrisation`, that
+    the value check applies before reading the record, so the two stay
+    in step. Any other value, such as a plain `#!python list` at a
+    `#!python List[int]` argument, a `str` at a
+    `#!python Union[Box[int], str]` one, or a lazy proxy whose
+    `__getattr__` does work, is never probed.
     """
     if not _may_record_parametrisation(type(value)):
         return None
@@ -1397,15 +1443,17 @@ _UNPACKABLE = hasattr(_PEP585_ALIAS, "__unpacked__")
 
 
 def _record_key(recorded: tx.Any) -> tx.Any:
-    """A recorded parametrisation, or a part of one, as the call cache keys it.
+    """Return a recorded parametrisation, or a part of one, as the
+    cache keys it.
 
-    A PEP 585 alias (`#!python GL[int]`) is not cached by its subscription:
-    each `#!python GL[int]()` records a new alias object. It is keyed by its
-    parts instead -- its origin and each argument, keyed the same way, and
-    whether it is unpacked (`#!python *tuple[int]`) -- so every
-    `#!python GL[int]()` shares one entry. A plain class (one whose metaclass
-    is `#!python type`) already compares and hashes by identity, and is its
-    own key. Anything else is keyed by identity ([`_SameObject`][]).
+    A PEP 585 alias, such as `#!python GL[int]`, is not cached by its
+    subscription: each `#!python GL[int]()` records a new alias object.
+    It is keyed by its parts instead, its origin and each argument,
+    each keyed the same way, and whether it is unpacked as in
+    `#!python *tuple[int]`, so that every `#!python GL[int]()` shares
+    one entry. A plain class, one whose metaclass is `#!python type`,
+    already compares and hashes by identity, and is its own key.
+    Anything else is keyed by identity ([`_SameObject`][]).
     """
     kind = type(recorded)
     if kind is type:
@@ -1427,22 +1475,24 @@ def _record_key(recorded: tx.Any) -> tx.Any:
 
 
 class _SameObject:
-    """An object that keys the cache by identity.
+    """A wrapper that keys the cache by identity.
 
-    A recorded parametrisation is compared by identity rather than by `==`:
-    typing's own equality merges some parametrisations dispatch tells apart
-    (on Python 3.8 `#!python Literal[1] == Literal[True]`, so `#!python
-    Box[Literal[1]] == Box[Literal[True]]`), and an unhashable one would leave
-    the call uncached. Identity is always hashable and never merges two
-    different records. The key holds the object, so its identity cannot be
-    reused while the entry lives.
+    A recorded parametrisation is compared by identity rather than by
+    `==`, because typing's own equality merges some parametrisations
+    that dispatch tells apart. On Python 3.8,
+    `#!python Literal[1] == Literal[True]`, so
+    `#!python Box[Literal[1]] == Box[Literal[True]]`, and an unhashable
+    parametrisation would otherwise leave the call uncached. Identity is
+    always hashable and never merges two different records. The key
+    holds the object itself, so its identity cannot be reused while the
+    entry lives.
 
-    Typing caches its subscriptions, so `#!python Box[int]()` usually records
-    the one `#!python Box[int]` object and hits the one entry. That cache is a
-    bounded LRU (128 entries per subscription site), though: after enough
-    other subscriptions evict it, a fresh `#!python Box[int]` is a new object
-    and a new entry. The cost is a missed hit and a re-resolution, never a
-    wrong method.
+    Typing caches its subscriptions, so `#!python Box[int]()` usually
+    records the one `#!python Box[int]` object and hits the one entry.
+    That cache is a bounded LRU, though, with 128 entries per
+    subscription site, so after enough other subscriptions evict it, a
+    fresh `#!python Box[int]` is a new object with a new entry. The
+    cost is a missed hit and a re-resolution, never a wrong method.
     """
 
     __slots__ = ("obj",)
@@ -1462,11 +1512,12 @@ class _SameObject:
 class _KeyValue:
     """A value wrapped so an unhashable one raises on use, not on build.
 
-    The cache key holds a value only at a value-dependent argument. Wrapping it
-    keeps [`hash`][hash] and equality delegating to the value, so two calls
-    with the same literal share a key, while an unhashable value raises
-    [`TypeError`][] from the surrounding `dict` access -- caught to leave the
-    call uncached -- rather than from building the key tuple.
+    The cache key holds a value only at a value-dependent argument.
+    Wrapping it keeps [`hash`][hash] and equality delegating to the
+    value, so two calls with the same literal share a key, while an
+    unhashable value raises [`TypeError`][] from the surrounding
+    `dict` access, caught by the caller to leave the call uncached,
+    rather than from building the key tuple.
     """
 
     __slots__ = ("value",)
@@ -1511,9 +1562,10 @@ def _analyse_candidate(
     """Score a method for a failed call, and say why it did not fit.
 
     Returns `(matched, arity_gap, method, highlight, reason)`: how many
-    arguments matched (more is closer), how far its arity is from the call
-    (nearer is closer), the method, the slots to mark with `#!python !`, and a
-    binding-failure phrase when it could not bind at all.
+    arguments matched, where more means closer; how far its arity is
+    from the call, where nearer means closer; the method itself; the
+    slots to mark with `#!python !`; and a binding-failure phrase for
+    when it could not bind at all.
     """
     signature = method.signature
     signature._settle()
@@ -1545,7 +1597,7 @@ def _why_unbindable(
     args: tx.Sequence[tx.Any],
     kwargs: tx.Mapping[str, tx.Any],
 ) -> str:
-    """A short phrase for why a call does not bind to `signature`."""
+    """Return a short phrase for why a call does not bind to `signature`."""
     parameters = signature.parameters
     positional_slots = [
         name
@@ -1579,9 +1631,10 @@ def _why_unbindable(
 def _registration_priority(options: tx.Dict[str, tx.Any]) -> int:
     """Pull `priority` out of the registration options, rejecting the rest.
 
-    A keyword argument to `register` is a registration option, never a named
-    hint -- those go in a dict. Only `priority` is understood; any other
-    keyword is a mistake, named with a pointer to the dict form.
+    A keyword argument to `register` is a registration option, never a
+    named hint, since those go in a dict. Only `priority` is understood;
+    any other keyword is a mistake, named in the error with a pointer to
+    the dict form.
     """
     priority = options.pop("priority", 0)
     if options:
@@ -1601,9 +1654,9 @@ def _split_hint_args(
 ) -> tx.Tuple[tx.Tuple[tx.Any, ...], tx.Dict[str, tx.Any]]:
     """Split the hint-overlay arguments into positional and named hints.
 
-    The arguments are a `#!python tuple` of positional hints, a `#!python dict`
-    of named hints, both, or neither. Anything else -- or two of the same kind
-    -- is a caller error.
+    The arguments are a `#!python tuple` of positional hints, a
+    `#!python dict` of named hints, both, or neither. Anything else, or
+    two of the same kind, is a caller error.
     """
     hints = ()  # type: tx.Tuple[tx.Any, ...]
     named = {}  # type: tx.Dict[str, tx.Any]
@@ -1640,12 +1693,13 @@ def _overlay(
 ) -> Signature:
     """Overlay explicit hints onto a callable's own signature.
 
-    Positional hints replace the first parameters' hints in order; named hints
-    replace the hints of the parameters they name, and may also name the
-    `#!python *args` / `#!python **kwargs` catch-all to set its element / value
-    hint. Names, kinds and defaults are kept, so a call still binds the way the
-    function's own parameters say. Each hint is normalised and checked to be a
-    real type hint, and a parameter may not be given a hint twice.
+    Positional hints replace the first parameters' hints in order,
+    while named hints replace the hints of the parameters they name and
+    may also name the `#!python *args` or `#!python **kwargs`
+    catch-all, to set its element or value hint. Names, kinds, and
+    defaults are kept, so a call still binds the way the function's own
+    parameters say. Each hint is normalised and checked to be a real
+    type hint, and a parameter may not be given a hint twice.
     """
     base = Signature.from_callable(fn)
     base._settle()
@@ -1716,16 +1770,18 @@ def _overlay_hint(
 ) -> tx.Any:
     """Normalise a registration hint and check it is a real type hint.
 
-    A value that is not a type or typing construct -- a stray tuple, a number,
-    a string -- would otherwise register a method that silently never matches,
-    so it is refused at registration with a message naming the parameter. A
-    parametrised form (`#!python Annotated[int, ...]`, `#!python Exact[int]`)
-    is plausible through its origin even when the whole is not.
+    A value that is not a type or typing construct, such as a stray
+    tuple, a number, or a string, would otherwise register a method
+    that silently never matches, so it is refused at registration with
+    a message naming the parameter. A parametrised form, such as
+    `#!python Annotated[int, ...]` or `#!python Exact[int]`, is
+    plausible through its origin even when the whole is not.
 
-    A `#!python ParamSpec` / `#!python Concatenate[...]` given for an ordinary
-    parameter is refused too; `allow_variadic` lifts that only for a
-    `#!python *args` / `#!python **kwargs` target, where a `P.args` /
-    `P.kwargs` degrades to an `#!python Any` tail.
+    A `#!python ParamSpec` or `#!python Concatenate[...]` given for an
+    ordinary parameter is refused too. `allow_variadic` lifts that
+    refusal only for a `#!python *args` or `#!python **kwargs` target,
+    where a `P.args` or `P.kwargs` form degrades to an `#!python Any`
+    tail instead.
     """
     normalised = normalise_hint(hint)
     if not allow_variadic:
@@ -1746,16 +1802,20 @@ def _overlay_hint(
 def _replace_or_append(
     methods: tx.Tuple[Method, ...], method: Method
 ) -> tx.Tuple[Method, ...]:
-    """`methods` with `method` added, replacing one spelled the same way.
+    """Return `methods` with `method` added, replacing one spelled the
+    same way.
 
-    A method whose signature is written the *same way* as one already
-    registered -- same parameter names, kinds, required-ness and structurally
-    equal hints -- replaces it in place, with a [`RuntimeWarning`][]; that is
-    the shape a module reload or a doubled decorator produces. A method that is
-    merely *equivalent* under the sub-hint relation but spelled differently
-    (`#!python (x: T, y: T)` vs `#!python (x: T, y: U)`, `#!python Exact[int]`
-    vs `#!python int`) is a distinct method and is appended -- selection then
-    orders the two, and `_warn_new_ambiguities` flags them if they clash.
+    A method whose signature is written the same way as one already
+    registered, with the same parameter names, kinds, required-ness,
+    and structurally equal hints, replaces it in place, with a
+    [`RuntimeWarning`][]; that is the shape a module reload or a
+    doubled decorator produces. A method that is merely equivalent
+    under the sub-hint relation but spelled differently, such as
+    `#!python (x: T, y: T)` against `#!python (x: T, y: U)`, or
+    `#!python Exact[int]` against `#!python int`, is a distinct method
+    and is appended instead; selection then orders the two, and
+    [`_warn_new_ambiguities`][Function._warn_new_ambiguities] flags them
+    if they clash.
     """
     for index, existing in enumerate(methods):
         if existing.signature.same_as(method.signature):
