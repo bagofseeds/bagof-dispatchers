@@ -3,6 +3,9 @@
 # dependencies
 import typing_extensions as tx
 
+# local
+from ._compat import ishint
+
 
 class _ExactMarker:
     """The piece of `Annotated` metadata that tags a hint as [`Exact`][]."""
@@ -18,6 +21,14 @@ class _ExactMarker:
 
 EXACT = _ExactMarker()
 """The sentinel that an [`Exact`][] hint attaches as `Annotated` metadata."""
+
+
+# The runtime type of an `Annotated` alias. Building one of these directly
+# sidesteps `typing._type_check`, which refuses a bare special form such as
+# `Union` or `Literal` as an argument on every version -- so `Exact[Union]`
+# has an alias to fall back to when `tx.Annotated[Union, EXACT]` will not
+# construct.
+_ANNOTATED_ALIAS = type(tx.Annotated[int, EXACT])
 
 
 if tx.TYPE_CHECKING:
@@ -57,7 +68,16 @@ else:
         """
 
         def __class_getitem__(cls, item: tx.Any) -> tx.Any:
-            return tx.Annotated[item, EXACT]
+            if not ishint(item):
+                raise TypeError(
+                    f"Exact[...] takes a type hint, got {item!r}."
+                )
+            try:
+                return tx.Annotated[item, EXACT]
+            except TypeError:
+                # A bare special form (`Exact[Union]`, `Exact[Literal]`),
+                # which `typing._type_check` refuses: build the alias directly.
+                return _ANNOTATED_ALIAS(item, (EXACT,))
 
 
 def is_exact(hint: tx.Any) -> bool:

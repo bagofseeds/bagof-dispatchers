@@ -27,6 +27,7 @@ import typing_extensions as tx
 from ._compat import (
     _ANY_FORMS,
     _LITERAL_FORMS,
+    _OPTIONAL_FORMS,
     UNION_TYPES,
     NoneType,
     _is_newtype,
@@ -36,7 +37,8 @@ from ._compat import (
     is_typeddict_marker,
     spellings,
 )
-from ._exact import exact_target, is_exact
+from ._exact import Exact, exact_target, is_exact
+from ._hint import Hint
 from ._sentinels import UNSET
 
 
@@ -266,6 +268,38 @@ def _strip_qualifier(hint: tx.Any) -> tx.Any:
     return hint
 
 
+# Every bare `Type` spelling, used to recognise `Exact[Type]` before it is
+# subscripted.
+_TYPE_FORMS = spellings("Type")
+
+
+def _lower_exact(hint: tx.Any) -> tx.Any:
+    """Rewrite an outer `Exact` around `Type` or `Hint` as an inner one.
+
+    `Exact[C]` marks the type `C` as the exact match for a value, but the
+    same intent can be written the other way round, wrapping the whole of
+    a `Type` or `Hint` form. This rewrites the outer spelling to the
+    inner one, so that the relation only ever meets the inner form.
+    `#!python Exact[Type[int]]` becomes `#!python Type[Exact[int]]`,
+    `#!python Exact[Hint[int]]` becomes `#!python Hint[Exact[int]]`, and a
+    bare `#!python Exact[Type]` becomes `#!python Exact[type]`. Any other
+    `Exact` hint, including a plain `#!python Exact[int]`, is already in
+    its canonical form and comes back unchanged.
+    """
+    target = exact_target(hint)
+    origin = tx.get_origin(target)
+    args = tx.get_args(target)
+    if origin is type and args:
+        return tx.Type[Exact[args[0]]]
+    if origin is Hint and args:
+        return Hint[Exact[args[0]]]
+    if any(target is form for form in _TYPE_FORMS):
+        # A bare `Exact[Type]`: an exact match for any class, which is just
+        # an exact match for `type` itself.
+        return Exact[type]
+    return hint
+
+
 def normalise_hint(hint: tx.Any) -> tx.Any:
     """Put a hint into its canonical form.
 
@@ -301,6 +335,12 @@ def normalise_hint(hint: tx.Any) -> tx.Any:
     for _ in range(_MAX_NORMALISE_STEPS):
         if hint is None:
             hint = NoneType
+        if is_exact(hint):
+            hint = _lower_exact(hint)
+        elif any(hint is form for form in _OPTIONAL_FORMS):
+            # A bare `Optional`, with no argument, means the same as a bare
+            # `Union`: both stand for "some union".
+            hint = tx.Union
         resolved = _strip_qualifier(resolve_newtype(resolve_alias(hint)))
         if resolved is hint:
             return hint
@@ -950,6 +990,7 @@ def _reads_declared_arguments(origin: tx.Any) -> bool:
     return (
         _looks_like_class(origin)
         and origin is not type
+        and origin is not Hint
         and not is_typeddict(origin)
         and _generic_variances(origin) is not None
     )
