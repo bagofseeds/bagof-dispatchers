@@ -72,9 +72,11 @@ class Hint(tx.Generic[_T_co]):
             )
         try:
             return super().__class_getitem__(item)
-        except TypeError:
+        except TypeError:  # pragma: no cover  -- accepted from 3.14
             # A bare special form (`Hint[Union]`, `Hint[Literal]`), which
-            # `typing._type_check` refuses: build the alias directly.
+            # `typing._type_check` refuses before 3.14: build the alias
+            # directly. From 3.14 on the subscription accepts it, so this
+            # fallback is only reached on the earlier interpreters.
             return _GENERIC_ALIAS(cls, (item,))
 
 
@@ -90,7 +92,7 @@ def _unwrap_annotated(hint: tx.Any) -> tx.Any:
     """
     while any(tx.get_origin(hint) is form for form in _ANNOTATED_FORMS):
         args = tx.get_args(hint)
-        if not args:
+        if not args:  # pragma: no cover  -- a subscripted Annotated has args
             return hint
         hint = args[0]
     return hint

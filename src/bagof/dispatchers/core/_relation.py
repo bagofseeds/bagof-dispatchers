@@ -1998,7 +1998,7 @@ def _issubclassargs(
     `variances` belongs to the super-hint's origin, obtained from
     [`_generic_variances`][].
     """
-    if args == ((),):
+    if args == ((),):  # pragma: no cover  -- the phantom exists on 3.8-3.10
         # The 3.8-3.10 `Tuple[()]` phantom, reached when an empty-tuple
         # sub-hint is compared positionally against a variance-bearing generic
         # super such as `Sequence[int]`. It means "no elements", the same empty

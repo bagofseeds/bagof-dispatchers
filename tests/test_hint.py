@@ -84,6 +84,20 @@ def test_hint_arg() -> None:
     assert hint_arg(Hint) is tx.Any
 
 
+def test_hint_helpers_look_through_annotated() -> None:
+    wrapped = tx.Annotated[Hint[int], "meta"]
+    assert is_hint_form(wrapped) is True
+    assert hint_arg(wrapped) is int
+
+
+def test_hint_of_exact_matches_a_bare_alias_and_its_origin() -> None:
+    # `_same_hint` reduces a bare typing alias to its origin class, so
+    # `Hint[Exact[list]]` matches both `list` and the bare `List`.
+    assert ishintstance(list, Hint[Exact[list]]) is True
+    assert ishintstance(tx.List, Hint[Exact[list]]) is True
+    assert ishintstance(dict, Hint[Exact[list]]) is False
+
+
 # --- value level -------------------------------------------------------
 
 

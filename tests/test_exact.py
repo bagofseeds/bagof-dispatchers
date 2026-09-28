@@ -195,11 +195,14 @@ def test_exact_marker_repr() -> None:
 
 
 def test_exact_of_bare_special_form_constructs() -> None:
-    # `Exact[Union]` must build even though `typing._type_check` refuses a
-    # bare special form as an `Annotated` argument.
-    hint = Exact[tx.Union]
-    assert is_exact(hint) is True
-    assert exact_target(hint) is tx.Union
+    # A bare special form must build even where `typing._type_check` refuses it
+    # as an `Annotated` argument; the alias fallback handles it. `Literal` and
+    # `Annotated` still trip that check on 3.14, so they exercise the fallback
+    # there too, while `Union` no longer does.
+    for form in (tx.Union, tx.Literal, tx.Annotated):
+        hint = Exact[form]
+        assert is_exact(hint) is True
+        assert exact_target(hint) is form
 
 
 def test_exact_takes_only_a_hint() -> None:

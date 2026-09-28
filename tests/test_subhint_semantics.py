@@ -399,3 +399,10 @@ def test_bare_annotated_super_hint_is_structural() -> None:
     assert issubhint(int, tx.Annotated) is False
     assert issubhint(tx.Annotated[int, "meta"], tx.Annotated) is True
     assert issubhint(tx.Annotated, tx.Annotated) is True
+
+
+def test_bare_optional_normalises_to_bare_union() -> None:
+    # A bare `Optional`, with no argument, means the same as a bare `Union`.
+    assert normalise_hint(tx.Optional) is tx.Union
+    assert issubhint(tx.Union[int, str], tx.Optional) is True
+    assert issubhint(int, tx.Optional) is False
