@@ -1,28 +1,29 @@
-"""Most-specific single-key lookup over a hint-keyed mapping.
+"""Looking a hint up in a mapping keyed by other hints.
 
-[`resolve_hint`][] answers the question "which entry of this mapping
-best describes this hint?" It is the successor to
-`bagof-core-magic`'s `get_from_registry`. Where that older lookup
-summed a made-up type distance, this one uses the sub-hint relation,
-[`issubhint`][], directly: the best entry is the mapping key that
-accepts the query and is the most specific key that does. When two
-equally specific keys both accept the query, and the query is a class,
-the tie is broken by the query's MRO, the same refinement described in
-RFC 0001 §2.2 step 3 that the value-dispatch path uses. A tie that the
-MRO cannot break is ambiguous, and the caller chooses how to handle it:
-raise, warn, or ignore.
+[`resolve_hint`][] answers a single question: among the keys of a
+mapping that are themselves type hints, which one best describes a given
+query hint? It replaces `bagof-core-magic`'s older `get_from_registry`,
+which scored candidates with an ad hoc notion of type distance; this
+lookup instead goes straight through the sub-hint relation,
+[`issubhint`][]. The best key is whichever key accepts the query and is
+the most specific among the keys that do. If two equally specific keys
+both accept the query and the query is a class, the tie is broken by the
+query's own MRO, the same refinement RFC 0001 §2.2 step 3 describes for
+value dispatch; a tie the MRO cannot settle is left to the caller, who
+chooses whether it is raised, warned about, or resolved silently.
 
-The mapping's values are whatever the caller stored; its keys are type
-hints. Keys are compared through the relation rather than by equality,
-so a `#!python Union` key matches any of its members, a
+A mapping's values may be anything the caller wants to store against a
+hint. Its keys are compared through the subtype relation rather than by
+equality, so a `#!python Union` key matches any of its members, a
 `#!python List[int]` key matches a `#!python List[bool]` query, and an
-[`Any`][typing.Any] key is the catch-all that every query reaches. A
-key that cannot be hashed still works; it is simply never chosen as an
+[`Any`][typing.Any] key acts as a catch-all that every query reaches. A
+key that happens not to be hashable still participates in this
+comparison-based lookup; it is only ruled out from the identity-based
 exact match.
 
-This module stays inside [`core`][], because `bagof-core-magic` reuses
-it directly, so it depends only on the relation and never on the
-dispatch engine built on top of it.
+This module is kept inside [`core`][] because `bagof-core-magic` depends
+on it directly, so it is written to need nothing beyond the subtype
+relation itself, never the dispatch engine built on top of that layer.
 """
 
 # stdlib
@@ -56,24 +57,25 @@ def resolve_hint(
 ) -> tx.Any:
     """Return the value stored under the most specific key that accepts `hint`.
 
-    A key `#!python K` accepts `hint` when
-    `#!python issubhint(hint, K)` holds: the query is a sub-hint of the
-    key, so any value described by `hint` is also described by `K`.
-    Among the accepting keys, the best one is the most specific, the
-    key that is itself a sub-hint of every other accepting key. An
-    exact match, where the query equals a key, always wins outright,
-    and an [`Exact`][bagof.dispatchers.Exact]`[C]` key is additionally
-    reachable by a query equivalent to `C`.
+    A key `#!python K` accepts `hint` when `#!python issubhint(hint, K)`
+    holds, meaning the query is a sub-hint of the key and so every value
+    the query describes is also described by `K`. The best key among
+    those that accept the query is the most specific one, the accepting
+    key that is itself a sub-hint of every other accepting key. A key
+    equal to the query wins outright regardless of specificity, and an
+    [`Exact`][bagof.dispatchers.Exact]`[C]` key is reachable this way
+    too, by a query equivalent to `C` itself.
 
-    When several keys are equally specific and the query is a class,
-    the tie is broken by the query's MRO, following RFC 0001 §2.2 step
-    3: the key whose class is the nearest base of the query wins. So
-    `#!python {Enum, str}` resolves `#!python class Color(str, Enum)`
-    to `str`, and a diamond `#!python D(B, C)` resolves
-    `#!python {B, C}` to `B`, in both cases regardless of the order the
-    keys were registered in. A tie the MRO cannot break, because the
-    query is not a class or because the class keys are equidistant in
-    the MRO, falls to the `ambiguity` parameter.
+    When several keys are equally specific and the query is a class, the
+    tie is broken using the query's MRO, following RFC 0001 §2.2 step 3:
+    whichever key's class sits nearest to the query in that MRO wins.
+    `#!python {Enum, str}` therefore resolves
+    `#!python class Color(str, Enum)` to `str`, and a diamond
+    `#!python D(B, C)` resolves `#!python {B, C}` to `B`, in both cases
+    independently of the order the keys happened to be registered in. A
+    tie the MRO cannot settle, because the query is not a class or
+    because the competing keys sit at the same distance in it, is handed
+    to the `ambiguity` parameter.
 
     !!! example
         ```pycon
@@ -89,21 +91,23 @@ def resolve_hint(
     Parameters
     ----------
     hint
-        The query hint. A bare `#!python None` is read as
-        `#!python NoneType`, matching the rest of the relation.
+        The query hint. A bare `#!python None` is treated as
+        `#!python NoneType`, as it is everywhere else in the relation.
     mapping
-        The registry, keyed by type hint. Values are arbitrary.
+        The registry to search, keyed by type hint; its values can be
+        anything the caller chose to store.
     default
-        Returned when no key accepts the query. When left at
-        [`UNSET`][], a [`NoMethodError`][bagof.dispatchers.NoMethodError]
-        is raised instead.
+        The value to return when no key accepts the query. Left at its
+        default of [`UNSET`][], such a query raises
+        [`NoMethodError`][bagof.dispatchers.NoMethodError] instead.
     ambiguity
-        What to do when two equally specific keys both accept the
-        query. `#!python "raise"`, the default, raises
+        What to do when two equally specific keys both accept the query
+        and neither the query nor the mapping breaks the tie.
+        `#!python "raise"`, the default, raises
         [`AmbiguousMethodError`][bagof.dispatchers.AmbiguousMethodError].
-        `#!python "warn"` picks the first such key in the mapping's
-        order and emits a [`RuntimeWarning`][]. `#!python "ignore"`
-        picks it silently.
+        `#!python "warn"` instead picks whichever tied key comes first in
+        the mapping's own order and emits a [`RuntimeWarning`][].
+        `#!python "ignore"` makes that same choice without a warning.
 
     Returns
     -------
@@ -170,21 +174,24 @@ def resolve_hint(
 def _accepts(hint: tx.Any, key: tx.Any) -> bool:
     """Report whether registry `key` describes every value that `hint` does.
 
-    Ordinarily this is just `#!python issubhint(hint, key)`. An
-    [`Exact`][bagof.dispatchers.Exact]`[C]` key is also reachable by a
-    query equivalent to `C`: an exact-`C` registration answers a
-    plain-`C` lookup too, a lookup convenience that the relation itself
-    does not grant (RFC 0001 §4).
+    In the ordinary case this is simply
+    `#!python issubhint(hint, key)`. An
+    [`Exact`][bagof.dispatchers.Exact]`[C]` key is given one extra way to
+    be reached: a query equivalent to `C` accepts it too. A registration
+    made against exact `C` therefore also answers a lookup for plain
+    `C`, a convenience this function adds on top of what the relation
+    itself grants (RFC 0001 §4).
 
-    A key that is not a usable type hint, such as an exotic or
-    malformed entry one of the sibling bags happens to have registered,
-    or a bare string forward reference, makes the relation raise a
-    [`TypeError`][]. That is read here as "does not accept", so one bad
-    key never fails the whole lookup. It is not swallowed silently,
-    though: an [`UnknownHintWarning`][] names the key, so a key that
-    should have matched is not lost without trace. Any other error,
-    such as a user metaclass whose `#!python __subclasscheck__` raises,
-    is a genuine fault and is left to propagate.
+    A key that turns out not to be a usable type hint, such as a
+    malformed entry left behind by another package or a bare string
+    forward reference, makes the relation raise a [`TypeError`][]. That
+    is treated here as the key simply not accepting the query, so one bad
+    key never brings down the whole lookup, though it is not passed over
+    in silence either: an [`UnknownHintWarning`][] names it, so a key
+    that should have matched does not disappear without a trace. Any
+    other exception, such as one raised by a user-defined metaclass's own
+    `#!python __subclasscheck__`, is a genuine fault and is allowed to
+    propagate.
     """
     try:
         target = normalise_hint(key)
@@ -202,12 +209,12 @@ def _accepts(hint: tx.Any, key: tx.Any) -> bool:
 def _strictly_below(a: tx.Any, b: tx.Any) -> bool:
     """Report whether key `a` is strictly more specific than key `b`.
 
-    A [`TypeError`][] raised by the relation, meaning one of the keys
-    is not a usable hint, is read here as "not comparable", so it never
-    propagates out of the lookup. The keys compared here have already
-    passed through [`_accepts`][], which warns about a bad one, so no
-    second warning is emitted. Any other error is a genuine fault and
-    is left to propagate.
+    A [`TypeError`][] from the relation, meaning one of the two keys is
+    not a usable hint, is treated as the two keys simply being
+    incomparable, so it never escapes this lookup. No second warning is
+    raised for it here, since both keys have already passed through
+    [`_accepts`][], which warns about an unusable one on its own. Any
+    other exception is a genuine fault and is allowed to propagate.
     """
     try:
         na, nb = normalise_hint(a), normalise_hint(b)
@@ -219,31 +226,32 @@ def _strictly_below(a: tx.Any, b: tx.Any) -> bool:
 def _mro_nearest(
     hint: tx.Any, best: tx.Sequence[tx.Any]
 ) -> tx.Optional[tx.List[tx.Any]]:
-    """Return the nearest-MRO subset of `best` for a class query, or `None`.
+    """Narrow `best` to whichever keys sit nearest the query in its MRO.
 
-    This applies the RFC 0001 §2.2 step-3 refinement to a tie between
-    equally specific keys: when the query is a class, only the keys
-    whose class is the nearest base of the query in its MRO are kept.
-    A single-key result is a clean MRO win, such as `{Enum, str}`
-    resolving to `str` or the diamond `D(B, C)` resolving to `B`. A
-    multi-key result is an irreducible tie between duplicate spellings
-    of the nearest class, such as `typing.Sequence` and
-    `collections.abc.Sequence`, which the caller then resolves among
-    those keys alone, so a farther key never wins simply because of
-    registration order.
+    This carries out the RFC 0001 §2.2 step-3 refinement for a tie
+    between equally specific keys: when the query is a class, only the
+    keys whose class is the nearest base of the query in that class's MRO
+    survive. A single surviving key is a clean win by MRO distance, the
+    way `{Enum, str}` resolves to `str` or a diamond `D(B, C)` resolves to
+    `B`. More than one surviving key means an irreducible tie between
+    duplicate spellings of the same nearest class, such as
+    `typing.Sequence` and `collections.abc.Sequence`; the caller resolves
+    that remaining tie among just those keys, so a key farther up the MRO
+    never wins purely because of registration order.
 
-    A parametrised generic query is read as its origin class, so
-    `#!python G[int]` refines the same way `G` does. This keeps the
-    answer independent of the interpreter version: a `#!python G[int]`
-    alias satisfies `#!python isinstance(_, type)` on 3.9 and 3.10 but
-    not from 3.11 on, so testing that directly would refine
-    inconsistently across versions.
+    A parametrised generic query is read through its origin class, so
+    `#!python G[int]` is refined exactly as `G` would be. Doing so keeps
+    the answer stable across interpreter versions, since a
+    `#!python G[int]` alias satisfies `#!python isinstance(_, type)` on
+    3.9 and 3.10 but not from 3.11 onward, and testing that directly
+    would make the refinement version-dependent.
 
-    The return value is `#!python None`, leaving the whole tie to the
-    caller's order fallback, when the query is not a class, or when any
-    candidate names no position in the query's MRO: a
-    `#!python Union`, a `#!python Protocol` or an ABC satisfied only by
-    registration, or a parametrised generic key.
+    `None` is returned, leaving the whole tie to the caller's
+    registration-order fallback, whenever the query is not a class at
+    all. The same happens whenever any candidate key names no position
+    in the query's MRO, as with a `#!python Union`, a
+    `#!python Protocol` or ABC satisfied only through registration, or a
+    parametrised generic key.
     """
     query = hint
     if not _looks_like_class(query):
@@ -262,7 +270,7 @@ def _mro_nearest(
 
 
 def _warn_unusable_key(key: tx.Any) -> None:
-    """Warn that a registry key is not a usable hint and was skipped."""
+    """Warn that a registry key is not a usable hint and has been skipped."""
     warnings.warn(
         f"registry key {_render(key)!r} is not a usable type hint; it is "
         f"skipped, so the lookup ignores it. Store a real type hint as the "
@@ -273,15 +281,17 @@ def _warn_unusable_key(key: tx.Any) -> None:
 
 
 def _exact_key(hint: tx.Any, mapping: tx.Mapping[tx.Any, tx.Any]) -> tx.Any:
-    """Return the key `hint` is stored under by equality, or `UNSET`.
+    """Find the key `hint` is stored under by equality, or return `UNSET`.
 
-    A `#!python Union` or `#!python Literal` compares order-insensitively
-    and a `#!python TypeVar` compares by identity, which together give
-    exactly the "same hint" test this needs. A new-style generic such
-    as `#!python list[int]` is also tried in its `typing` spelling,
-    `#!python List[int]`. A key that cannot be hashed is simply not an
-    exact key, so the lookup falls through to the general case rather
-    than raising.
+    Ordinary equality already does the right thing here: a
+    `#!python Union` or `#!python Literal` compares order-insensitively,
+    and a `#!python TypeVar` compares by identity, together giving the
+    "is this the same hint" test this lookup needs. A new-style generic
+    such as `#!python list[int]` is also tried under its `typing`
+    spelling, `#!python List[int]`, so either spelling finds the same
+    entry. A key that is not hashable is simply treated as not an exact
+    key, letting the lookup fall through to the general case rather than
+    raising.
     """
     for candidate in (hint, _typing_spelling(hint)):
         try:
@@ -295,9 +305,7 @@ def _exact_key(hint: tx.Any, mapping: tx.Mapping[tx.Any, tx.Any]) -> tx.Any:
 def _no_key(
     hint: tx.Any, mapping: tx.Mapping[tx.Any, tx.Any]
 ) -> tx.Any:
-    """Build a [`NoMethodError`][] for a query nothing in the mapping
-    accepts.
-    """
+    """Build a [`NoMethodError`][] for a query that no key accepts."""
     # Imported here, not at module load: the error type lives in the dispatch
     # layer above `core`, and `core` must import from nothing above it.
     from .._errors import NoMethodError
@@ -315,9 +323,7 @@ def _no_key(
 
 
 def _ambiguous_keys(hint: tx.Any, keys: tx.Sequence[tx.Any]) -> tx.Any:
-    """Build an [`AmbiguousMethodError`][] for equally specific
-    accepting keys.
-    """
+    """Build an [`AmbiguousMethodError`][] for a tie between accepting keys."""
     from .._errors import AmbiguousMethodError
 
     listed = ", ".join(_render(key) for key in keys)
@@ -330,7 +336,7 @@ def _ambiguous_keys(hint: tx.Any, keys: tx.Sequence[tx.Any]) -> tx.Any:
 
 
 def _render(hint: tx.Any) -> str:
-    """Return a short, readable spelling of a hint for use in a message."""
+    """Render `hint` briefly and readably, for use inside an error message."""
     if isinstance(hint, type):
         return hint.__name__
     text = str(hint)

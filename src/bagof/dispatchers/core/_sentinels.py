@@ -1,11 +1,17 @@
-"""Sentinel values shared across the package."""
+"""Marker objects that stand for the absence of a value."""
 
 # dependencies
 import typing_extensions as tx
 
 
 class Unset:
-    """A singleton type whose sole instance stands for "no value given"."""
+    """A class restricted to a single instance, for building markers with.
+
+    Every subclass gets an instance of its own the first time it is
+    constructed, rather than reusing an ancestor's, so several distinct
+    markers can each be written as a one-line subclass without extra
+    bookkeeping.
+    """
 
     def __new__(cls, *args, **kwargs) -> tx.Self:
         # `cls.__dict__`, not `hasattr`: the latter finds an inherited
@@ -26,9 +32,10 @@ class Unset:
 
 UNSET = Unset()
 """
-The sentinel value that marks an argument as not having been supplied.
+Marks a parameter that a caller left out of a call entirely.
 
 !!! note
-    `UNSET` is distinct from [`None`][], which can be a meaningful value
-    in its own right.
+    `UNSET` means the argument was never given. It is a separate concept
+    from [`None`][], which a caller can pass deliberately as a value in
+    its own right.
 """

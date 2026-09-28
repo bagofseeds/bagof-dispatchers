@@ -1,11 +1,16 @@
-"""The hint subtype relation and introspection helpers.
+"""Comparing type hints to each other, and values to type hints.
 
-`bagof.dispatchers.core` is the shared, dependency-light root of the
-`bagof` family. It provides the hint-level subtype relation,
-[`issubhint`][] and [`ishintstance`][], along with the introspection
-helpers those two are built from. The dispatch engine at the top level
-of this package, and the other `bagof` packages, are all built on the
-names exported here.
+`bagof.dispatchers.core` depends on nothing beyond `typing_extensions`,
+which is what lets the rest of the `bagof` family sit on top of it
+without pulling in the dispatch machinery above it. Its central exports
+are [`issubhint`][], which decides whether one hint describes a set of
+values narrower than another hint's, and [`ishintstance`][], which
+decides whether a given value falls inside the set a hint describes.
+Both are assembled from the smaller introspection functions exported
+alongside them, which normalise a hint, take apart a generic alias, or
+recognise a `TypedDict`. The dispatch engine defined at the top of this
+package is one consumer of this layer, built with no assumption that it
+is the only one.
 """
 
 # local

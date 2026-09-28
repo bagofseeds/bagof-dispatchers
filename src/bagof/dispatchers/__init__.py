@@ -1,21 +1,27 @@
-"""Hint-informed multiple dispatch for Python.
+"""Multiple dispatch for Python, driven by ordinary type hints.
 
-`bagof.dispatchers` chooses which of several registered implementations
-of a function to run by looking at the runtime types of the arguments a
-call actually receives. Among the implementations whose declared types
-accept those arguments, it picks the most specific one, and raises a
-clear error when two implementations are equally specific and neither
-one is more applicable than the other. Dispatch is driven by ordinary
-type hints, and understands the full hint vocabulary: unions, literals,
-generics, `TypedDict`, `TypeVar`, variance, and more.
+A function built by `bagof.dispatchers` can hold several implementations
+side by side, each written for a different combination of argument
+types. Calling the function inspects the runtime types of the arguments
+actually given, finds every implementation whose parameter hints accept
+them, and runs whichever of those candidates describes the arguments
+most specifically. When two candidates are equally specific and neither
+is more applicable than the other, the call fails with a clear error
+instead of picking one arbitrarily. The specificity comparison is not
+limited to plain classes: unions, literals, generic containers,
+`TypedDict`, `TypeVar` and the rest of the typing vocabulary all take
+part in it.
 
-Register overloads with the [`dispatch`][] decorator, or build a
-[`Dispatcher`][] of your own; calling the resulting function then runs
-whichever overload matches best. [`Exact`][] lets an overload match a
-type while excluding its subclasses. The hint-level subtype relation and
-the introspection helpers it is built from, which are the foundation the
-rest of the `bagof` family builds on, live in `bagof.dispatchers.core`.
-The design RFC under `docs/rfc/` describes the underlying model in full.
+The [`dispatch`][] decorator is the usual way to add an implementation
+to such a function. [`Dispatcher`][] is the object underneath it, for
+building one directly rather than through the decorator. [`Exact`][]
+marks a parameter that must match a type precisely, so that an
+implementation written for a base class does not also catch its
+subclasses. The subtype relation over hints, and the lower-level
+introspection it is built from, live separately in
+`bagof.dispatchers.core`, since the rest of the `bagof` family depends
+on that comparison without needing dispatch itself. The reasoning
+behind the model is written up in the design RFC under `docs/rfc/`.
 """
 
 # local
