@@ -21,16 +21,41 @@ def test_the_marker_is_recognisable() -> None:
     assert repr(eq_safenan(float("nan"))) == "<NaN>"
 
 
+def test_the_complex_marker_is_recognisable() -> None:
+    tag = eq_safenan(complex(float("nan"), 0.0))[0]
+    assert repr(tag) == "<complexNaN>"
+
+
 @pytest.mark.parametrize("value", [1, 1.0, 0, -3.5, "x", None, Fraction(1, 2)])
 def test_non_nan_values_are_unchanged(value: object) -> None:
     assert eq_safenan(value) is value
 
 
-def test_a_complex_nan_is_left_unequal_to_itself() -> None:
-    # Only real numbers are recognised; a complex NaN is returned as is.
+def test_a_real_nan_complex_compares_equal_to_itself_after_mapping() -> None:
     cnan = complex(float("nan"), 0.0)
-    mapped = eq_safenan(cnan)
-    assert mapped is cnan
+    assert cnan != cnan
+    assert eq_safenan(cnan) == eq_safenan(cnan)
+
+
+def test_an_imag_nan_complex_compares_equal_to_itself_after_mapping() -> None:
+    cnan = complex(0.0, float("nan"))
+    assert cnan != cnan
+    assert eq_safenan(cnan) == eq_safenan(cnan)
+
+
+def test_complex_nans_with_distinct_non_nan_parts_stay_distinct() -> None:
+    a = complex(float("nan"), 1.0)
+    b = complex(float("nan"), 2.0)
+    assert eq_safenan(a) != eq_safenan(b)
+
+
+def test_a_non_nan_complex_is_unchanged() -> None:
+    value = complex(1, 2)
+    assert eq_safenan(value) is value
+
+
+def test_a_mapped_real_nan_differs_from_a_mapped_complex_nan() -> None:
+    assert eq_safenan(float("nan")) != eq_safenan(complex(float("nan"), 0.0))
 
 
 def test_no_numpy_import_at_the_root() -> None:

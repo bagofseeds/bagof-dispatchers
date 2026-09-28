@@ -1015,6 +1015,16 @@ class _NaN:
 _NAN = _NaN()
 
 
+class _ComplexNaN:
+    """The marker tagging the key [`eq_safenan`][] builds for a complex NaN."""
+
+    def __repr__(self) -> str:
+        return "<complexNaN>"
+
+
+_COMPLEX_NAN = _ComplexNaN()
+
+
 def eq_safenan(x: tx.Any) -> tx.Any:
     """Map a value to a form that compares equal to any other NaN.
 
@@ -1026,11 +1036,13 @@ def eq_safenan(x: tx.Any) -> tx.Any:
     through unchanged.
 
     !!! note
-        Only real numbers are recognised this way. A complex NaN comes
-        back unchanged, and so still compares unequal to itself. A numpy
-        scalar is recognised through its registration under the
-        [`numbers.Real`][] ABC, so this needs no numpy import of its
-        own.
+        A complex number carrying a NaN in either its real or its
+        imaginary part is normalised component by component, so a
+        NaN-bearing complex compares equal to itself, and two complex
+        values compare equal when their non-NaN parts match and NaN
+        falls in the same position. A numpy scalar is recognised through
+        its registration under the [`numbers.Real`][] ABC, so this needs
+        no numpy import of its own.
 
     !!! example
         ```pycon
@@ -1039,10 +1051,24 @@ def eq_safenan(x: tx.Any) -> tx.Any:
         False
         >>> eq_safenan(nan) == eq_safenan(nan)
         True
+        >>> cnan = complex(float("nan"), 2.0)
+        >>> cnan == cnan
+        False
+        >>> eq_safenan(cnan) == eq_safenan(cnan)
+        True
         ```
     """
     if isinstance(x, numbers.Real) and math.isnan(x):
         return _NAN
+    # Mirror numpy.array_equal(a, b, equal_nan=True): normalise a complex
+    # NaN part by part. numbers.Real is a subclass of numbers.Complex, so
+    # the real check above runs first and only genuine complex values reach
+    # here; recursing on each part reuses the real path, which also covers a
+    # numpy complex scalar without importing numpy.
+    if isinstance(x, numbers.Complex) and (
+        math.isnan(x.real) or math.isnan(x.imag)
+    ):
+        return (_COMPLEX_NAN, eq_safenan(x.real), eq_safenan(x.imag))
     return x
 
 
