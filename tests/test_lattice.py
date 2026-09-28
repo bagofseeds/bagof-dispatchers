@@ -2,6 +2,7 @@
 
 # stdlib
 import collections.abc
+import dataclasses
 import sys
 import typing
 import warnings
@@ -100,6 +101,40 @@ class _Movie(tx.TypedDict):
 
     title: str
     year: int
+
+
+@tx.runtime_checkable
+class _HasName(tx.Protocol):
+    """A runtime protocol with a data member, for the #56 corpus rows."""
+
+    name: str
+
+
+@tx.runtime_checkable
+class _HasNameAge(_HasName, tx.Protocol):
+    """A sub-protocol of `_HasName`, adding a second data member."""
+
+    age: int
+
+
+class _Named:
+    """Declares `_HasName`'s member itself, as a class attribute."""
+
+    name = "named"
+
+
+@dataclasses.dataclass
+class _NamedAged:
+    """Declares both of `_HasNameAge`'s members, as dataclass fields."""
+
+    name: str
+    age: int
+
+
+class _Unnamed:
+    """Annotates `name` but never sets it: declares nothing at runtime."""
+
+    name: str
 
 # ~40 hints spanning classes, ABCs, unions, optionals, literals, the tuple /
 # list / dict families, `Callable` pairs, `TypeVar`s and `Exact`. It
@@ -203,6 +238,15 @@ CORPUS = [
     tx.Optional[tx.TypedDict],
     tx.Annotated[tx.TypedDict, "m"],
     _Movie,
+    # runtime protocols with data members (#56): a protocol, a sub-protocol,
+    # a class declaring the member, a dataclass declaring both, and a class
+    # that only annotates it (so is below neither).
+    _HasName,
+    _HasNameAge,
+    _Named,
+    _NamedAged,
+    _Unnamed,
+    tx.Optional[_HasName],
     tx.Tuple[int],
     tx.Tuple[int, str],
     tx.Tuple[int, ...],
@@ -312,6 +356,18 @@ def test_the_bottom_is_below_every_hint_and_only_a_bottom_below_it() -> None:
     for hint in CORPUS:
         assert issubhint(tx.Never, hint) is True, hint
         assert issubhint(hint, tx.Never) is (hint in bottoms), hint
+
+
+def test_the_data_protocol_rows_are_ordered() -> None:
+    """The #56 rows are not trivially incomparable: the laws above bite."""
+    assert issubhint(_HasNameAge, _HasName) is True
+    assert issubhint(_HasName, _HasNameAge) is False
+    assert issubhint(_Named, _HasName) is True
+    assert issubhint(_Named, _HasNameAge) is False
+    assert issubhint(_NamedAged, _HasNameAge) is True
+    assert issubhint(_NamedAged, _HasName) is True
+    assert issubhint(_Unnamed, _HasName) is False
+    assert issubhint(_Named, tx.Optional[_HasName]) is True
 
 
 # --- mro_index ---------------------------------------------------------

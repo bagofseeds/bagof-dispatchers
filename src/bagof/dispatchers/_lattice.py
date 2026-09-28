@@ -17,12 +17,14 @@ questions selection asks of a hint:
   ([`solve_typevar`][bagof.dispatchers._lattice.solve_typevar] /
   [`typevar_consistent`][bagof.dispatchers._lattice.typevar_consistent])?
 
-and two the cache asks:
+and three the cache asks:
 
 * does a hint's applicability depend on the value, not just its type
   ([`is_value_dependent`][bagof.dispatchers._lattice.is_value_dependent])?
 * short of that, does it depend on the parametrisation a value declares
   ([`is_declaration_dependent`][bagof.dispatchers._lattice.is_declaration_dependent])?
+* or on which of a protocol's data members the value has
+  ([`instance_members`][bagof.dispatchers._lattice.instance_members])?
 
 The value check itself stays in the relation: the engine calls
 [`ishintstance`][bagof.dispatchers.core.ishintstance] directly. Its
@@ -53,6 +55,7 @@ from .core._exact import is_exact
 from .core._introspect import _reads_declared_arguments, is_typeddict
 from .core._relation import (
     _callable_param_shape,
+    _data_protocol_members,
     _is_literal,
     _is_subscripted_tuple,
     _issubparams,
@@ -415,6 +418,15 @@ def is_value_dependent(hint: tx.Any) -> bool:
     (`#!python Sequence[int]`), which an instance of a `Generic` subclass of
     `#!python Sequence` declares the same way.
 
+    A [`runtime_checkable`][typing.runtime_checkable] protocol with data
+    members (`#!python name: str`) is *not* value-dependent either, though
+    two instances of one class can match it differently -- one that set
+    `#!python name` in `__init__` and one that did not. What decides is only
+    which of its data members the value has, so it gets the narrower key
+    [`instance_members`][bagof.dispatchers._lattice.instance_members]
+    describes: the value's type and those members' presence, never the
+    value.
+
     An [`Exact`][bagof.dispatchers.Exact]`[C]` hint is *not* value-dependent,
     though it might look it: it checks `#!python type(value) is C`, which the
     type alone answers. Nor is the bare `#!python TypedDict` marker, which
@@ -515,3 +527,66 @@ def is_declaration_dependent(hint: tx.Any) -> bool:
     # Exactly the hints whose value check reads `__orig_class__` (see
     # `_declared_parametrisation`).
     return bool(args) and _reads_declared_arguments(origin)
+
+
+def instance_members(hint: tx.Any) -> tx.Tuple[str, ...]:
+    """The attributes a hint's value check reads off the value itself.
+
+    A third dependence the call cache keys on, beside the value and the
+    declared parametrisation (RFC 0001 §6). A
+    [`runtime_checkable`][typing.runtime_checkable] protocol with data
+    members (`#!python name: str`) is matched by what the value holds, so two
+    instances of one class can match it differently -- one that set
+    `#!python name` and one that did not. Its methods are read off the
+    value's class, so only its data members depend on the instance, and the
+    cache keys such an argument on the value's type and which of these
+    members the value has: every instance of one class holding the same
+    members shares one entry.
+
+    Returns the data members' names, sorted, or `#!python ()` for a hint
+    that reads nothing off the instance -- a protocol whose members are all
+    methods, one that is not runtime-checkable, and every other hint. A
+    `#!python Union` gathers its members', and a `#!python TypeVar` reads its
+    upper bound, as for
+    [`is_value_dependent`][bagof.dispatchers._lattice.is_value_dependent].
+
+    Two limits of what is read off the instance. A constrained `TypeVar`
+    whose constraint is such a protocol is *solved* from the argument's
+    class (`#!python issubhint(type(v), c)`), so a value that is in the
+    protocol only by what its instance holds does not select that
+    constraint. And a generic protocol (`#!python HasItem[int]`, with
+    `#!python item: T`) checks that the members are present, not what they
+    hold: a structural value declares no type arguments to compare.
+
+    !!! example
+        ```pycon
+        >>> import typing_extensions as tx
+        >>> @tx.runtime_checkable
+        ... class Named(tx.Protocol):
+        ...     name: str
+        >>> instance_members(Named)
+        ('name',)
+        >>> instance_members(tx.Optional[Named])
+        ('name',)
+        >>> instance_members(int)
+        ()
+        ```
+    """
+    hint = normalise_hint(hint)
+    if is_exact(hint):
+        # `Exact[C]` is `type(value) is C` -- decided by the type alone.
+        return ()
+    hint = unwrap(hint, tx.Annotated)
+    args = get_args_uw(hint)
+    origin = get_origin_uw(hint)
+    if origin in UNION_TYPES and args:
+        names = set()  # type: tx.Set[str]
+        for arg in args:
+            names.update(instance_members(arg))
+        return tuple(sorted(names))
+    if isinstance(hint, tx.TypeVar):
+        return instance_members(_typevar_upper(hint))
+    # Exactly the hints whose value check reads members off the value (see
+    # `_ishintstance_protocol`).
+    members = _data_protocol_members(origin)
+    return members.data if members is not None else ()

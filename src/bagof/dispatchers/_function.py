@@ -40,6 +40,7 @@ from . import _errors
 from ._errors import AmbiguousMethodError, NoMethodError
 from ._lattice import (
     equivalent,
+    instance_members,
     is_declaration_dependent,
     is_value_dependent,
 )
@@ -63,6 +64,7 @@ from .core import (
 )
 from .core._compat import is_plausible_hint
 from .core._exact import exact_target, is_exact
+from .core._relation import _present_data_members
 
 __all__ = ["Function"]
 
@@ -109,11 +111,22 @@ class _Plan:
     Binding depends only on the shape (how many positionals, which keyword
     names), so it is worked out once per shape: which methods can bind it,
     where each argument lands in each, the pairwise specificity order, which
-    arguments a hint reads by value rather than by type, and which -- short
-    of that -- it reads by the parametrisation the value declares.
+    arguments a hint reads by value rather than by type, which -- short of
+    that -- it reads by the parametrisation the value declares, and which by
+    the protocol data members the value has.
     """
 
-    __slots__ = ("bindable", "le_matrix", "value_dependent", "declared")
+    __slots__ = (
+        "bindable",
+        "le_matrix",
+        "value_dependent",
+        "declared",
+        "members",
+        "dependent",
+        "value_only",
+        "declared_only",
+        "members_only",
+    )
 
     def __init__(
         self,
@@ -123,6 +136,7 @@ class _Plan:
         le_matrix: tx.Dict[tx.Tuple[int, int], bool],
         value_dependent: tx.FrozenSet[tx.Any],
         declared: tx.FrozenSet[tx.Any] = frozenset(),
+        members: tx.Optional[tx.Mapping[tx.Any, tx.Tuple[str, ...]]] = None,
     ) -> None:
         # Each entry: (method, binding for the shape, {arg key: landed hint}).
         self.bindable = tuple(bindable)
@@ -132,6 +146,24 @@ class _Plan:
         # both sets carries both: a value's own `==` need not tell two
         # parametrisations apart (a dataclass generic compares its fields).
         self.declared = declared
+        # Argument key -> the protocol data members read off the value there,
+        # sorted: the argument is keyed on which of them the value has. A key
+        # here and in either set above carries every part.
+        self.members = dict(members or {})
+        # Every argument key whose part is more than the bare type.
+        self.dependent = value_dependent | declared | frozenset(self.members)
+        # The keys that read exactly one thing beside the type, which
+        # `_call_key` builds inline; the rest go through `_dependent_part`.
+        # Most dependent arguments read one, and the call cache is on the
+        # path of every call.
+        members_set = frozenset(self.members)
+        self.value_only = value_dependent - declared - members_set
+        self.declared_only = declared - value_dependent - members_set
+        self.members_only = {
+            key: names
+            for key, names in self.members.items()
+            if key not in value_dependent and key not in declared
+        }
 
 
 class Function:
@@ -599,17 +631,24 @@ class Function:
                 )
         value_dependent = set()  # type: tx.Set[tx.Any]
         declared = set()  # type: tx.Set[tx.Any]
+        members = {}  # type: tx.Dict[tx.Any, tx.Set[str]]
         for _, _, landed in bindable:
             for key, hint in landed.items():
                 if is_value_dependent(hint):
                     value_dependent.add(key)
                 if is_declaration_dependent(hint):
                     declared.add(key)
+                names = instance_members(hint)
+                if names:
+                    # Every method's protocol at this argument, together: the
+                    # key must cover whatever any of their checks reads.
+                    members.setdefault(key, set()).update(names)
         plan = _Plan(
             bindable,
             le_matrix,
             frozenset(value_dependent),
             frozenset(declared),
+            {key: tuple(sorted(names)) for key, names in members.items()},
         )
         cache.shape_plans[shape] = plan
         return plan
@@ -1248,49 +1287,72 @@ def _call_key(
 
     The type of each argument keys it, plus the value itself where the shape's
     hints read a value rather than a type (a `#!python Literal`, a
-    `#!python type[...]`), or the parametrisation the value declares where
-    they read that (a parametrised generic, `#!python Box[int]`). The key
+    `#!python type[...]`), the parametrisation the value declares where they
+    read that (a parametrised generic, `#!python Box[int]`), and which of a
+    protocol's data members the value has where they read those. The key
     tuple is always built; a value-dependent argument whose value is
     unhashable is wrapped so the tuple builds fine and the [`TypeError`][]
     surfaces only when the key is hashed (on a `dict` access), where the
     caller catches it and leaves the call uncached.
     """
-    value_dependent = plan.value_dependent
-    declared = plan.declared
+    dependent = plan.dependent
     parts = [len(args)]  # type: tx.List[tx.Any]
     for index, value in enumerate(args):
-        if index in value_dependent:
-            if index in declared:
-                # Both: the value's own `==` does not see the record (a
-                # dataclass generic compares its fields), so key on each.
-                parts.append(
-                    (type(value), _KeyValue(value), _declared_key(value))
-                )
-            else:
-                parts.append((type(value), _KeyValue(value)))
-        elif index in declared:
-            parts.append((type(value), _declared_key(value)))
-        else:
+        if index not in dependent:
             parts.append(type(value))
+        elif index in plan.declared_only:
+            parts.append((type(value), _declared_key(value)))
+        elif index in plan.value_only:
+            parts.append((type(value), _KeyValue(value)))
+        elif index in plan.members_only:
+            names = plan.members_only[index]
+            parts.append((type(value), _members_key(value, names)))
+        else:
+            parts.append(_dependent_part(value, index, plan))
     for keyword in sorted(kwargs):
         value = kwargs[keyword]
-        if keyword in value_dependent:
-            if keyword in declared:
-                parts.append(
-                    (
-                        keyword,
-                        type(value),
-                        _KeyValue(value),
-                        _declared_key(value),
-                    )
-                )
-            else:
-                parts.append((keyword, type(value), _KeyValue(value)))
-        elif keyword in declared:
-            parts.append((keyword, type(value), _declared_key(value)))
-        else:
+        if keyword not in dependent:
             parts.append((keyword, type(value)))
+        elif keyword in plan.declared_only:
+            parts.append((keyword, type(value), _declared_key(value)))
+        elif keyword in plan.value_only:
+            parts.append((keyword, type(value), _KeyValue(value)))
+        elif keyword in plan.members_only:
+            names = plan.members_only[keyword]
+            parts.append((keyword, type(value), _members_key(value, names)))
+        else:
+            parts.append((keyword,) + _dependent_part(value, keyword, plan))
     return tuple(parts)
+
+
+def _dependent_part(
+    value: tx.Any, key: tx.Any, plan: _Plan
+) -> tx.Tuple[tx.Any, ...]:
+    """The key part of an argument whose hints read two things or more.
+
+    The value's type, followed by one entry for each thing the hints at `key`
+    read: the value, the parametrisation it declares, the protocol data
+    members it has. None stands in for another: a value's own `==` sees
+    neither the record (a dataclass generic compares its fields) nor which
+    attributes are set. `_call_key` builds the part of an argument that reads
+    only one of them inline.
+    """
+    part = (type(value),)  # type: tx.Tuple[tx.Any, ...]
+    if key in plan.value_dependent:
+        part += (_KeyValue(value),)
+    if key in plan.declared:
+        part += (_declared_key(value),)
+    names = plan.members.get(key)
+    if names:
+        part += (_members_key(value, names),)
+    return part
+
+
+# Which of the protocol data members `names` the value has, in order: a tuple
+# of booleans, read by the very function the value check uses, so the key
+# always covers what the check reads -- never the value itself, so every
+# instance of one class that holds the same members shares one entry.
+_members_key = _present_data_members
 
 
 def _declared_key(value: tx.Any) -> tx.Any:
