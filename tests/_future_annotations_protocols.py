@@ -11,7 +11,9 @@ from __future__ import annotations
 # stdlib
 import dataclasses
 import typing
+import typing as t
 from typing import ClassVar
+from typing import ClassVar as CV
 
 # dependencies
 import typing_extensions as tx
@@ -48,3 +50,28 @@ class KindInstance:
 @dataclasses.dataclass
 class WithInitVar:
     name: dataclasses.InitVar[str]
+
+
+class InitVar:
+    """The module's own class, named like the dataclass marker."""
+
+
+class AliasClassVar:
+    name: CV[str]
+
+
+class QualifiedClassVar:
+    name: t.ClassVar[str]
+
+
+class BodyAliasClassVar:
+    Shared = ClassVar
+    name: Shared[str]
+
+
+class ShadowedInitVar:
+    name: InitVar
+
+
+class AliasKind:
+    kind: CV[str]

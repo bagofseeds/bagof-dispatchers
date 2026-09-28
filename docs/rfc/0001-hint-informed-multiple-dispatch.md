@@ -174,7 +174,7 @@ changes it, and the change is called out.
 | `Callable[[int],R] < Callable[Concatenate[int,P],R] < Callable[P,R] ≡ Callable[...,R]` | True | `...` / bare `P` top the parameter lists, a `Concatenate` prefix sits between (row-flip, §11.1; issue #32) — so `Callable[...,R] ≤ Callable[[int],R]` and `Callable[Concatenate[int,P],R] ≤ Callable[[int],R]` are **False** (were True), which restores transitivity |
 | `int ≤ P` (non-`runtime_checkable` Protocol) | raises → **False (post-fix)** | guarded; an overload on one registers, but answers False at both levels, so it never matches and the call raises `NoMethodError` |
 | `list ≤ RP` (runtime protocol) | True | protocols dispatch structurally |
-| `Named ≤ HasName`, `Record ≤ HasName`, `Ann ≤ HasName`, `CV ≤ HasName`, `Sub ≤ HasName`, `Other ≤ HasName` (`HasName` a runtime protocol with the data member `name: str`; `Named` sets `name = …` on the class, `Record` is a dataclass with a `name` field, `Ann` only annotates it, `CV` annotates it `ClassVar[str]` with no value, `Sub(HasName, Protocol)`, `Other` an unrelated protocol with the same member) | **True** / **True** / **True** / False / **True** / False | Python refuses `issubclass` here; the relation asks whether the class declares the member as a type checker reads it — an annotation of the member's kind, a class attribute, a property, a slot — and the value level counts a declared member on every instance, so the order stays sound (§2.3; #56) |
+| `Named ≤ HasName`, `Record ≤ HasName`, `Ann ≤ HasName`, `CV ≤ HasName`, `Sub ≤ HasName`, `Other ≤ HasName` (`HasName` a runtime protocol with the data member `name: str`; `Named` sets `name = …` on the class, `Record` is a dataclass with a `name` field, `Ann` only annotates it, `CV` declares it `ClassVar[str] = …`, `Sub(HasName, Protocol)`, `Other` an unrelated protocol with the same member) | **True** / **True** / **True** / False / **True** / False | Python refuses `issubclass` here; the relation asks whether the class declares the member as the member's kind — an instance variable (an annotation, or a class attribute, property or slot not annotated `ClassVar`) or a class variable (a `ClassVar` annotation) — as mypy and pyright do, and the value level counts a declared member on every instance, so the order stays sound (§2.3; #56) |
 | `dict ≤ TD`, `TD ≤ dict`, `TD ≤ Mapping` | F/T/T | TypedDict orders correctly at hint level |
 | `int ≤ Union` (bare) | False | bare `Union`/`Literal`/`Type` mean "is one of these"; dead for value dispatch |
 
@@ -450,45 +450,56 @@ multiply.
   read:
   - *value level* — `v ∈ P` when `type(v)` lists `P` among its bases (as
     `isinstance` counts it), or when every **method** of `P` is defined by
-    `type(v)` (not as `None`), every **`ClassVar` member** is held or
-    declared by `type(v)` (a class attribute, or a `ClassVar` annotation,
-    anywhere in its MRO — read off the class alone, as a type checker reads
-    a class variable), and every other **data member** is present on `v`:
-    in its instance `__dict__`, anywhere in its class's MRO, or **declared
-    by an annotation** anywhere in its class's MRO (`name: str`; not a
-    `ClassVar`, an `InitVar` or `KW_ONLY`), set or not. Members are
-    found statically, as `inspect.getattr_static` finds them and as
-    `isinstance` does from 3.12 on — a property is not called and
-    `__getattr__` is not asked — so the answer is the same on every
+    `type(v)` (not as `None`), every **`ClassVar` member** is declared
+    `ClassVar` by `type(v)` (anywhere in its MRO, with a value or not —
+    read off the class alone, as a type checker reads a class variable),
+    and every other **data member** is in `v`'s instance `__dict__` or
+    **declared an instance variable** anywhere in its class's MRO: by an
+    annotation (`name: str`; not a `ClassVar`, an `InitVar` or `KW_ONLY`),
+    set or not, or by a class attribute, a property or a slot that the
+    class holding it does not annotate `ClassVar` or `InitVar`. Members are
+    found statically — a property is not called and `__getattr__` is not
+    asked, as `isinstance` reads them from 3.12 on — so the answer is the
+    same on every
     supported Python and both `typing` / `typing_extensions` spellings,
     where `isinstance` itself is not (`typing` before 3.12 calls `hasattr`).
     Methods are read off the class, as a method-only protocol is decided,
     so only the instance data members depend on the instance; a method
     assigned on the instance alone is not counted, where 3.12+ `isinstance`
-    would. Two further deliberate divergences from `isinstance`, both the
+    would. Three further deliberate divergences from `isinstance`, all the
     type checker's reading: an annotated member counts on an instance that
-    never set it, and a `ClassVar` member set on the instance alone does
-    not count.
+    never set it; a `ClassVar` member set on the instance, or held as a
+    plain class attribute, does not count; and a class attribute declared
+    `ClassVar` does not count for an instance member.
   - *hint level* — `C ⊑ P` when `C` lists `P` among its bases (a
     sub-protocol included), or when `C` is not a protocol and **declares**
-    every member, as a type checker reads a structural subtype: each method
-    defined by the class (not as `None`), and each data member held by the
-    class (a class attribute, a property, a slot) or declared by an
-    annotation of the member's kind anywhere in its MRO — `name: str` for
-    an ordinary member (a dataclass field included, `field(init=False)` or
-    not), `name: ClassVar[str]` for a member `P` declares `ClassVar`. The
-    kinds do not cross: the typing spec's protocol members are instance
-    variables unless declared `ClassVar`, and mypy and pyright both reject
-    a class variable for an instance member and an instance variable
-    (annotated, or set in `__init__`) for a `ClassVar` member. A
-    `TypedDict`'s annotations declare keys, not attributes, and count for
-    nothing. A class attribute counts for either kind, since the value has
-    it. Another protocol that does not list `P` is not below it, even with
-    the same members. A data protocol is below a method-only protocol `Q`
-    when it lists `Q`, or when its methods
-    cover `Q`'s members — never through a data member, which Python's
-    `issubclass` would accept from an annotation but an instance may hold
-    alone.
+    every member, much as a type checker reads a structural subtype: each
+    method defined by the class (not as `None`), and each data member
+    declared as its kind anywhere in the MRO. An **instance variable** is
+    declared by an annotation (`name: str`, a dataclass field included,
+    `field(init=False)` or not) or by a class attribute, a property or a
+    slot that the class holding it does not annotate `ClassVar` — a value
+    in the class body is an instance variable's default. A **class
+    variable** is declared by a `ClassVar` annotation alone, with a value
+    or not. The kinds are exclusive, as the typing spec's protocol members
+    are instance variables unless declared `ClassVar`: mypy 1.19 and
+    pyright 1.1.408 both reject `class C: kind = "x"` for
+    `kind: ClassVar[str]` ("expected class variable, got instance
+    variable") and `class C: name: ClassVar[str] = "x"` for `name: str`
+    ("expected instance variable, got class variable"), and so does the
+    relation. An annotation still in text (`from __future__ import
+    annotations`) is parsed, not executed: its leading dotted name is
+    looked up by dictionary lookups alone in the class's namespace, its
+    module's and the builtins (and a module's own namespace for each
+    further part), and the marker recognised by identity, so an alias
+    (`from typing import ClassVar as CV`) reads as `ClassVar` and a class
+    of the user's named `InitVar` as itself; a name not found falls back to
+    its last part. `InitVar`, `KW_ONLY` and a `TypedDict`'s keys declare no
+    attribute. Another protocol that does not list `P` is not below it,
+    even with the same members. A data protocol is below a method-only
+    protocol `Q` when it lists `Q`, or when its methods cover `Q`'s members
+    — never through a data member, which Python's `issubclass` would accept
+    from an annotation but an instance may hold alone.
   - *soundness* — the order must never put `C` below `P` while an instance
     of `C` fails `v ∈ P`. A **bare annotation** (`name: str` with no value)
     promises nothing at runtime: an `Ann()` that never set `name` has no
@@ -497,18 +508,31 @@ multiply.
     member and sets it in `__init__` incomparable with the protocol, so
     that an overload on each was ambiguous for every instance — the value
     level counts it too: a member declared by an annotation is present on
-    every instance of the class, set or not. Both levels read the same
-    per-class record of what the MRO's annotations declare, and read *any*
-    class of the MRO, so a subclass declares everything its bases do and
-    `v ∈ C ⊑ P ⇒ v ∈ P` holds by construction; `test_dispatch_soundness`
-    sweeps it. A `ClassVar` member is read off the class at both levels,
-    for the same reason. The residue is now only what the class's own
-    declarations do not describe — a subclass that sets an inherited method
-    to `None`, or an annotation added to a class after it was first
-    dispatched on (the per-class record is memoised) — and is documented
-    rather than guarded. An annotated member that is never set reaches the
-    overload as a value without the attribute, as it would reach a function
-    a type checker accepted it for.
+    every instance of the class, set or not, and the class walk the value
+    level used to take is gone, so a class attribute declared `ClassVar`
+    is not present either. Both levels read the same per-class record of
+    what the MRO declares, gathered over *every* class of the MRO — never
+    decided class by class — so a subclass declares everything its bases
+    do and `v ∈ C ⊑ P ⇒ v ∈ P` holds by construction, transitively;
+    `test_dispatch_soundness` sweeps it. A `ClassVar` member is read off the
+    class at both levels, for the same reason. The residue is documented
+    rather than guarded:
+    - a subclass that sets an inherited method to `None`;
+    - an attribute or annotation added to a class after it was first
+      dispatched on (the per-class record is memoised);
+    - a subclass that redeclares an inherited instance variable `ClassVar`
+      — `class SubCV(Ann): name: ClassVar[str]`, with `Ann` annotating
+      `name: str` — stays `⊑ HasName`, since the union over the MRO keeps
+      the base's declaration and with it transitivity (`SubCV ⊑ Ann ⊑
+      HasName`); both checkers reject the override itself;
+    - a **read-only** member — a property without a setter, or
+      `name: Final = "x"` — counts for a protocol's instance variable,
+      where both checkers reject it ("expected settable variable, got
+      read-only attribute"): dispatch only reads the member, and the value
+      has it (unchanged since #56);
+    - an annotated member that is never set reaches the overload as a
+      value without the attribute, as it would reach a function a type
+      checker accepted it for.
   - *an overlap the order does not see* — a class that declares none of the
     members (no annotation, attribute, property, slot, method or dataclass
     field) is incomparable with the protocol, yet an instance of it given
@@ -923,9 +947,10 @@ Caching & thread-safety — **two levels**, because the order is per shape:
    function the value check uses, so the key always covers what the check
    reads, and never the value or its identity: every instance of a class
    holding the same members shares one entry. A member the class declares
-   by annotation reads True for every instance, from a per-class memo that
-   also records how the class's instances are looked up, so it adds a set
-   lookup and not a read of the instance; a `ClassVar` member is read off
+   an instance variable — by annotation, or by a class attribute, property
+   or slot — reads True for every instance, from a per-class memo that
+   also records how the class's instances are looked up, so it costs a set
+   lookup and no walk of the MRO; a `ClassVar` member is read off
    the class and is not part of the key at all. That read happens on every
    call, so a cached call at a member-dependent argument costs roughly 1 µs
    more than at a type-keyed one. A position with several dependences
@@ -1170,10 +1195,14 @@ the value has (#56); a class annotating a member is below the protocol and
 wins over it, positionally and by keyword, and its never-set instance is in
 the protocol at the value level too; a class declaring nothing whose
 instance gains the member stays ambiguous; an inherited annotation counts;
-`ClassVar` members only through a class attribute or a `ClassVar`
-annotation, and a `ClassVar` annotation never declares an ordinary member;
-a dataclass `field(init=False)` counts; an `InitVar` and a `TypedDict` key
-do not · ABCs via `issubclass`; late `register()`
+the two kinds exclusive — a `ClassVar` member only through a `ClassVar`
+annotation (not a plain class attribute), an ordinary member never through
+a `ClassVar` (with a value or not), a subclass redeclaring an inherited
+member `ClassVar` still below the protocol; a text annotation's marker
+looked up, not evaluated (an alias `CV`, a module-qualified `t.ClassVar`,
+a user class named `InitVar`); a dataclass `field(init=False)` counts; an
+`InitVar` and a `TypedDict` key do not; a read-only member (property,
+`Final`) counts, unlike the checkers · ABCs via `issubclass`; late `register()`
 → cache-token invalidation · diamond `D(B,C)` → `B`; B vs satisfied-ABC →
 ambiguous · preorder laws property-tested.
 

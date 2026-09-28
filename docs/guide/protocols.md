@@ -29,8 +29,9 @@ what it inherits. A protocol can ask for a data member as well as methods:
 'hello, Ada'
 ```
 
-A data member counts when the value has it, set on the instance or defined
-by its class, or when its class declares it with an annotation. A method
+A data member counts when the value sets it on itself, or when its class
+declares it: an annotation, a class attribute, a property or a slot. A
+method
 counts when the value's class defines it. Members are looked up without
 running any of the value's code: a property is not called, and
 `__getattr__` is not asked. A class that lists the protocol among its bases
@@ -39,8 +40,8 @@ always matches, as with `isinstance`.
 ## A class is more specific than a protocol it declares
 
 An overload on a class wins over one on a protocol when the class
-**declares** every member, as a type checker reads it: an annotation
-(`name: str`), a class attribute, a property, a method, or a dataclass
+**declares** every member, much as a type checker reads it: an annotation
+(`name: str`), a class attribute, a property, a slot, or a dataclass
 field.
 
 ```pycon
@@ -62,13 +63,18 @@ whether it is written on the class or on one of its bases. So an instance
 of `User` matches `Named` even before `name` is set. Python's own
 `isinstance` differs here: it looks for the attribute itself.
 
+A read-only member also counts: a property without a setter, or
+`name: Final = "x"`. A type checker rejects those for `Named`, whose `name`
+can be assigned; dispatch only reads the member, so it accepts them.
+
 A sub-protocol is more specific than the protocols it extends.
 
 ## Class variables
 
-A member the protocol declares as a `ClassVar` is read off the class. A
-class attribute declares it, and so does a `ClassVar` annotation. An
-attribute set on the instance does not:
+A member the protocol declares as a `ClassVar` is read off the class, and
+only a `ClassVar` annotation declares it, with a value or without. A plain
+class attribute does not (it is an instance variable's default), and
+neither does an attribute set on the instance:
 
 ```pycon
 >>> from typing import ClassVar
@@ -86,14 +92,14 @@ attribute set on the instance does not:
 >>> describe(Cat())
 'a cat'
 >>> class Dog:
-...     def __init__(self) -> None:
-...         self.kind = "dog"
+...     kind = "dog"
 >>> describe(Dog())
 'something'
 ```
 
-The other way round, a `ClassVar` annotation with no value does not declare
-an ordinary member such as `name`, and neither does a dataclass `InitVar`.
+The other way round, a `ClassVar` never declares an ordinary member such as
+`name`, even with a value, and neither does a dataclass `InitVar`. Both
+rules are the ones type checkers apply.
 
 ## When a call matches both
 
