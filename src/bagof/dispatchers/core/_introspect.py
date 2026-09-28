@@ -1,9 +1,10 @@
 """Hint introspection helpers.
 
-Small, version-safe wrappers around [`typing`][] that never raise on a value
-that is not a type, and that unwrap the transparent wrappers
-([`Annotated`][typing.Annotated], [`TypeVar`][typing.TypeVar]) the relation
-looks through.
+This module collects small, version-safe wrappers around [`typing`][]
+that never raise when given a value that is not a type, together with
+helpers that unwrap the transparent wrappers, such as
+[`Annotated`][typing.Annotated] and [`TypeVar`][typing.TypeVar], that
+the subtype relation looks straight through.
 """
 
 # stdlib
@@ -37,12 +38,12 @@ from ._sentinels import UNSET
 
 
 def _looks_like_class(x: tx.Any) -> bool:
-    """Whether `x` is a real class, not a parametrised generic alias.
+    """Report whether `x` is a real class, not a parametrised generic alias.
 
-    `#!python isinstance(list[int], type)` is `True` on Python 3.9 and
-    3.10, so a bare `isinstance(x, type)` mistakes `list[int]` for a class.
-    A real class has no typing origin, which tells the two apart on every
-    version.
+    `#!python isinstance(list[int], type)` is `#!python True` on Python
+    3.9 and 3.10, so a bare `#!python isinstance(x, type)` mistakes
+    `#!python list[int]` for a class. A real class has no typing origin,
+    which tells the two apart on every supported version.
     """
     return isinstance(x, type) and tx.get_origin(x) is None
 
@@ -51,15 +52,14 @@ def _looks_like_class(x: tx.Any) -> bool:
 
 
 def safe_get_origin(hint: tx.Any, unwrap: tx.Any = ()) -> tx.Any:
-    """
-    Safe version of [`tx.get_origin`][].
+    """Return a hint's origin, without raising on a hint that has none.
 
-    Can also unwrap some hints (e.g. [`Annotated`][typing.Annotated])
-    if asked.
+    On request, it first unwraps a wrapper such as
+    [`Annotated`][typing.Annotated] before reading the origin.
 
     !!! note
-        Unlike [`typing.get_origin`][], this returns the input hint
-        itself, instead of `None`, when the hint is not a generic type.
+        Unlike [`typing.get_origin`][], this returns the hint itself,
+        rather than `None`, when the hint is not a generic type.
     """
     if unwrap:
         hint = _unwrap(hint, origin=unwrap)
@@ -70,33 +70,29 @@ def safe_get_origin(hint: tx.Any, unwrap: tx.Any = ()) -> tx.Any:
 
 
 def get_origin_uw(hint: tx.Any) -> tx.Any:
-    """
-    Safe version of [`tx.get_origin`][] that unwraps
-    [`Annotated`][typing.Annotated] hints.
+    """Return a hint's origin, unwrapping `Annotated` first.
 
-    Returns the input type, instead of `None`, if the input is not a
+    Returns the hint itself, rather than `None`, when it is not a
     generic type.
     """
     return safe_get_origin(hint, unwrap=tx.Annotated)
 
 
 def safe_get_args(hint: tx.Any, unwrap: tx.Any = ()) -> tx.Tuple[tx.Any, ...]:
-    """
-    Safe version of [`tx.get_args`][].
+    """Return a hint's type arguments, without raising on a plain type.
 
-    Returns an empty tuple if the input is not a generic type.
-    Can also unwrap some hints (e.g. [`Annotated`][typing.Annotated]) if asked.
+    Returns an empty tuple when the hint is not a generic type. On
+    request, it first unwraps a wrapper such as
+    [`Annotated`][typing.Annotated] before reading the arguments.
     """
     hint = _unwrap(hint, origin=unwrap)
     return tx.get_args(hint)
 
 
 def get_args_uw(hint: tx.Any) -> tx.Tuple[tx.Any, ...]:
-    """
-    Safe version of [`tx.get_args`][] that unwraps
-    [`Annotated`][typing.Annotated] hints.
+    """Return a hint's type arguments, unwrapping `Annotated` first.
 
-    Returns an empty tuple if the input is not a generic type.
+    Returns an empty tuple when the hint is not a generic type.
     """
     return safe_get_args(hint, unwrap=tx.Annotated)
 
@@ -105,12 +101,11 @@ def get_args_uw(hint: tx.Any) -> tx.Tuple[tx.Any, ...]:
 
 
 def unwrap(hint: tx.Any, origin: tx.Any = (tx.Annotated,)) -> tx.Any:
-    """
-    Unwrap a type hint from its origin, if it is in the unwrap list.
+    """Strip a hint's origin away, if that origin is one of `origin`.
 
-    If [`TypeVar`][typing.TypeVar] is one of the origins to unwrap, it will
-    be unwrapped to its default, its (union of) constraints, or its bound -
-    in that order.
+    When [`TypeVar`][typing.TypeVar] is among the origins to unwrap, a
+    type variable is replaced by its default, by the union of its
+    constraints, or by its bound, trying each in that order.
 
     !!! example
         ```pycon
@@ -192,11 +187,13 @@ _MAX_NORMALISE_STEPS = 100
 
 
 def _is_type_alias_type(x: tx.Any) -> bool:
-    """Whether `x` is a PEP 695 `type X = ...` alias, in either spelling.
+    """Report whether `x` is a PEP 695 `type X = ...` alias, in either
+    spelling.
 
-    Duck-typed as well as instance-checked: a native 3.12 `type X = ...` is
-    not an instance of `typing_extensions.TypeAliasType`, but every alias
-    carries `__value__` and `__type_params__`.
+    This checks duck typing as well as the instance check: a native
+    3.12 `type X = ...` alias is not an instance of
+    `typing_extensions.TypeAliasType`, but every alias, in either
+    spelling, carries `__value__` and `__type_params__`.
     """
     for alias_type in _TYPE_ALIAS_TYPES:
         try:
@@ -210,11 +207,12 @@ def _is_type_alias_type(x: tx.Any) -> bool:
 def resolve_alias(hint: tx.Any) -> tx.Any:
     """Resolve a PEP 695 `type X = ...` alias to the hint it stands for.
 
-    A bare alias becomes its value; a subscripted generic alias
-    (`#!python L[int]` for `#!python type L[T] = list[T]`) has its type
-    arguments substituted; an alias of an alias is followed to the end. A
-    reference cycle stops rather than recursing forever, and a hint that is
-    not an alias is returned unchanged.
+    A bare alias becomes its value. A subscripted generic alias, such
+    as `#!python L[int]` for `#!python type L[T] = list[T]`, has its
+    type arguments substituted in first. An alias that stands for
+    another alias is followed all the way to the end, and a reference
+    cycle stops rather than recursing forever. A hint that is not an
+    alias at all is returned unchanged.
     """
     return _resolve_alias(hint, ())
 
@@ -252,7 +250,7 @@ def _resolve_alias(hint: tx.Any, seen: tx.Tuple[tx.Any, ...]) -> tx.Any:
 
 
 def _is_newtype(x: tx.Any) -> bool:
-    """Whether `x` is a `NewType`, in any of its runtime forms."""
+    """Report whether `x` is a `NewType`, in any of its runtime forms."""
     return callable(x) and hasattr(x, "__supertype__")
 
 
@@ -273,7 +271,9 @@ def resolve_newtype(hint: tx.Any) -> tx.Any:
 
 
 def _strip_qualifier(hint: tx.Any) -> tx.Any:
-    """Drop a transparent qualifier (`Required`/`Final`/`ClassVar`/...)."""
+    """Drop a transparent qualifier such as `Required`, `Final`, or
+    `ClassVar`.
+    """
     origin = tx.get_origin(hint)
     if origin is not None and any(origin is q for q in _QUALIFIER_FORMS):
         args = tx.get_args(hint)
@@ -283,28 +283,27 @@ def _strip_qualifier(hint: tx.Any) -> tx.Any:
 
 
 def normalise_hint(hint: tx.Any) -> tx.Any:
-    """
-    Put a hint in its canonical form.
+    """Put a hint into its canonical form.
 
-    * A bare [`None`][] means [`NoneType`][types.NoneType] as a hint, so it
-      is replaced by it.
-    * A PEP 695 `type X = ...` alias is resolved to the hint it stands for.
-    * A [`NewType`][typing.NewType] is resolved to its supertype.
-    * The transparent qualifiers [`Required`][typing.Required],
-      [`NotRequired`][typing.NotRequired], [`ReadOnly`][typing.ReadOnly],
-      [`Final`][typing.Final] and [`ClassVar`][typing.ClassVar] are
-      unwrapped to the hint they wrap.
+    A bare [`None`][] means [`NoneType`][types.NoneType] as a hint, so
+    it is replaced by it. A PEP 695 `type X = ...` alias is resolved to
+    the hint it stands for. A [`NewType`][typing.NewType] is resolved
+    to its supertype. The transparent qualifiers
+    [`Required`][typing.Required], [`NotRequired`][typing.NotRequired],
+    [`ReadOnly`][typing.ReadOnly], [`Final`][typing.Final], and
+    [`ClassVar`][typing.ClassVar] are unwrapped to the hint they wrap.
 
-    These are applied until the hint settles, so an alias that expands to a
-    qualified `NewType` is fully resolved. Every other hint is returned
-    unchanged.
+    These steps are applied repeatedly until the hint settles, so that
+    an alias which expands to a qualified `NewType` is fully resolved
+    rather than resolved only one layer deep. Every other hint is
+    returned unchanged.
 
     !!! note
-        Only a bare `None` is replaced. A `None` *inside* a hint keeps its
-        meaning: `#!python Literal[None]` is a literal `None` **value**,
-        not a type. [`Annotated`][typing.Annotated] is **not** stripped
-        here -- its metadata can carry an exactness marker the relation
-        reads.
+        Only a bare `None` is replaced this way. A `None` inside a
+        hint keeps its own meaning: `#!python Literal[None]` describes
+        the literal `None` value, not a type. [`Annotated`][typing.Annotated]
+        is not stripped here, because its metadata can carry an
+        exactness marker that the relation reads.
 
     !!! example
         ```pycon
@@ -328,14 +327,12 @@ def normalise_hint(hint: tx.Any) -> tx.Any:
 
 
 def is_typeddict(cls: tx.Any) -> bool:
-    """
-    Return true if an object is a [`TypedDict`][tx.TypedDict] or a subclass
-    of it.
+    """Report whether `cls` is a [`TypedDict`][tx.TypedDict] or a subclass.
 
     !!! tip
-        This function differs from
-        [`typing.is_typeddict`][tx.is_typeddict] in that it returns `True`
-        for [`TypedDict`][tx.TypedDict] itself.
+        This differs from [`typing.is_typeddict`][tx.is_typeddict],
+        which returns `#!python False` for [`TypedDict`][tx.TypedDict]
+        itself; this function returns `#!python True` for it.
     """
     if is_typeddict_marker(cls):
         return True
@@ -344,37 +341,39 @@ def is_typeddict(cls: tx.Any) -> bool:
 
 @functools.lru_cache(maxsize=None)
 def typeddict_required_keys(cls: tx.Any) -> tx.FrozenSet[str]:
-    """
-    The required keys of a [`TypedDict`][tx.TypedDict].
+    """Return the required keys of a [`TypedDict`][tx.TypedDict].
 
-    Reads `__required_keys__` where the class has it -- the only source
-    that accounts for [`Required`][typing.Required] /
-    [`NotRequired`][typing.NotRequired] (in either nesting with
-    [`Annotated`][typing.Annotated]) and for inheriting from bases
-    declared with a different `total=`.
+    Where the class has `__required_keys__`, this reads it directly;
+    it is the only source that accounts for
+    [`Required`][typing.Required] and [`NotRequired`][typing.NotRequired]
+    (nested inside [`Annotated`][typing.Annotated] or not) and for
+    inheriting from bases declared with a different `total=`.
 
-    Falls back to `__total__` where it does not:
-    [`typing.TypedDict`][] gained `__required_keys__` only in Python 3.9,
-    and before that a key's requiredness came from the class's `total=`
-    alone -- per-key `Required`/`NotRequired` did not exist.
+    Where the class does not have `__required_keys__`, this falls back
+    to `__total__`: [`typing.TypedDict`][] gained `__required_keys__`
+    only in Python 3.9, and before that a key's requiredness came from
+    the class's `total=` alone, since per-key `Required` and
+    `NotRequired` did not yet exist.
 
     !!! warning
-        On older Pythons, a [`typing.TypedDict`][] that mixes `total=` across
-        its bases is read only through the subclass's own `total=`, which
-        cannot be right for every key: the stdlib records neither which class
-        declared a key nor a usable link back to the base (a subclass has no
-        `__orig_bases__`, and its `__mro__` reaches only [`dict`][]), so the
-        per-key answer is simply not recoverable.
+        On older Pythons, a [`typing.TypedDict`][] that mixes `total=`
+        across its bases is read only through the subclass's own
+        `total=`, which cannot be correct for every key: the standard
+        library records neither which class declared a key nor a
+        usable link back to the base, since a subclass has no
+        `__orig_bases__` and its `__mro__` reaches only [`dict`][], so
+        the per-key answer is simply not recoverable.
 
-        This errs in **both** directions, not only the safe one. A
-        `total=True` key inherited into a `total=False` subclass is reported
-        *optional*, so a value missing it is accepted when it should fail
-        (`{}` matching a shape with a required key); a `total=False` key
-        inherited into a `total=True` subclass is reported *required*, so a
-        valid value is rejected. Use
-        [`typing_extensions.TypedDict`][tx.TypedDict], which reimplements the
-        class precisely and records `__required_keys__` on every version, when
-        it matters.
+        The error runs in both directions, not only the safe one. A
+        `total=True` key inherited into a `total=False` subclass is
+        reported optional, so a value missing it is accepted when it
+        should fail, as when `{}` is matched against a shape with a
+        required key. A `total=False` key inherited into a
+        `total=True` subclass is reported required, so a valid value
+        is rejected. Use [`typing_extensions.TypedDict`][tx.TypedDict],
+        which reimplements the class precisely and records
+        `__required_keys__` on every version, when this distinction
+        matters.
 
     !!! example
         ```pycon
@@ -396,21 +395,21 @@ def typeddict_required_keys(cls: tx.Any) -> tx.FrozenSet[str]:
 
 @functools.lru_cache(maxsize=None)
 def typeddict_field_hints(cls: tx.Any) -> tx.Dict[str, tx.Any]:
-    """
-    The declared fields of a [`TypedDict`][tx.TypedDict]: key -> hint.
+    """Map each declared field of a [`TypedDict`][tx.TypedDict] to its hint.
 
-    Every key the class declares, its own and those inherited from
-    [`TypedDict`][tx.TypedDict] bases, mapped to the hint written for it.
-    The [`Required`][typing.Required] / [`NotRequired`][typing.NotRequired]
-    qualifier is left on the hint -- reading it is
-    [`typeddict_required_keys`][]'s job; a caller that only wants the value
-    type lets the relation look through the qualifier.
+    The mapping covers every key the class declares, its own and those
+    inherited from [`TypedDict`][tx.TypedDict] bases, each mapped to the
+    hint written for it. The [`Required`][typing.Required] and
+    [`NotRequired`][typing.NotRequired] qualifier is left on the hint;
+    reading it off is [`typeddict_required_keys`][]'s job, and a caller
+    that only wants the value type can simply let the relation look
+    through the qualifier.
 
-    Resolves string annotations against the class's own module where it can
-    ([`typing.get_type_hints`][tx.get_type_hints]). Where a forward reference
-    cannot be resolved, the raw name is kept for that field alone, so the
-    caller sees the name rather than nothing -- and every sibling that *can*
-    be resolved still is.
+    A string annotation is resolved against the class's own module
+    where possible, using [`typing.get_type_hints`][tx.get_type_hints].
+    Where a forward reference cannot be resolved, the raw name is kept
+    for that field alone, so the caller sees the name rather than
+    nothing, while every sibling field that can be resolved still is.
 
     !!! example
         ```pycon
@@ -439,10 +438,11 @@ def typeddict_field_hints(cls: tx.Any) -> tx.Dict[str, tx.Any]:
 def _resolve_fields_individually(cls: tx.Any) -> tx.Dict[str, tx.Any]:
     """Resolve a TypedDict's fields one at a time, keeping what resolves.
 
-    The all-or-nothing fallback from
-    [`typeddict_field_hints`][]: each annotation is evaluated against the
-    class's own module, the ones that resolve are kept, and the ones that do
-    not are left as their raw name (a string) for the caller to skip.
+    This is the fallback [`typeddict_field_hints`][] uses in place of
+    its own all-or-nothing resolution: each annotation is evaluated
+    against the class's own module, the ones that resolve are kept, and
+    the ones that do not are left as their raw name, a string, for the
+    caller to skip.
     """
     module = sys.modules.get(getattr(cls, "__module__", None))
     globalns = getattr(module, "__dict__", {})
@@ -457,11 +457,12 @@ def _resolve_one_annotation(
 ) -> tx.Any:
     """Evaluate one annotation against `globalns`, or keep its raw name.
 
-    A `raw` that is already a hint object (an unquoted annotation) is returned
-    unchanged. A string or [`ForwardRef`][typing.ForwardRef] is evaluated the
-    way [`typing.get_type_hints`][tx.get_type_hints] would; when its name is
-    not defined there, the raw form is returned so the field can be skipped
-    rather than the whole class lost.
+    A `raw` value that is already a hint object, an unquoted
+    annotation, is returned unchanged. A string or
+    [`ForwardRef`][typing.ForwardRef] is evaluated the way
+    [`typing.get_type_hints`][tx.get_type_hints] would; when its name is
+    not defined there, the raw form is returned instead, so that field
+    can be skipped without losing the whole class.
     """
     if isinstance(raw, tx.ForwardRef):
         source = raw.__forward_arg__  # type: tx.Any
@@ -476,7 +477,7 @@ def _resolve_one_annotation(
 
 
 def _all_orig_bases(cls: type, _self: bool = True) -> tx.Tuple[type, ...]:
-    """Get all original bases of a type, including the type itself."""
+    """Return all original bases of a type, including the type itself."""
     if not is_typeddict(cls):
         return ()
     bases = (cls,) if _self else ()
@@ -499,13 +500,13 @@ def _all_orig_bases(cls: type, _self: bool = True) -> tx.Tuple[type, ...]:
 
 
 def safe_issubclass(subcls: tx.Any, cls: tx.Any) -> bool:
-    """Safe subclass (does not fail if arguments are not types).
+    """Report whether `subcls` is a subclass of `cls`, without raising.
 
     !!! warning
-        If `cls` is a [`TypedDict`][tx.TypedDict], this function looks
-        at `subcls`'s `__orig_bases__`, instead of its `__bases__`.
-        A plain [`dict`][] is *not* a subclass of a
-        [`TypedDict`][tx.TypedDict] - the relation only holds the other
+        When `cls` is a [`TypedDict`][tx.TypedDict], this looks at
+        `subcls`'s `__orig_bases__` rather than its `__bases__`. A
+        plain [`dict`][] is not a subclass of a
+        [`TypedDict`][tx.TypedDict]; the relation holds only the other
         way round.
 
     !!! example
@@ -538,15 +539,15 @@ def safe_issubclass(subcls: tx.Any, cls: tx.Any) -> bool:
 
 
 def safe_isinstance(obj: tx.Any, cls: tx.Any) -> bool:
-    """
-    Safe isinstance (does not fail if second argument is not a type).
+    """Report whether `obj` is an instance of `cls`, without raising.
 
     !!! warning
-        A [`TypedDict`][tx.TypedDict] cannot be instance-checked. Python
-        refuses `#!python isinstance(value, SomeTypedDict)` outright, and
-        a TypedDict leaves no trace on the dict it describes, so there is
-        nothing to recognise at runtime. This function therefore answers
-        [`False`][] for one; validate the *shape* of the dict instead.
+        A [`TypedDict`][tx.TypedDict] cannot be instance-checked at
+        all. Python refuses `#!python isinstance(value, SomeTypedDict)`
+        outright, and a `TypedDict` leaves no trace on the dict it
+        describes, so there is nothing to recognise at runtime. This
+        function therefore answers [`False`][] for one; validate the
+        shape of the dict instead.
 
     !!! example
         ```pycon
@@ -571,20 +572,20 @@ def safe_isinstance(obj: tx.Any, cls: tx.Any) -> bool:
 
 
 def issubclassable(cls: tx.Any) -> bool:
-    """
-    Return true if an object is a type or is [`TypedDict`][tx.TypedDict].
+    """Report whether `cls` is a type, or is [`TypedDict`][tx.TypedDict].
 
     !!! tip
-        This function differs from `#!python isinstance(cls, type)` in that it
-        returns [`True`][] for [`TypedDict`][tx.TypedDict] and its subclasses,
-        even though they are not technically types.
+        This differs from `#!python isinstance(cls, type)` in that it
+        returns [`True`][] for [`TypedDict`][tx.TypedDict] and its
+        subclasses, even though they are not technically types.
 
     !!! note
-        A typing construct - [`Any`][typing.Any], [`Union`][typing.Union],
-        [`Literal`][typing.Literal] - is never subclassable, on any Python
-        version. Some of them *are* classes on recent Pythons (`Any` from
-        3.11, `Union` from 3.14), so `#!python isinstance(hint, type)`
-        answers differently across the versions this package supports.
+        A typing construct such as [`Any`][typing.Any],
+        [`Union`][typing.Union], or [`Literal`][typing.Literal] is never
+        subclassable, on any Python version. Some of them are classes
+        on recent Pythons, `Any` from 3.11 and `Union` from 3.14, so
+        `#!python isinstance(hint, type)` answers differently across
+        the versions this package supports.
     """
     if is_special_form(cls):
         return False
@@ -594,11 +595,11 @@ def issubclassable(cls: tx.Any) -> bool:
 
 
 def issubscriptable(x: tx.Any) -> bool:
-    """
-    Check that an object is subscriptable (i.e. can be used with `[]`).
+    """Report whether `x` can be subscripted with `#!python x[...]`.
 
-    True if the object is a type and has `__class_getitem__`, or if it
-    is an instance and has `__getitem__`. Otherwise, returns False.
+    This is `#!python True` when `x` is a type that has
+    `__class_getitem__`, or an instance that has `__getitem__`, and
+    `#!python False` otherwise.
     """
     is_class = _looks_like_class(x)
     if is_class and hasattr(x, "__class_getitem__"):
@@ -612,27 +613,24 @@ def issubscriptable(x: tx.Any) -> bool:
 
 
 def get_concrete_type(hint: tx.Any, fallback: type = UNSET) -> tx.Type[tx.Any]:
-    """
-    Get a valid concrete type from a type hint.
+    """Return a concrete, instantiable type for a type hint.
 
-    * If the hint is annotated, the [`Annotated`][typing.Annotated] wrapper
-      is removed.
-    * If the hint has an origin, it is used.
-    * If the hint is a [`TypeVar`][typing.TypeVar]:
-        - its default value is used, if it has one; otherwise
-        - the **first** of its constraints is used, if it has any;
-          otherwise
-        - its bound is used, if it has one; otherwise
-        - the fallback type is used, if it is provided; otherwise
-        - a [`TypeError`][] is raised.
-    * If the (resolved) hint is a concrete, non-abstract type, it is
-      returned as is; otherwise
-    * The fallback type is used, if it is provided; otherwise
-    * A [`TypeError`][] is raised.
+    If the hint is annotated, its [`Annotated`][typing.Annotated]
+    wrapper is removed first. If the resulting hint has an origin, the
+    origin is used. If it is a [`TypeVar`][typing.TypeVar] instead, its
+    default value is used if it has one; otherwise the first of its
+    constraints is used if it has any; otherwise its bound is used if
+    it has one; otherwise the `fallback` type is used if one was
+    provided; and failing all of that, a [`TypeError`][] is raised.
+
+    Once resolved this way, a concrete, non-abstract type is returned
+    as is. Anything else falls back to `fallback` if one was provided,
+    or raises a [`TypeError`][] if not.
 
     !!! note
-        A constrained typevar has no single concrete type - it stands for
-        the union of its constraints - so the first constraint is taken.
+        A constrained type variable has no single concrete type, since
+        it stands for the union of its constraints, so its first
+        constraint is taken as a stand-in.
 
     !!! example
         ```pycon
@@ -657,7 +655,7 @@ def get_concrete_type(hint: tx.Any, fallback: type = UNSET) -> tx.Type[tx.Any]:
 
 
 def _is_concrete_type(hint: tx.Any) -> bool:
-    """Whether a hint is a class that can actually be instantiated."""
+    """Report whether a hint is a class that can actually be instantiated."""
     if is_special_form(hint):
         # `Union` is a class from python 3.14 on, but instantiating it
         # is still meaningless.
@@ -666,7 +664,9 @@ def _is_concrete_type(hint: tx.Any) -> bool:
 
 
 def _first_concrete_constraint(hint: tx.Any) -> tx.Optional[type]:
-    """The first concrete constraint of a constrained typevar, if any."""
+    """Return the first concrete constraint of a constrained typevar,
+    if any.
+    """
     typevar = unwrap(hint, tx.Annotated)
     if not safe_isinstance(typevar, tx.TypeVar):
         return None
@@ -688,13 +688,11 @@ _CONTRAVARIANT = "contravariant"
 _INVARIANT = "invariant"
 
 
-# The members of the `TypeVar` family that are *not* plain type variables:
-# a [`ParamSpec`][typing.ParamSpec] or a [`TypeVarTuple`][typing.TypeVarTuple]
-# fills a parameter position, but has no variance of its own. On Python 3.8
-# `typing_extensions` backports both as subclasses of
-# [`TypeVar`][typing.TypeVar], so a bare `#!python isinstance(p, tx.TypeVar)`
-# accepts them there; this tuple is what tells them back apart on every
-# version.
+# The members of the `TypeVar` family that are not plain type variables:
+# a ParamSpec or a TypeVarTuple fills a parameter position but has no
+# variance of its own. On Python 3.8, typing_extensions backports both
+# as subclasses of TypeVar, so a bare isinstance(p, tx.TypeVar) accepts
+# them there too; this tuple is what tells them apart on every version.
 _NON_TYPE_PARAMS = tuple(
     form
     for name in ("ParamSpec", "TypeVarTuple")
@@ -704,12 +702,13 @@ _NON_TYPE_PARAMS = tuple(
 
 
 def _is_plain_typevar(param: tx.Any) -> bool:
-    """Whether `param` is an ordinary `TypeVar`, not a `ParamSpec`/`*Ts`.
+    """Report whether `param` is an ordinary `TypeVar`, not a
+    `ParamSpec` or `*Ts`.
 
     A [`ParamSpec`][typing.ParamSpec] or
-    [`TypeVarTuple`][typing.TypeVarTuple] carries no variance, so a generic
-    that has one in a parameter position has no readable per-position
-    variance at all.
+    [`TypeVarTuple`][typing.TypeVarTuple] carries no variance of its
+    own, so a generic that has one in a parameter position has no
+    readable per-position variance at all.
     """
     return isinstance(param, tx.TypeVar) and not (
         _NON_TYPE_PARAMS and isinstance(param, _NON_TYPE_PARAMS)
@@ -717,18 +716,21 @@ def _is_plain_typevar(param: tx.Any) -> bool:
 
 
 def _typevar_variance(tv: tx.Any) -> str:
-    """The variance a [`TypeVar`][typing.TypeVar] declares (PEP 484).
+    """Return the variance a [`TypeVar`][typing.TypeVar] declares, per PEP 484.
 
-    Returns `#!python "covariant"` for a `#!python TypeVar(..., covariant=
-    True)`, `#!python "contravariant"` for a `#!python TypeVar(...,
-    contravariant=True)`, and `#!python "invariant"` otherwise -- which
-    includes an unflagged type variable (invariant by PEP 484) and a PEP 695
-    `#!python class Box[T]` variable, whose variance is inferred by the type
-    checker and cannot be read at runtime, so it is taken as invariant.
+    This returns `#!python "covariant"` for a
+    `#!python TypeVar(..., covariant=True)`,
+    `#!python "contravariant"` for a
+    `#!python TypeVar(..., contravariant=True)`, and
+    `#!python "invariant"` otherwise. The invariant case covers both an
+    unflagged type variable, which PEP 484 makes invariant by default,
+    and a PEP 695 `#!python class Box[T]` variable, whose variance is
+    inferred by the type checker and cannot be read at runtime, so it
+    is simply taken as invariant here.
 
-    Every attribute is read with [`getattr`][], because the `TypeVar` family
-    differs across Python 3.8-3.13 and between [`typing`][] and
-    `typing_extensions`.
+    Every attribute is read with [`getattr`][], because the `TypeVar`
+    family differs across Python 3.8 through 3.13 and between
+    [`typing`][] and `typing_extensions`.
 
     !!! example
         ```pycon
@@ -806,36 +808,40 @@ _PEP585_ALIAS = getattr(types, "GenericAlias", None)
 
 
 def _own_orig_bases(cls: type) -> tx.Tuple[tx.Any, ...]:
-    """The parametrised bases `cls` itself was written with, else `()`.
+    """Return the parametrised bases `cls` itself was written with, else `()`.
 
-    Read off the class's own namespace: an attribute read would find a
-    parent's `__orig_bases__`, which describe the parent's bases.
+    This reads the class's own namespace directly, rather than using
+    attribute access, because attribute access would instead find a
+    parent's `__orig_bases__`, which describes the parent's bases, not
+    the class's own.
     """
     written = vars(cls).get("__orig_bases__")
     return written if isinstance(written, tuple) else ()
 
 
 def _is_pep585_alias(hint: tx.Any) -> bool:
-    """Whether `hint` is a PEP 585 alias (`#!python list[T]`), not `List[T]`.
+    """Report whether `hint` is a PEP 585 alias, `#!python list[T]`,
+    not `List[T]`.
 
-    A subclass of the runtime alias type counts too
-    (`#!python collections.abc.Callable[[T], int]`).
+    A subclass of the runtime alias type counts too, such as
+    `#!python collections.abc.Callable[[T], int]`.
     """
     return _PEP585_ALIAS is not None and isinstance(hint, _PEP585_ALIAS)
 
 
 def _class_parameters(cls: type) -> tx.Tuple[tx.Any, ...]:
-    """The type variables the class `cls` takes, in order.
+    """Return the type variables the class `cls` takes, in order.
 
     A [`Generic`][typing.Generic] subclass lists them itself, as
-    `#!python __parameters__`. A class whose only generic bases are PEP 585
-    aliases -- `#!python class GL(list[T])`, `#!python class GD(dict[str,
-    T])` -- has no `Generic` in its MRO and lists none, though
-    `#!python GL[int]` is still what an instance built from it records. Its
-    parameters are collected the way `Generic` would collect them: the type
-    variables its own PEP 585 bases mention, in order of first appearance.
-    `#!python class Sub(GL[int])` mentions none and takes none; a class
-    written without a parametrised base takes none either.
+    `#!python __parameters__`. A class whose only generic bases are PEP
+    585 aliases, such as `#!python class GL(list[T])` or
+    `#!python class GD(dict[str, T])`, has no `Generic` in its MRO and
+    lists none there, even though `#!python GL[int]` is still what an
+    instance built from it records. Its parameters are instead
+    collected the way `Generic` would collect them: the type variables
+    its own PEP 585 bases mention, in order of first appearance.
+    `#!python class Sub(GL[int])` mentions none and takes none, and a
+    class written without a parametrised base takes none either.
     """
     params = getattr(cls, "__parameters__", None)
     if isinstance(params, tuple):
@@ -851,29 +857,28 @@ def _class_parameters(cls: type) -> tx.Tuple[tx.Any, ...]:
 
 
 def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
-    """The per-position variance of a generic's origin, or `#!python None`.
+    """Return the per-position variance of a generic's origin, or `None`.
 
-    Reads the variance of each of `origin`'s parameter positions:
-
-    * a standard-library origin (`#!python list`,
-      [`collections.abc.Sequence`][], ...) is looked up in the spec-derived
-      [`_STDLIB_VARIANCE`][] table;
-    * a user-defined generic is read live off its `#!python __parameters__`,
-      each declared [`TypeVar`][typing.TypeVar] giving its own position's
-      variance;
-    * a class whose generic bases are PEP 585 aliases (`#!python class
-      GL(list[T])`, which has no `#!python __parameters__`) is read the same
-      way, off the type variables those bases mention
-      ([`_class_parameters`][]). Each gives the variance it declares, not
-      the one of the slot it fills: an unflagged `T` is invariant wherever
-      it goes, as for `#!python class GL(List[T])`, and a `T_co` written
-      into `#!python list`'s invariant slot -- which a type checker reports
-      as an error in the class -- is taken at its word, as covariant, as a
-      checker still takes it once the error is reported;
-    * anything else -- an origin with a [`ParamSpec`][typing.ParamSpec] or
-      [`TypeVarTuple`][typing.TypeVarTuple] in a parameter position, or one
-      with no readable parameters -- returns `#!python None`, leaving the
-      caller to fall back to its own default.
+    A standard-library origin, such as `#!python list` or
+    [`collections.abc.Sequence`][], is looked up in the spec-derived
+    [`_STDLIB_VARIANCE`][] table. A user-defined generic is instead read
+    live off its `#!python __parameters__`, where each declared
+    [`TypeVar`][typing.TypeVar] gives its own position's variance. A
+    class whose generic bases are PEP 585 aliases, such as
+    `#!python class GL(list[T])`, which has no `#!python __parameters__`
+    of its own, is read the same way, off the type variables those
+    bases mention ([`_class_parameters`][]). In every case, each type
+    variable gives the variance it declares, not the variance of the
+    slot it fills: an unflagged `T` is invariant wherever it goes, as in
+    `#!python class GL(List[T])`, and a `T_co` written into
+    `#!python list`'s invariant slot, which a type checker reports as an
+    error in the class, is still taken at its word as covariant, the
+    same way a checker treats it once the error has been reported.
+    Anything else, such as an origin with a
+    [`ParamSpec`][typing.ParamSpec] or
+    [`TypeVarTuple`][typing.TypeVarTuple] in a parameter position, or
+    one with no readable parameters at all, returns `#!python None`,
+    leaving the caller to fall back to its own default.
 
     !!! example
         ```pycon
@@ -888,10 +893,11 @@ def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
         ('covariant',)
         ```
 
-    Memoised per origin. A class whose metaclass defines `#!python __eq__`
-    without `#!python __hash__` cannot key the memo, and is read afresh on
-    each call instead. The call cache cannot key such a class either, so a
-    dispatch on one is resolved again on every call.
+    The result is memoised per origin. A class whose metaclass defines
+    `#!python __eq__` without `#!python __hash__` cannot key the memo,
+    and is read afresh on every call instead. The call cache cannot key
+    such a class either, so a dispatch on one is resolved again on
+    every call too.
     """
     try:
         hash(origin)
@@ -905,17 +911,17 @@ def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
 
 @functools.lru_cache(maxsize=None)
 def _memoised_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
-    """[`_generic_variances`][] for a hashable origin, memoised."""
+    """Compute [`_generic_variances`][] for a hashable origin, memoised."""
     if origin in _STDLIB_VARIANCE:
         return _STDLIB_VARIANCE[origin]
     return _declared_variances(origin)
 
 
 def _declared_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
-    """[`_generic_variances`][] for an origin outside the standard library.
+    """Compute [`_generic_variances`][] for a non-stdlib origin.
 
-    Each position gives the variance its type variable declares; see
-    [`_generic_variances`][].
+    Each position gives the variance its own type variable declares;
+    see [`_generic_variances`][] for the full rule.
     """
     if not isinstance(origin, type):
         return None
@@ -926,19 +932,21 @@ def _declared_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
 
 
 def _reads_declared_arguments(origin: tx.Any) -> bool:
-    """Whether a value's declared arguments are read against `origin[...]`.
+    """Report whether a value's declared arguments are read against
+    `origin[...]`.
 
-    A parametrisation of a class whose parameters line up one per argument
-    with a readable variance -- a user generic (`#!python Box[int]`) or a
-    standard-library one (`#!python List[int]`, `#!python Sequence[int]`) --
-    is checked against what a value declares: the parametrisation an instance
-    of a [`Generic`][typing.Generic] subclass was built from, or the one its
-    class was written against. `#!python Type[C]`, a `TypedDict`, and the
-    shape-typed `Tuple` and `Callable` keep their own checks, and so does a
-    `ParamSpec` / `TypeVarTuple` generic.
+    A parametrisation of a class whose parameters line up one per
+    argument with a readable variance, whether a user generic such as
+    `#!python Box[int]` or a standard-library one such as
+    `#!python List[int]` or `#!python Sequence[int]`, is checked against
+    what a value declares: the parametrisation an instance of a
+    [`Generic`][typing.Generic] subclass was built from, or the one its
+    class was written against. `#!python Type[C]`, a `TypedDict`, and
+    the shape-typed `Tuple` and `Callable` keep their own checks
+    instead, and so does a `ParamSpec` or `TypeVarTuple` generic.
 
-    The value check and the call cache both ask this, so they always agree on
-    which arguments can depend on a declaration.
+    Both the value check and the call cache ask this question, so they
+    always agree on which arguments can depend on a declaration.
 
     !!! example
         ```pycon
@@ -961,7 +969,7 @@ def _reads_declared_arguments(origin: tx.Any) -> bool:
 
 
 class _NaN:
-    """The value every real NaN is mapped to by [`eq_safenan`][]."""
+    """The value that [`eq_safenan`][] maps every real NaN to."""
 
     def __repr__(self) -> str:
         return "<NaN>"
@@ -971,20 +979,19 @@ _NAN = _NaN()
 
 
 def eq_safenan(x: tx.Any) -> tx.Any:
-    """
-    Map a value to a form that compares equal across NaNs.
+    """Map a value to a form that compares equal across NaNs.
 
-    Since `#!python float("nan") != float("nan")`, comparing values that
-    may contain NaN with `==` is unsafe. Apply this function to both
-    operands before comparing them: real NaN values are all mapped to one
-    sentinel (so that two NaNs compare equal), while every other value is
-    returned unchanged.
+    Since `#!python float("nan") != float("nan")`, comparing values
+    that may contain NaN with `==` is unsafe. Apply this function to
+    both operands before comparing them: every real NaN value is mapped
+    to one shared sentinel, so that two NaNs compare equal, while every
+    other value is returned unchanged.
 
     !!! note
         Only real numbers are recognised. A complex NaN is returned
-        unchanged, and so still compares unequal to itself. A numpy scalar
-        is recognised through its [`numbers.Real`][] ABC registration, so
-        no numpy import is needed here.
+        unchanged, and so still compares unequal to itself. A numpy
+        scalar is recognised through its [`numbers.Real`][] ABC
+        registration, so no numpy import is needed here.
 
     !!! example
         ```pycon
@@ -1047,9 +1054,10 @@ _TYPE2HINT_NAMES = (
 """
 The type hint each non-subscriptable type maps to, by name.
 
-An explicit table, rather than deriving the name from the type's own: the
-capitalisation does not follow (`defaultdict` becomes `DefaultDict`,
-`frozenset` becomes `FrozenSet`, `abc.Set` becomes `AbstractSet`).
+This is an explicit table rather than a derivation from the type's own
+name, because the capitalisation does not follow a simple rule:
+`defaultdict` becomes `DefaultDict`, `frozenset` becomes `FrozenSet`,
+and `abc.Set` becomes `AbstractSet`.
 """
 
 _TYPE2HINT = {
@@ -1060,21 +1068,19 @@ _TYPE2HINT = {
 """
 [`_TYPE2HINT_NAMES`][], resolved against the running `typing_extensions`.
 
-Entries whose hint the running version does not provide (`ByteString`
-was removed, for example) are simply left out, so the type is returned
-unchanged rather than raising at import time.
+An entry whose hint the running version does not provide, such as
+`ByteString` after its removal, is simply left out, so the type is
+returned unchanged rather than raising an error at import time.
 """
 
 
 def type2hint(x: tx.Any) -> tx.Any:
-    """
-    Convert a type to a (subscriptable) type hint.
+    """Convert a type to a subscriptable type hint.
 
-    * If the input is a type, and it does not have `__class_getitem__`,
-      we try to find its corresponding type hint.
-      For example, in python 3.8, `#!python type2hint(list)` returns
-      [`typing.List`][tx.List].
-    * Otherwise, the value is returned as is.
+    If `x` is a type that does not have `__class_getitem__`, this looks
+    up its corresponding type hint; on Python 3.8, for example,
+    `#!python type2hint(list)` returns [`typing.List`][tx.List].
+    Anything else is returned unchanged.
 
     !!! example
         ```pycon
@@ -1094,19 +1100,21 @@ def type2hint(x: tx.Any) -> tx.Any:
 
 
 def _typing_spelling(hint: tx.Any) -> tx.Any:
-    """`list[int]` rewritten as `List[int]`, recursively; else unchanged.
+    """Rewrite `list[int]` as `List[int]`, recursively, or leave
+    `hint` unchanged.
 
-    A parameterised builtin or abc generic (`list[int]`, `dict[str, int]`)
-    is a different object from its `typing` twin (`List[int]`,
-    `Dict[str, int]`) and does not compare equal to it, so a registry keyed
-    one way misses a query written the other. Rewriting the new-style form
-    into the `typing` spelling lets the two meet.
+    A parameterised builtin or ABC generic, such as `list[int]` or
+    `dict[str, int]`, is a different object from its `typing` twin,
+    `List[int]` or `Dict[str, int]`, and does not compare equal to it,
+    so a registry keyed one way misses a query written the other way.
+    Rewriting the new-style form into the `typing` spelling lets the two
+    meet.
 
     The rewrite reaches all the way down, so a new-style generic nested
     inside a `Union`, `Optional`, `Annotated`, `Callable`, or another
-    generic is rewritten too. `Literal` is left alone: its arguments are
-    values, not types. `list[int]` does not exist before Python 3.9, so
-    there is nothing to rewrite there.
+    generic is rewritten too. `Literal` is left alone, since its
+    arguments are values rather than types. `list[int]` does not exist
+    before Python 3.9, so there is nothing to rewrite on that version.
     """
     origin = tx.get_origin(hint)
     if origin is None or any(origin is form for form in _LITERAL_FORMS):
@@ -1157,38 +1165,31 @@ def _typing_spelling(hint: tx.Any) -> tx.Any:
 
 
 def mro_index(hint: tx.Any, value_type: type) -> tx.Optional[int]:
-    """Where `hint`'s class sits in `value_type`'s MRO, or `None`.
+    """Return where `hint`'s class sits in `value_type`'s MRO, or `None`.
 
-    This drives the MRO tie-break (RFC 0001 §2.2): when two hints are
-    otherwise incomparable, the one whose class names a *more derived* base
-    of `value_type` wins -- the diamond `#!python D(B, C)` resolves to `B`,
-    exactly as [`functools.singledispatch`][functools.singledispatch] does.
-    Value dispatch reads it against an argument's runtime type;
-    [`resolve_hint`][bagof.dispatchers.core.resolve_hint] reads it against a
-    class *query* to break a tie between equally specific class keys.
+    This drives the MRO tie-break described in RFC 0001 §2.2: when two
+    hints are otherwise incomparable, the one whose class names a more
+    derived base of `value_type` wins, so the diamond
+    `#!python D(B, C)` resolves to `B`, exactly as
+    [`functools.singledispatch`][functools.singledispatch] does. Value
+    dispatch reads this against an argument's runtime type;
+    [`resolve_hint`][bagof.dispatchers.core.resolve_hint] reads it
+    against a class query to break a tie between equally specific class
+    keys.
 
-    A refinement is only defined when the hint names a single ordinary
-    class that is a nominal base of `value_type`:
-
-    * an [`Exact`][bagof.dispatchers.Exact]`[C]` hint counts as `C`;
-    * a bare class returns its index in
-      `#!python value_type.__mro__`;
-    * a bare, unparametrised alias counts as its origin class, in whichever
-      spelling it was written -- `#!python List` and `#!python list` name
-      the same position, as do `#!python Sequence` and
-      `#!python collections.abc.Sequence`;
-    * a class that is *not* in the MRO -- a `#!python Protocol` or ABC
-      satisfied structurally or by registration rather than inheritance --
-      gives no refinement (`#!python None`);
-    * a `#!python Union`, `#!python Literal`, `#!python type[...]` or any
-      other parametrised generic gives no refinement either.
-
-    Returns
-    -------
-    int or None
-        The index of the hint's class in `#!python value_type.__mro__`
-        (`0` is `value_type` itself), or `#!python None` when no
-        refinement applies.
+    A refinement is defined only when the hint names a single ordinary
+    class that is a nominal base of `value_type`. An
+    [`Exact`][bagof.dispatchers.Exact]`[C]` hint counts as `C`. A bare
+    class returns its own index in `#!python value_type.__mro__`. A
+    bare, unparametrised alias counts as its origin class, in whichever
+    spelling it was written, so `#!python List` and `#!python list`
+    name the same position, as do `#!python Sequence` and
+    `#!python collections.abc.Sequence`. A class that is not in the
+    MRO at all, such as a `#!python Protocol` or an ABC satisfied
+    structurally or by registration rather than by inheritance, gives
+    no refinement and returns `#!python None`, as does a
+    `#!python Union`, a `#!python Literal`, a `#!python type[...]`, or
+    any other parametrised generic.
 
     !!! example
         ```pycon
@@ -1198,6 +1199,13 @@ def mro_index(hint: tx.Any, value_type: type) -> tx.Optional[int]:
         >>> mro_index(B, D) < mro_index(C, D)   # D resolves to B
         True
         ```
+
+    Returns
+    -------
+    int or None
+        The index of the hint's class in `#!python value_type.__mro__`,
+        where `0` is `value_type` itself, or `#!python None` when no
+        refinement applies.
     """
     hint = normalise_hint(hint)
     if is_exact(hint):

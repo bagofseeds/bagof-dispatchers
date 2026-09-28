@@ -5,7 +5,7 @@ import typing_extensions as tx
 
 
 class Unset:
-    """A singleton whose only value is "no value was set"."""
+    """A singleton type whose sole instance stands for "no value given"."""
 
     def __new__(cls, *args, **kwargs) -> tx.Self:
         # `cls.__dict__`, not `hasattr`: the latter finds an inherited
@@ -26,8 +26,9 @@ class Unset:
 
 UNSET = Unset()
 """
-A value that indicates that an argument was not set.
+The sentinel value that marks an argument as not having been supplied.
 
 !!! note
-    This is different from [`None`][], which may be a valid value.
+    `UNSET` is distinct from [`None`][], which can be a meaningful value
+    in its own right.
 """

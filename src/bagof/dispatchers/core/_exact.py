@@ -1,11 +1,11 @@
-"""`Exact[C]`: dispatch on a type but not its subclasses."""
+"""`Exact[C]`, a hint that matches a type but excludes its subclasses."""
 
 # dependencies
 import typing_extensions as tx
 
 
 class _ExactMarker:
-    """The metadata object that marks an [`Exact`][] hint."""
+    """The metadata value that marks an [`Exact`][] hint."""
 
     def __new__(cls) -> "_ExactMarker":
         if "_INSTANCE" not in cls.__dict__:
@@ -17,7 +17,7 @@ class _ExactMarker:
 
 
 EXACT = _ExactMarker()
-"""The sentinel that marks an [`Exact`][] hint's metadata."""
+"""The metadata value carried by an [`Exact`][] hint."""
 
 
 if tx.TYPE_CHECKING:
@@ -31,16 +31,19 @@ if tx.TYPE_CHECKING:
 else:
 
     class Exact:
-        """Match a type exactly, not its subclasses.
+        """A hint that matches a type but not its subclasses.
 
-        `Exact[C]` describes a value whose type is exactly `C` -- `True` is
-        not an `#!python Exact[int]`, even though it is an `#!python int`.
-        It is the reverse of the usual need: a base class whose subclasses
-        each want their own method, or an `#!python int` handler that must
-        not fire for `#!python bool`.
+        `Exact[C]` describes a value whose type is precisely `C`, so an
+        overload registered for `#!python Exact[int]` does not fire for a
+        `#!python bool`, even though `bool` is a subclass of `int` and an
+        ordinary `#!python int` parameter would accept it. This is the
+        reverse of the usual multiple-dispatch situation, where a base
+        class is registered once and its subclasses share the overload:
+        `Exact` is for the times a handler for a base type must not run
+        on a more specific one.
 
-        `Exact[C]` is spelled `#!python Annotated[C, EXACT]`, so a type
-        checker still sees plain `C`.
+        A type checker sees straight through `Exact[C]` to `C`, because
+        `Exact[C]` is defined as `#!python Annotated[C, EXACT]`.
 
         !!! example
             ```pycon
@@ -55,14 +58,15 @@ else:
 
 
 def is_exact(hint: tx.Any) -> bool:
-    """Whether `hint` is an [`Exact`][]`[C]`."""
+    """Report whether `hint` is an [`Exact`][]`[C]`."""
     return any(meta is EXACT for meta in getattr(hint, "__metadata__", ()))
 
 
 def exact_target(hint: tx.Any) -> tx.Any:
-    """The `C` inside an [`Exact`][]`[C]`.
+    """Return the type `C` that an [`Exact`][]`[C]` hint wraps.
 
-    Assumes [`is_exact`][]`(hint)` -- returns the type the exactness
-    applies to, with the `EXACT` marker and any other metadata dropped.
+    The caller must already know that [`is_exact`][]`(hint)` holds. The
+    `EXACT` marker and any other metadata attached to the hint are
+    dropped, leaving the plain type.
     """
     return tx.get_args(hint)[0]
