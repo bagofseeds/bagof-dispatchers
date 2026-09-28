@@ -4,14 +4,15 @@ icon: fontawesome/solid/file-lines
 
 # RFC 0001: Hint-informed multiple dispatch for `bagof.dispatchers`
 
-Status: Implemented. Tracking issue: bagofseeds/bagof-dispatchers#1.
+* **Status:** Implemented.
+* **Tracking issue:** bagofseeds/bagof-dispatchers#1.
 
 This document is the design record for the dispatch engine: the subtype
 relation between type hints, the rule that decides which registered method a
 call selects, and the corner cases the hint vocabulary forces a position on.
-Citations name a source without quoting it verbatim: [PEP 483] and
-[PEP 484] for the typing specification, [Julia] for Julia's own
-multiple-dispatch semantics, and [Wiki] for background terminology.
+Citations name a source without quoting it verbatim: [[PEP 483]] and
+[[PEP 484]] for the typing specification, [[Julia]] for Julia's own
+multiple-dispatch semantics, and [[Wiki]] for background terminology.
 
 ---
 
@@ -28,15 +29,15 @@ top-level `bagof.dispatchers` namespace exposes only the dispatch machinery:
 live under `bagof.dispatchers.core`, the namespace the rest of the family
 builds on. The package's only dependency is `typing_extensions`.
 
-Dispatch follows Julia's symmetric model rather than Python's or CLOS's
+Dispatch follows [Julia]'s symmetric model rather than Python's or [CLOS]'s
 asymmetric one. Among the methods applicable to a call, the winner is the
 one whose argument types are a subtype of every other applicable method's,
 under a partial order, never a summed distance and never a left-to-right
 precedence. When two applicable methods are incomparable under that order,
 an explicit `priority=` breaks the tie. Failing that, the arguments' own C3
-MRO does, the way `functools.singledispatch` resolves a diamond. If the tie
+MRO does, the way [`functools.singledispatch`] resolves a diamond. If the tie
 still stands, the call raises `AmbiguousMethodError`, naming the candidates
-in Julia's own format.
+in [Julia]'s own format.
 
 Plain type hints cannot express "this exact class and no subclass," so the
 package adds one annotation for it: `Exact[C]`, spelled
@@ -61,7 +62,7 @@ rather than comparing parameter names or positions directly. For a call with no 
 methods with differently named or differently ordered parameters both be
 considered for one call. This is the model `bagof.magic._polymorph` already
 uses for dispatching on field names, generalised (§8.2). It departs from
-Julia and `plum`, both of which dispatch on positional arguments only.
+[Julia] and [`plum`], both of which dispatch on positional arguments only.
 
 The package supports Python 3.8 through the newest and future versions.
 Every typing construct is reached through `import typing_extensions as tx`;
@@ -75,7 +76,7 @@ single, consistent solution for `T`. They are also supported for a narrow
 specificity tie-break, where two otherwise equally specific methods that
 differ only in how their repeated TypeVars group the arguments are settled
 in favour of the one that ties more arguments to one consistent type (§3).
-Julia's full diagonal dispatch, where a repeated TypeVar can additionally
+[Julia]'s full diagonal dispatch, where a repeated TypeVar can additionally
 discriminate on *which* type filled it, is out of scope.
 
 ---
@@ -83,9 +84,9 @@ discriminate on *which* type filled it, is out of scope.
 ## 1. Multiple-dispatch theory
 
 *Single dispatch* is the model behind Python's ordinary methods and
-`functools.singledispatch`: it chooses an implementation from the dynamic
+[`functools.singledispatch`]: it chooses an implementation from the dynamic
 type of one argument. *Multiple dispatch* chooses from the dynamic types of
-several arguments at once [Wiki]. The dispatched name is a *generic
+several arguments at once [[Wiki]]. The dispatched name is a *generic
 function*; each registered implementation is a *method*; the methods
 *applicable* to a call are those whose parameter types accept the call's
 argument types; and the method actually chosen is the *most specific*
@@ -93,7 +94,7 @@ applicable one. Castagna, Ghelli and Longo formalised this in 1995 as
 overloaded functions with late binding, governed by a partial order over
 signatures.
 
-A type can be understood as the set of values it describes [PEP 483]: `t1` is
+A type can be understood as the set of values it describes [[PEP 483]]: `t1` is
 a subtype of `t2` when every value of `t1` is a value of `t2`, equivalently
 when every function accepting a `t2` also accepts a `t1`. For instance,
 `bool` is a subtype of `int`, which is a subtype of `object`. Hints other
@@ -102,35 +103,35 @@ below `Optional[int]`, and `Union[int, str]` is below `object`. The order is
 only partial: `int` and `str`, for instance, are incomparable.
 
 A method's parameter list is compared against a call's argument types as a
-tuple, position by position, and `Tuple` types are covariant [PEP 483]:
+tuple, position by position, and `Tuple` types are covariant [[PEP 483]]:
 `(bool, str)` is a subtype of `(int, str)`. This is why dispatch on
 arguments is covariant: a method's signature is a tuple type, and the
 method that wins is the one whose argument-tuple type is the smallest
-supertype of the call's own [Julia].
+supertype of the call's own [[Julia]].
 
 For a call `f(1, "a")`, whose argument types form the tuple `(int, str)`,
 every method whose parameter types accept that tuple is applicable.
 `(int, str)`, `(int, Any)`, `(Any, Any)`, and `(numbers.Real, str)` all
 qualify, and `(int, str)` is chosen because it is a subtype of every other
-applicable signature [Julia]. Definition order plays no part in the choice.
+applicable signature [[Julia]]. Definition order plays no part in the choice.
 
 The order need not have a unique smallest applicable element, and when it
 does not, the call is *ambiguous*. Given `g(x: float, y)` and
 `g(x, y: float)`, a call `g(2.0, 3.0)` finds both applicable, and neither is
 a subtype of the other, so the applicable set has two maximal elements and
 no minimum. This is a property of the two registrations, not of the call,
-and Julia raises `MethodError` rather than choosing between them, suggesting
+and [Julia] raises `MethodError` rather than choosing between them, suggesting
 that the caller define the method that would resolve the intersection
-[Julia].
+[[Julia]].
 
-Dispatchers differ in how they handle this situation [Wiki]. CLOS resolves it
+Dispatchers differ in how they handle this situation [[Wiki]]. [CLOS] resolves it
 by argument precedence, comparing arguments left to right, and never reports
-an ambiguity. Julia, Dylan, and Cecil instead treat every argument
+an ambiguity. [Julia], [Dylan], and [Cecil] instead treat every argument
 symmetrically and raise. Among Python's own dispatch libraries,
-`multipledispatch` warns and then picks a winner by topological order,
-`plum` raises `AmbiguousLookupError`, and `singledispatch` raises a plain
+[`multipledispatch`] warns and then picks a winner by topological order,
+[`plum`] raises `AmbiguousLookupError`, and [`functools.singledispatch`] raises a plain
 `RuntimeError`, but only between two of an argument's virtual base classes.
-`bagof.dispatchers` is symmetric, in Julia's sense, with one addition: a
+`bagof.dispatchers` is symmetric, in [Julia]'s sense, with one addition: a
 genuine tie is first offered to the arguments' own MRO before it is reported
 as ambiguous (§2.2).
 
@@ -141,7 +142,7 @@ the choices described later in this document:
 
 - it invents a winner where the partial order has none, favouring whichever
   candidate happens to sit shallower in `__mro__`, an arbitrary tie-break
-  with none of CLOS's predictability;
+  with none of [CLOS]'s predictability;
 - it is not monotone: `numbers.Integral` does not appear in `int.__mro__`,
   since `int` reaches it through ABC registration rather than inheritance,
   so the naive distance falls back to a large sentinel value for that pair.
@@ -150,9 +151,9 @@ the choices described later in this document:
   hierarchy;
 - it has no answer for hints that are not classes at all, such as `Union`,
   `Literal`, `List[int]`, or a `TypeVar`;
-- every dispatcher actually in use, including Julia's `morespecific`,
-  `plum`'s `Signature.__le__`, `multipledispatch`'s `supercedes`/`ambiguous`,
-  and `singledispatch`'s `_find_impl`, compares signatures with an order,
+- every dispatcher actually in use, including [Julia]'s `morespecific`,
+  [`plum`]'s `Signature.__le__`, [`multipledispatch`]'s `supercedes`/`ambiguous`,
+  and [`functools.singledispatch`]'s `_find_impl`, compares signatures with an order,
   never a metric.
 
 ---
@@ -211,7 +212,7 @@ List[float]`. `Box()`, a base class with a free `T`
 (`class C(List[T])`), and a value that only declares `Any`, all stay
 shallow. `print in Callable[[int],str]` is True: a callable's own signature
 is never inspected, and a `ParamSpec` is never solved from a value.
-`True in Literal[1]` is False ([PEP 586]); `1 in T` is True; `'x' in TB` is
+`True in Literal[1]` is False ([[PEP 586]]); `1 in T` is True; `'x' in TB` is
 False (for `TB` bound by `int`). `v in HasName` is True exactly when `v` has
 a `name`, set on the instance or declared by its class, and False
 otherwise, so two instances of the same class can genuinely differ.
@@ -307,7 +308,7 @@ steps:
    for this comparison, and `Exact[C]` reads as `C`, so an `Exact[C]`
    refines only at the argument where it agrees with `C`. This resolves a
    diamond `class D(B, C)` to `B`,
-   the same way `functools.singledispatch` resolves it. Protocols and ABCs
+   the same way [`functools.singledispatch`] resolves it. Protocols and ABCs
    that do not appear in the MRO, unions, literals, and parametrised
    generics give no refinement at all. As a result, a diamond over two
    parametrisations of one generic (`class Both(Ints, Strs)`, where `Ints`
@@ -525,7 +526,7 @@ Argument positions in a call are themselves covariant, independently of the
 variance inside any one hint: a parameter *consumes* the value passed to it,
 so a call is applicable when `type(v) ⊑ P`, and a smaller `P` is more
 specific. This is exactly `Tuple`'s covariance applied to the whole argument
-tuple, since Julia's method signatures are themselves tuple types, and it is
+tuple, since `Julia`'s method signatures are themselves tuple types, and it is
 a separate axis from the variance of a position *inside* one hint, discussed
 above.
 
@@ -612,7 +613,7 @@ everything, but is neither a subtype nor a supertype of anything else, while
 still has to order `(object,)` against `(Any,)` for two overloads to make
 sense, and the relation answers that `object` is strictly below `Any`. So `Any`,
 and an unannotated parameter, form the widest possible catch-all, and an
-`object`-typed method beats it, matching Julia's own reading. Inside an
+`object`-typed method beats it, matching `Julia`'s own reading. Inside an
 invariant slot, the same consistency reading keeps a free TypeVar or `Any`
 above every parametrisation `G[X]`, so a generic fallback overload stays
 comparable to more specific ones rather than becoming incomparable with all
@@ -890,7 +891,7 @@ at both levels, so an overload registered on it can never match a call.
 | unbound `T` | any value (`T` behaves as `Any`) | `Any` |
 | bound by `B` | an instance of `B` | `B` |
 | constrained to `(C1, C2)` | an instance of one `Ci` (`bool` solves as `int`) | `Union[C1, C2]` |
-| carrying a `default=` ([PEP 696]) | as above — the default is a static-checker fallback and plays no role at runtime | as above |
+| carrying a `default=` ([[PEP 696]]) | as above — the default is a static-checker fallback and plays no role at runtime | as above |
 
 The origin of a TypeVar does not matter to dispatch: a legacy
 `tx.TypeVar(...)`, a variance-flagged `bagof.hints.typevars.*` variable, and
@@ -934,7 +935,7 @@ keywords it captures together with every other slot carrying `T`. This is
 the same greatest-element solve that `*args: T` performs over its
 positionals, and those same keywords also form one group for the
 specificity tie-break described below. This sits deliberately between two
-other models. Julia's strict diagonal dispatch lets a repeated TypeVar
+other models. `Julia`'s strict diagonal dispatch lets a repeated TypeVar
 additionally discriminate on which concrete type filled it. Mypy's static
 join, on the other hand, would collapse `(T, T)` to the join of the two
 argument types rather than requiring them to already share one.
@@ -960,7 +961,7 @@ by the hint from the table above, so `(int, int)` is strictly below
 inside that equivalence. When two methods are equivalent position by
 position, the one whose repeated TypeVars group *strictly more* arguments
 into one consistent type is the more specific of the two. This recovers the
-outcome Julia's own diagonal dispatch would give for the "same type" case.
+outcome `Julia`'s own diagonal dispatch would give for the "same type" case.
 This tie-break is the very last selection step, reached only when two
 methods are already equally specific after priority, MRO refinement, and
 tightness (§2.2) have all failed to separate them. It compares the two
@@ -1059,7 +1060,7 @@ TypeVar is equivalent to its bound, not restricted to it. A TypeVar with a
 single constraint is not legal, and one with two or more constraints still
 accepts subclasses of each. Variance flags are rejected on a TypeVar used as
 a function parameter. And `type[C]` constrains an argument that is itself a
-class object, not the exactness of an ordinary instance. (Julia gets
+class object, not the exactness of an ordinary instance. (`Julia` gets
 exactness without any of this machinery, because its concrete types are
 final by construction; Python's classes are open, so dispatch needs an
 explicit marker.)
@@ -1127,7 +1128,7 @@ with types nothing supports is, after all, a type error, and existing
 `resolve`), and `.candidates`. Problems detected at registration time,
 rather than at a call, raise a plain `TypeError` or `ValueError` instead.
 
-An ambiguity is reported in Julia's own format, printing classes rather than
+An ambiguity is reported in `Julia`'s own format, printing classes rather than
 values, so the message never has to render an arbitrary `repr`:
 
 ```
@@ -1143,7 +1144,7 @@ The suggested fix is the signature built from the call's own classes
 (substituting `Exact[...]` wherever a candidate already used it), always
 applicable to the call that triggered the error, and always strictly more
 specific than every one of the listed candidates. This is a simpler,
-always-correct stand-in for Julia's own type-intersection suggestion, which
+always-correct stand-in for `Julia`'s own type-intersection suggestion, which
 can itself be more specific than necessary.
 
 A failed match is reported the same way, marking the offending arguments
@@ -1164,7 +1165,7 @@ methods yet: the module that defines them has not been imported." Both
 errors are
 raised from `Function.dispatch` or `Function.resolve`, never from inside the
 `__call__` frame itself, so a traceback does not point into the dispatch
-machinery. `Function.ambiguities()`, the analogue of Julia's
+machinery. `Function.ambiguities()`, the analogue of `Julia`'s
 `detect_ambiguities`, returns every pair of registered, incomparable
 methods that could both apply to some call, so a test suite can assert that
 a registry has none.
@@ -1334,7 +1335,7 @@ Forward references are handled the way `bagof.magic._resolve._Deferred`
 already does: a raw annotation that raises `NameError` or `TypeError` when
 first read is kept as-is and retried on the function's first dispatch; if
 it is still unresolvable then, the error names the function and the
-parameter. On Python 3.14 and its lazy annotations ([PEP 649]/[PEP 749]), the
+parameter. On Python 3.14 and its lazy annotations ([[PEP 649]]/[[PEP 749]]), the
 resolution order is `tx.get_type_hints(include_extras=True)` first, then
 `annotationlib.get_annotations(fn, format=Format.FORWARDREF)`, and finally
 the raw `__annotations__` with deferral.
@@ -1431,7 +1432,7 @@ cost, but a direct consequence of binding being name-aware.
 The cache is invalidated on every `register` call, when the methods tuple
 is rebuilt and published in a single assignment following the same pattern
 `bagof.magic._polymorph._Registry` uses, and whenever
-`abc.get_cache_token()` changes, the same signal `functools.singledispatch`
+`abc.get_cache_token()` changes, the same signal [`functools.singledispatch`]
 watches. Registration takes a `threading.Lock`; reads are lock-free, which
 matters on the free-threaded Python 3.13 build.
 
@@ -1918,7 +1919,7 @@ on any currently supported Python, can raise its way out of the relation.
 - On Python 3.13, [PEP 696] defaults, `TypeIs`, and `ReadOnly` all become
   native; `Annotated` is no longer a class; the free-threaded build exists,
   which is why registration takes an explicit lock.
-- From Python 3.14 onward, lazy annotations ([PEP 649]/[PEP 749]) are read through
+- From Python 3.14 onward, lazy annotations ([[PEP 649]]/[[PEP 749]]) are read through
   `annotationlib` with `Format.FORWARDREF`; `Union` becomes a class, with
   `types.UnionType is typing.Union`. Anything newer than this is covered by
   the opaque rule, the structural special-form fallback, and `spellings()`,
@@ -1939,3 +1940,9 @@ on any currently supported Python, can raise its way out of the relation.
 [PEP 749]: https://peps.python.org/pep-0749/
 [Julia]: https://docs.julialang.org/en/v1/manual/methods/
 [Wiki]: https://en.wikipedia.org/wiki/Multiple_dispatch
+[CLOS]: https://lispcookbook.github.io/cl-cookbook/clos.html
+[Dylan]: https://opendylan.org/
+[Cecil]: https://projectsweb.cs.washington.edu/research/projects/cecil/www/cecil.html
+[`plum`]: https://beartype.github.io/plum/intro.html
+[`multipledispatch`]: https://multiple-dispatch.readthedocs.io/en/latest/
+[`functools.singledispatch`]: https://docs.python.org/3/library/functools.html#functools.singledispatch
