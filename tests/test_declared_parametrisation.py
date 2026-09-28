@@ -16,16 +16,21 @@ Three layers, each with its own section:
 Every class is built twice, once from `typing` and once from
 `typing_extensions`, since the two `TypeVar`s differ on some versions. No
 `X | Y` or `list[int]` outside a version guard: this runs on 3.8.
+
+A last section covers classes written against a PEP 585 alias (`class
+GL(list[T])`, #60) through all three layers, built only on 3.9+.
 """
 
 # stdlib
 import collections
 import collections.abc
 import dataclasses
+import gc
 import sys
 import types
 import typing
 import warnings
+import weakref
 
 # dependencies
 import pytest
@@ -38,6 +43,7 @@ from bagof.dispatchers._function import (
     Function,
     _call_key,
     _Plan,
+    _record_key,
     _SameObject,
 )
 from bagof.dispatchers._lattice import (
@@ -45,9 +51,18 @@ from bagof.dispatchers._lattice import (
     is_value_dependent,
 )
 from bagof.dispatchers.core import ishintstance, issubhint
+from bagof.dispatchers.core._introspect import (
+    _PEP585_ALIAS,
+    _class_parameters,
+    _generic_variances,
+    _is_pep585_alias,
+)
 from bagof.dispatchers.core._relation import (
+    _RECORDER_REFS,
+    _RECORDERS,
     _as_base_args,
     _is_fully_declared,
+    _may_record_parametrisation,
 )
 
 # --- the families, in both spellings -----------------------------------
@@ -841,3 +856,394 @@ def test_a_row_dispatches_on_its_recorded_argument() -> None:
         assert h(Row[int]()) == "ints"
     with pytest.raises(AmbiguousMethodError):
         h([1])
+
+
+# --- PEP 585 generic subclasses (#60) ----------------------------------
+
+# `class GL(list[T])` has no `Generic` in its MRO and lists no
+# `__parameters__`, yet `GL[int]()` records `GL[int]`. Every class below is
+# built inside `_pep585_family`, which only a 3.9+ test calls, so this module
+# still imports on 3.8.
+_PEP585 = pytest.mark.skipif(
+    sys.version_info < (3, 9), reason="PEP 585 is 3.9+"
+)
+
+
+def _pep585_family() -> types.SimpleNamespace:
+    """Classes written against PEP 585 aliases, and their neighbours."""
+    T = tx.TypeVar("T")
+    U = tx.TypeVar("U")
+    K = tx.TypeVar("K")
+    T_co = tx.TypeVar("T_co", covariant=True)
+
+    class GL(list[T]):  # type: ignore[misc]
+        """`T` fills `list`'s invariant slot."""
+
+    class GD(dict[str, T]):  # type: ignore[misc]
+        """Fills one of `dict`'s two parameters."""
+
+    class GM(collections.abc.Mapping[K, T]):  # type: ignore[misc]
+        """A key-invariant, value-covariant ABC, both slots open."""
+
+        def __getitem__(self, key: tx.Any) -> tx.Any:
+            raise KeyError(key)
+
+        def __iter__(self) -> tx.Iterator[tx.Any]:
+            return iter(())
+
+        def __len__(self) -> int:
+            return 0
+
+    class Mixed(list[T], tx.Generic[T]):  # type: ignore[misc]
+        """A `Generic` beside the PEP 585 base: worked before #60."""
+
+    class Sub(GL[int]):  # type: ignore[misc]
+        """Not generic: declares `GL[int]`, hence `list[int]`, by its base."""
+
+    class Sub2(GL[T]):  # type: ignore[misc]
+        """Passes its argument on to `GL`."""
+
+    class Leaf(GL):  # type: ignore[misc]
+        """Written bare: takes no parameters, declares nothing."""
+
+    class Two(list[T], collections.abc.Container[U]):  # type: ignore[misc]
+        """Parameters in order of first appearance across the bases."""
+
+    class Twice(list[T], collections.abc.Container[T]):  # type: ignore[misc]
+        """One parameter, mentioned by two bases."""
+
+    class Cov(list[T_co]):  # type: ignore[misc]
+        """A covariant `TypeVar` in an invariant slot: a checker flags it."""
+
+    class Slotted(list[T]):  # type: ignore[misc]
+        """No `__dict__`: nowhere to record `__orig_class__`."""
+
+        __slots__ = ()
+
+    @dataclasses.dataclass(frozen=True)
+    class Frozen(GL[T]):  # type: ignore[misc]
+        """A frozen subclass: refuses `__orig_class__`."""
+
+    return types.SimpleNamespace(**locals())
+
+
+@pytest.fixture
+def pep() -> types.SimpleNamespace:
+    return _pep585_family()
+
+
+def test_pep585_helpers_on_every_version() -> None:
+    """The new helpers import and answer on 3.8 too, where nothing is 585."""
+    T = tx.TypeVar("T")
+
+    class Box(tx.Generic[T]):
+        pass
+
+    assert _class_parameters(Box) == (T,)
+    assert _class_parameters(int) == ()
+    assert _is_pep585_alias(tx.List[int]) is False
+    assert _may_record_parametrisation(Box) is True
+    assert _may_record_parametrisation(list) is False
+    assert _may_record_parametrisation(int) is False
+    assert _record_key(tx.List[int]) == _SameObject(tx.List[int])
+    # Not a class: no parameters to read.
+    assert _generic_variances(tx.Union) is None
+    if sys.version_info < (3, 9):
+        assert _PEP585_ALIAS is None
+
+
+@_PEP585
+def test_pep585_parameters_and_variances(pep: types.SimpleNamespace) -> None:
+    assert _class_parameters(pep.GL) == (pep.T,)
+    assert _class_parameters(pep.GD) == (pep.T,)
+    assert _class_parameters(pep.GM) == (pep.K, pep.T)
+    assert _class_parameters(pep.Sub2) == (pep.T,)
+    assert _class_parameters(pep.Two) == (pep.T, pep.U)
+    assert _class_parameters(pep.Twice) == (pep.T,)
+    assert _class_parameters(pep.Sub) == ()
+    assert _class_parameters(pep.Leaf) == ()
+    assert _generic_variances(pep.GL) == ("invariant",)
+    assert _generic_variances(pep.GD) == ("invariant",)
+    assert _generic_variances(pep.GM) == ("invariant", "invariant")
+    # The declared variance, not the slot's (see `_generic_variances`).
+    assert _generic_variances(pep.Cov) == ("covariant",)
+    assert _generic_variances(pep.Sub) is None
+    assert _generic_variances(pep.Leaf) is None
+    # What `Generic` computes, where it is there to ask.
+    assert pep.Mixed.__parameters__ == (pep.T,)
+
+
+def _pep585_hint_rows(
+    pep: types.SimpleNamespace,
+) -> tx.List[tx.Tuple[tx.Any, tx.Any, bool]]:
+    return [
+        # `list` is invariant, and so is `GL`'s unflagged `T`.
+        (pep.GL[bool], pep.GL[int], False),
+        (pep.GL[int], pep.GL[int], True),
+        (pep.GL[int], list[int], True),
+        (pep.GL[int], tx.List[int], True),
+        (pep.GL[int], list[str], False),
+        (pep.GL[bool], list[int], False),
+        (pep.GL[bool], tx.Sequence[int], True),
+        (pep.GL[int], list, True),
+        (pep.GL, list[int], False),
+        (pep.GD[int], tx.Dict[str, int], True),
+        (pep.GD[int], dict[str, str], False),
+        (pep.GD[int], tx.Mapping[str, object], True),
+        (pep.GD[bool], pep.GD[int], False),
+        (pep.GM[int, bool], tx.Mapping[int, int], True),
+        (pep.GM[int, bool], tx.Mapping[bool, bool], False),
+        (pep.Sub, pep.GL[int], True),
+        (pep.Sub, list[int], True),
+        (pep.Sub, tx.List[str], False),
+        (pep.Sub2[int], pep.GL[int], True),
+        (pep.Sub2[int], list[int], True),
+        (pep.Sub2[int], list[str], False),
+        (pep.Leaf, pep.GL[int], False),
+        (pep.Two[int, str], list[int], True),
+        (pep.Two[int, str], list[str], False),
+        (pep.Mixed[bool], pep.Mixed[int], False),
+        (pep.Mixed[int], list[int], True),
+        # The reverse direction is untouched: a base is not a subclass.
+        (list[int], pep.GL[int], False),
+    ]
+
+
+@_PEP585
+def test_pep585_hint_truth_table(pep: types.SimpleNamespace) -> None:
+    for sub, sup, expected in _pep585_hint_rows(pep):
+        assert issubhint(sub, sup) is expected, (sub, sup)
+
+
+@_PEP585
+def test_a_flagged_typevar_is_taken_at_its_word(
+    pep: types.SimpleNamespace,
+) -> None:
+    """`class Cov(list[T_co])` is an error a type checker reports.
+
+    The class says `Cov` is covariant, and `Cov[bool] <= Cov[int]` follows,
+    while each still maps onto the invariant `list` it is written against.
+    """
+    assert issubhint(pep.Cov[bool], pep.Cov[int]) is True
+    assert issubhint(pep.Cov[bool], list[bool]) is True
+    assert issubhint(pep.Cov[bool], list[int]) is False
+
+
+@_PEP585
+def test_pep585_instances_read_their_record(
+    pep: types.SimpleNamespace,
+) -> None:
+    assert ishintstance(pep.GL[int](), list[int]) is True
+    assert ishintstance(pep.GL[int](), list[str]) is False
+    assert ishintstance(pep.GL[int](), tx.List[str]) is False
+    assert ishintstance(pep.GL[int](), pep.GL[str]) is False
+    assert ishintstance(pep.GL[int](), tx.Sequence[object]) is True
+    assert ishintstance(pep.GD[int](), tx.Dict[str, int]) is True
+    assert ishintstance(pep.GD[int](), tx.Dict[str, str]) is False
+    assert ishintstance(pep.GM[int, str](), tx.Mapping[int, str]) is True
+    assert ishintstance(pep.GM[int, str](), tx.Mapping[str, str]) is False
+    assert ishintstance(pep.Sub2[int](), list[str]) is False
+    # Not generic: its class declares `list[int]`.
+    assert ishintstance(pep.Sub(), list[int]) is True
+    assert ishintstance(pep.Sub(), list[str]) is False
+    assert ishintstance(pep.Mixed[int](), list[str]) is False
+
+
+@_PEP585
+def test_pep585_values_that_declare_nothing_stay_shallow(
+    pep: types.SimpleNamespace,
+) -> None:
+    # Built from the bare class, or with `T` left open.
+    assert ishintstance(pep.GL(), list[str]) is True
+    assert ishintstance(pep.GL[pep.T](), list[str]) is True
+    assert ishintstance(pep.Leaf(), list[str]) is True
+    # A plain list declares nothing, and `list[int]([1])` is one.
+    assert ishintstance([1], list[str]) is True
+    assert ishintstance(list[int]([1]), list[str]) is True
+    # Nowhere to record the parametrisation.
+    for value in (pep.Slotted[int](), pep.Frozen[int]()):
+        assert not hasattr(value, "__orig_class__")
+        assert ishintstance(value, list[str]) is True
+
+
+@_PEP585
+def test_pep585_instances_dispatch_on_their_record(
+    pep: types.SimpleNamespace,
+) -> None:
+    m = Function("m")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        m.register((list[int],))(lambda xs: "ints")
+        m.register((list[str],))(lambda xs: "strs")
+    # Ambiguous before #60: `GL[int]()` was matched as a bare list.
+    assert m(pep.GL[int]()) == "ints"
+    assert m(pep.GL[str]()) == "strs"
+    assert m(pep.Sub()) == "ints"
+    assert m(pep.Sub2[str]()) == "strs"
+    assert m(pep.Mixed[int]()) == "ints"
+    for undeclared in ([1], pep.GL(), pep.Slotted[int]()):
+        with pytest.raises(AmbiguousMethodError):
+            m(undeclared)
+    d = Function("d")
+    d.register((tx.Dict[str, int],))(lambda xs: "ints")
+    d.register((tx.Dict[str, str],))(lambda xs: "strs")
+    assert d(pep.GD[int]()) == "ints"
+    assert d(pep.GD[str]()) == "strs"
+
+
+@_PEP585
+def test_pep585_records_are_never_served_a_stale_method(
+    pep: types.SimpleNamespace,
+) -> None:
+    m = Function("m")
+    m.register((list[int],))(lambda xs: "ints")
+    m.register((list[str],))(lambda xs: "strs")
+    for _ in range(3):
+        assert m(pep.GL[int]()) == "ints"
+        assert m(pep.GL[str]()) == "strs"
+    # Keyword arguments key the same way.
+    g = Function("g")
+    g.register({"xs": tx.List[int]})(lambda *, xs: "ints")
+    g.register({"xs": tx.List[str]})(lambda *, xs: "strs")
+    for _ in range(3):
+        assert g(xs=pep.GL[int]()) == "ints"
+        assert g(xs=pep.GL[str]()) == "strs"
+
+
+@_PEP585
+def test_pep585_records_share_an_entry(pep: types.SimpleNamespace) -> None:
+    """Each `GL[int]` is a new alias object, but keys like the last one."""
+    m = Function("m")
+    m.register((list[int],))(lambda xs: "ints")
+    m.register((list[str],))(lambda xs: "strs")
+    first, second = pep.GL[int](), pep.GL[int]()
+    assert first.__orig_class__ is not second.__orig_class__
+    assert m(first) == "ints"
+    assert m(second) == "ints"
+    assert len(m._cache.call_cache) == 1
+    plan = _plan_of(m, (1, ()))
+    assert plan.declared == frozenset({0})
+
+    def key(value: tx.Any) -> tx.Any:
+        return _call_key((value,), {}, plan)
+
+    assert key(first) == key(second)
+    assert key(first) != key(pep.GL[str]())
+    assert key(pep.GL[list[int]]()) == key(pep.GL[list[int]]())
+    assert key(pep.GL[list[int]]()) != key(pep.GL[list[str]]())
+    # A plain list is not probed, and keys as its type and `None`.
+    assert key([1]) == (1, (list, None))
+
+
+@_PEP585
+def test_pep585_record_keys() -> None:
+    """Keyed by parts: equal parts share a key, and nothing else does."""
+    mapping = collections.abc.Mapping
+    same = [
+        (dict[str, list[int]], dict[str, list[int]]),  # type: ignore[misc]
+        (mapping[int, str], mapping[int, str]),  # type: ignore[index]
+        (list[tx.List[int]], list[tx.List[int]]),  # type: ignore[misc]
+    ]
+    for first, second in same:
+        assert first is not second
+        assert _record_key(first) == _record_key(second), first
+        assert hash(_record_key(first)) == hash(_record_key(second))
+    different = [
+        (dict[str, list[int]], dict[str, list[str]]),  # type: ignore[misc]
+        (dict[str, list[int]], dict[bytes, list[int]]),  # type: ignore
+        (mapping[int, str], collections.abc.Sequence[int]),  # type: ignore
+        (list[int], set[int]),  # type: ignore[misc]
+        (list[tx.Literal[1]], list[tx.Literal[True]]),  # type: ignore[misc]
+    ]
+    for first, second in different:
+        assert _record_key(first) != _record_key(second), (first, second)
+    # A plain class is its own key.
+    assert _record_key(int) is int
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="an unpacked alias is 3.11+"
+)
+def test_an_unpacked_record_keys_apart_from_a_packed_one() -> None:
+    packed = tuple[int]  # type: ignore[misc]
+    unpacked = next(iter(packed))
+    assert _record_key(unpacked) != _record_key(packed)
+    assert _record_key(tuple[int]) == _record_key(packed)  # type: ignore
+
+
+@_PEP585
+def test_pep585_plain_subclasses_are_not_probed() -> None:
+    """Only a class written against a PEP 585 alias is asked for a record."""
+    probed = []  # type: tx.List[str]
+
+    class Probe(list):  # type: ignore[type-arg]
+        def __getattr__(self, name: str) -> tx.Any:
+            probed.append(name)
+            raise AttributeError(name)
+
+    assert _may_record_parametrisation(Probe) is False
+    m = Function("m")
+    m.register((list[int],))(lambda xs: "ints")
+    m.register((object,))(lambda xs: "any")
+    assert m(Probe()) == "ints"
+    assert m(Probe()) == "ints"
+    assert "__orig_class__" not in probed
+    key = _call_key((Probe(),), {}, _plan_of(m, (1, ())))
+    assert key == (1, (Probe, None))
+
+
+@_PEP585
+def test_pep585_declaration_dependence(pep: types.SimpleNamespace) -> None:
+    for hint in (
+        pep.GL[int],
+        pep.GD[int],
+        pep.GM[int, str],
+        list[int],
+        tx.List[int],
+        tx.Optional[pep.GL[int]],
+    ):
+        assert is_declaration_dependent(hint) is True, hint
+    for hint in (pep.GL, pep.Sub, pep.Leaf[int], list):
+        assert is_declaration_dependent(hint) is False, hint
+
+
+@_PEP585
+def test_pep585_class_with_an_unhashable_metaclass() -> None:
+    """The memo keys a class by `id`, so an unhashable one is kept too."""
+    T = tx.TypeVar("T")
+
+    class Meta(type):
+        def __eq__(cls, other: tx.Any) -> bool:
+            return cls is other
+
+    class Odd(list[T], metaclass=Meta):  # type: ignore[misc]
+        pass
+
+    with pytest.raises(TypeError):
+        hash(Odd)
+    assert _may_record_parametrisation(Odd) is True
+    assert _RECORDERS[id(Odd)] is True
+    assert ishintstance(Odd[int](), list[int]) is True
+    assert ishintstance(Odd[int](), list[str]) is False
+
+
+def test_the_gate_memo_does_not_keep_a_class_alive() -> None:
+    """A class dropped at runtime leaves the memo when it is collected."""
+    T = tx.TypeVar("T")
+
+    class Box(tx.Generic[T]):
+        pass
+
+    class Plain:
+        pass
+
+    keys = [id(Box), id(Plain)]
+    assert _may_record_parametrisation(Box) is True
+    assert _may_record_parametrisation(Plain) is False
+    assert all(key in _RECORDERS for key in keys)
+    watch = weakref.ref(Box), weakref.ref(Plain)
+    del Box, Plain
+    gc.collect()
+    assert [ref() for ref in watch] == [None, None]
+    assert not any(key in _RECORDERS for key in keys)
+    assert not any(key in _RECORDER_REFS for key in keys)

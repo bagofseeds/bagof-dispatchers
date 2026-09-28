@@ -93,6 +93,17 @@ parametrised generic, both say what they hold:
 ('int', 'str')
 ```
 
+On Python 3.9 and later, a class written against a builtin generic works the
+same way, without `Generic`. Its `T` is invariant, like `list`'s:
+
+```python
+class GL(list[T]):
+    pass
+
+handle(GL[int]())     # 'ints'
+handle(GL[bool]())    # 'bools'
+```
+
 Dispatch never looks inside a container, so a value that declares nothing —
 a plain `[1, 2]`, or a `Box()` built without arguments — still matches every
 parameterisation, as the ambiguous `handle([True, False])` above shows. A
