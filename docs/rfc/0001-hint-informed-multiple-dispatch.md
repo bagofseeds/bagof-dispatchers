@@ -29,9 +29,9 @@ live under `bagof.dispatchers.core`, the namespace the rest of the family
 builds on. The package's only dependency is `typing_extensions`.
 
 Dispatch follows Julia's symmetric model rather than Python's or CLOS's
-asymmetric one: among the methods applicable to a call, the winner is the one
-whose argument types are a subtype of every other applicable method's, under
-a partial order, never a summed distance and never a left-to-right
+asymmetric one. Among the methods applicable to a call, the winner is the
+one whose argument types are a subtype of every other applicable method's,
+under a partial order, never a summed distance and never a left-to-right
 precedence. When two applicable methods are incomparable under that order,
 an explicit `priority=` breaks the tie. Failing that, the arguments' own C3
 MRO does, the way `functools.singledispatch` resolves a diamond. If the tie
@@ -142,11 +142,12 @@ the choices described later in this document:
 - it invents a winner where the partial order has none, favouring whichever
   candidate happens to sit shallower in `__mro__`, an arbitrary tie-break
   with none of CLOS's predictability;
-- it is not monotone: `numbers.Integral` does not appear in `int.__mro__`
-  (`int` reaches it through ABC registration, not inheritance), so the naive
-  distance falls back to a large sentinel value for that pair, and a
-  signature that is strictly more specific at one position can still lose to
-  one that is less specific there but shallower in the class hierarchy;
+- it is not monotone: `numbers.Integral` does not appear in `int.__mro__`,
+  since `int` reaches it through ABC registration rather than inheritance,
+  so the naive distance falls back to a large sentinel value for that pair.
+  A signature that is strictly more specific at one position can therefore
+  still lose to one that is less specific there but shallower in the class
+  hierarchy;
 - it has no answer for hints that are not classes at all, such as `Union`,
   `Literal`, `List[int]`, or a `TypeVar`;
 - every dispatcher actually in use, including Julia's `morespecific`,
@@ -173,13 +174,13 @@ entry marks a result worth double-checking against intuition.
 | `TB ≤ int` / `int ≤ TB` (`TB` bound by `int`) | True / True | a bound TypeVar is equivalent to its bound; it cannot express "exactly this bound" |
 | `int ≤ TC`, `TC ≤ int`, `TC ≤ Union[int,str]`, `Union[int,str] ≤ TC` (`TC` constrained to `(int, str)`) | True / False / True / True | a constrained TypeVar is equivalent to the union of its constraints |
 | `list ≤ List`, `List ≤ list`, `List[int] ≤ list`, `list ≤ List[int]` | True / True / True / False | `list` and `List` are one equivalence class in what is otherwise a preorder; `List[int]` sits strictly below `list ≡ List`, since a bare `list` promises nothing about its contents |
-| `List[bool] ≤ List[int]`, `Dict[str,int] ≤ Dict[str,object]` | **False** | `list` and `dict` are invariant in their type arguments (PEP 484): one argument being a subtype of the other does not make one parametrisation a sub-hint of the other (§2.3) |
+| `List[bool] ≤ List[int]`, `Dict[str,int] ≤ Dict[str,object]` | **False** | `list` and `dict` are invariant in their type arguments ([PEP 484]): one argument being a subtype of the other does not make one parametrisation a sub-hint of the other (§2.3) |
 | `Sequence[bool] ≤ Sequence[int]`, `Mapping[str,bool] ≤ Mapping[str,int]` | True | `Sequence` is covariant; `Mapping` is invariant in its key and covariant in its value (§2.3) |
 | `Snk[int] ≤ Snk[bool]` (`Snk`'s TypeVar declared `contravariant=True`); `Box[bool] ≤ Box[int]` (`Box`'s TypeVar carries no variance flag) | True / **False** | a user generic reads its own declared TypeVar: `contravariant` reverses the order, and no flag means invariant (§2.3) |
 | `IntBox ≤ Box[int]`, `Sub[bool] ≤ Box[bool]`, `Flip[int,str] ≤ Pair[str,int]`, `IntBox ≤ Box[str]` (`class IntBox(Box[int])`; `class Sub(Box[T])`; `class Flip(Pair[B, A], Generic[A, B])`) | **True** / True / True / False | a sub-hint whose origin differs from the super-hint's is re-expressed through the bases its class was written with, then compared slot by slot (§2.3) |
 | `Box[bool] ≤ Box[TB]`, `Box[TB] ≤ Box[int]`, `Box[int] ≤ Box[TC]`, `Snk[bool] ≤ Snk[TB]` (`TB` bound by `int`; `TC` constrained to `(int, str)`) | **True** / **False** / True / False | a TypeVar filling an invariant slot is solved against its bound or constraints on the super side, but stands for its whole family on the sub side, so nothing concrete sits below it; a contravariant slot keeps the plain bound reading (§2.3) |
 | `Child ≤ List[int]`, `Child ≤ List[float]`, `Child ≤ List[object]`, `Child ≤ Sequence[object]` (`class Child(List[int])`) | **True** / False / False / True | `Child` is `List[int]` by nominal inheritance; invariance governs comparing that with another `list` parametrisation, while covariance still lets it widen through `Sequence` (§2.3) |
-| `GL[bool] ≤ GL[int]`, `GL[int] ≤ List[int]`, `GL[int] ≤ list[str]`, `Sub ≤ list[int]` (`class GL(list[T])`, `class Sub(GL[int])`, Python 3.9+, with no `Generic` in `GL`'s MRO) | **False** / **True** / False / **True** | `GL`'s parameters are the TypeVars its PEP 585 bases mention, read at their declared variance, and compared through those bases like any other generic (§2.3) |
+| `GL[bool] ≤ GL[int]`, `GL[int] ≤ List[int]`, `GL[int] ≤ list[str]`, `Sub ≤ list[int]` (`class GL(list[T])`, `class Sub(GL[int])`, Python 3.9+, with no `Generic` in `GL`'s MRO) | **False** / **True** / False / **True** | `GL`'s parameters are the TypeVars its [PEP 585] bases mention, read at their declared variance, and compared through those bases like any other generic (§2.3) |
 | `Tuple[int] < Tuple[int, ...] < tuple`, `Tuple[int,...] ≤ Tuple[Any,...]` | True (a chain) | `Tuple` is covariant |
 | `Tuple[int,str] ≤ Tuple[int,*Ts]`, `Tuple[int] ≤ Tuple[int,*Ts]`, `Tuple[int,*Ts] ≤ Tuple[*Ts]`, `Tuple[int,*Ts,str] ≤ Tuple[int,*Ts]` | True | `*Ts` is an open run of zero or more `Any`: a fixed prefix captures whatever it leaves over, and a longer fixed prefix or suffix is stricter (§3) |
 | `Tuple[int,*Ts]` vs `Tuple[*Ts,int]`; `Tuple[int,*Ts]` vs `Tuple[int,...]` | incomparable | a prefix run and a suffix run, or a `*Ts` run and a `...` run, order neither way |
@@ -198,18 +199,19 @@ entry marks a result worth double-checking against intuition.
 | `int ≤ Union` (bare) | False | a bare `Union`, `Literal`, or `Type`, with no arguments, means only "is one of these" in the abstract, and never actually applies to a value |
 
 The value-level check, `ishintstance`, never inspects a container's actual
-contents: `{'a': 1} in TD` is False, since a plain `dict` is not a
+contents. `{'a': 1} in TD` is False, since a plain `dict` is not a
 `TypedDict`, while `[1] in List[str]` is True, since items are never
-inspected and a plain list declares no type argument at all. When a value's
-own class *does* declare a parametrisation, that declaration is read and
-used (§2.3): `Box[int]()` records `Box[int]` and is not `in Box[str]`;
-`GL[int]()`, for `class GL(list[T])`, records `GL[int]` and is not
-`in list[str]`; and an instance of `class Child(List[int])` is not
-`in List[float]`. `Box()`, a base class with a free `T`
+inspected and a plain list declares no type argument at all.
+
+When a value's own class *does* declare a parametrisation, that declaration
+is read and used (§2.3). `Box[int]()` records `Box[int]` and is not `in
+Box[str]`. `GL[int]()`, for `class GL(list[T])`, records `GL[int]` and is
+not `in list[str]`, and an instance of `class Child(List[int])` is not `in
+List[float]`. `Box()`, a base class with a free `T`
 (`class C(List[T])`), and a value that only declares `Any`, all stay
 shallow. `print in Callable[[int],str]` is True: a callable's own signature
 is never inspected, and a `ParamSpec` is never solved from a value.
-`True in Literal[1]` is False (PEP 586); `1 in T` is True; `'x' in TB` is
+`True in Literal[1]` is False ([PEP 586]); `1 in T` is True; `'x' in TB` is
 False (for `TB` bound by `int`). `v in HasName` is True exactly when `v` has
 a `name`, set on the instance or declared by its class, and False
 otherwise, so two instances of the same class can genuinely differ.
@@ -239,24 +241,25 @@ names)`, and its **arguments** `Args(C)` are the positions `0..n-1` together
 with the keyword names `k_j`.
 
 **Binding**, `bind(S, C)`, restates `inspect.Signature.bind`, precomputed
-once per method for speed: positional values fill the positional slots in
-order, with any surplus going to `*args` or failing if there is none; each
-keyword fills the same-named keyword-able parameter if it is not already
-filled, otherwise `**kwargs`, otherwise the call fails to bind; a required
-parameter left unfilled fails the bind; a parameter left unfilled but
-carrying a default is **default-filled**. When binding succeeds, `hint_S(a)`
-denotes the hint of the slot argument `a` landed in; it is `Any` for an
-argument absorbed by an unannotated catch-all.
+once per method for speed. Positional values fill the positional slots in
+order, with any surplus going to `*args` or, if there is none, failing the
+bind. Each keyword fills the same-named keyword-able parameter if it is not
+already filled, otherwise `**kwargs`, otherwise the call fails to bind. A
+required parameter left unfilled fails the bind as well, while a parameter
+left unfilled but carrying a default is **default-filled**. When binding
+succeeds, `hint_S(a)` denotes the hint of the slot argument `a` landed in; it
+is `Any` for an argument absorbed by an unannotated catch-all.
 
 A method is **applicable to a call's values** when `bind(S, C)` succeeds and,
-for every argument `a` in `Args(C)`, `ishintstance(value_a, hint_S(a))` holds
-(an extra positional is checked against `h_*`, an extra keyword against
-`h_**`), together with the TypeVar consistency rule of §3 over the bound
-arguments. Default-filled parameters are not arguments: their hints are
-neither checked nor compared for specificity (`Function(dispatch_defaults=
-True)` is the documented exception, §6). A method is **applicable to a
-call's hints**, for the `resolve(*hints, **named_hints)` query mode, by the
-same rule with `issub(q_a, hint_S(a))` in place of the value check.
+for every argument `a` in `Args(C)`, `ishintstance(value_a, hint_S(a))`
+holds. An extra positional is checked against `h_*`, and an extra keyword
+against `h_**`; every bound argument must also satisfy the TypeVar
+consistency rule of §3. Default-filled parameters are not arguments, so
+their hints are neither checked nor compared for specificity
+(`Function(dispatch_defaults=True)` is the documented exception, §6). A
+method is **applicable to a call's hints**, for the `resolve(*hints,
+**named_hints)` query mode, by the same rule with `issub(q_a, hint_S(a))` in
+place of the value check.
 
 Specificity is defined per call, not once at registration: for two methods
 applicable to the same call `C`, `A ⊑_C B` when, for every argument `a` in
@@ -277,15 +280,16 @@ asserts that the two agree over generated positional calls.
 A keyword that names no declared parameter binds to `**kwargs`, or makes the
 method inapplicable if there is none. When `**kwargs` is annotated, such a
 keyword is checked against its hint and enters specificity through
-`hint_S(a)`; unannotated, it is checked against `Any`. Every keyword a call
-spills into one `**kwargs: T` is grouped into a single block for the §3
-grouping tie-break, so a method with `**kwargs: T` is more specific than one
-with an untyped `**kwargs`; applicability solves `T` jointly over that whole
-group, together with every other slot the same `T` reaches, exactly as
-`*args: T` does over the positionals it absorbs. So `f(a=1, b=True)` matches
-with `T = int`, while `f(a=1, b="x")` has no consistent solution and does
-not match. `Unpack[TD]` written on `**kwargs` is treated as unannotated
-(§11).
+`hint_S(a)`; unannotated, it is checked against `Any`.
+
+Every keyword a call spills into one `**kwargs: T` is grouped into a single
+block for the §3 grouping tie-break, so a method with `**kwargs: T` is more
+specific than one with an untyped `**kwargs`. Applicability solves `T`
+jointly over that whole group, together with every other slot the same `T`
+reaches, exactly as `*args: T` does over the positionals it absorbs. So
+`f(a=1, b=True)` matches with `T = int`, while `f(a=1, b="x")` has no
+consistent solution and does not match. `Unpack[TD]` written on `**kwargs`
+is treated as unannotated (§11).
 
 Selecting one method among those applicable to a call `C` proceeds in four
 steps:
@@ -295,13 +299,14 @@ steps:
    remains, it is chosen.
 2. Among the methods in `Max`, keep only those with the highest explicit
    `priority` (default `0`).
-3. Among those, apply **MRO refinement**, argument by argument: method `A`
+3. Among those, apply **MRO refinement**, argument by argument. Method `A`
    dominates method `B` when, for every argument `a`, either
-   `hint_A(a) ≡ hint_B(a)`, or both hints (unwrapped, and with `Exact[C]`
-   read as `C`, so an `Exact[C]` refines only at the argument where it
-   agrees with `C`) are classes appearing in `type(value_a).__mro__`, with
-   `A`'s class no further from the query than `B`'s, and strictly nearer for
-   at least one argument. This resolves a diamond `class D(B, C)` to `B`,
+   `hint_A(a) ≡ hint_B(a)`, or both hints are classes appearing in
+   `type(value_a).__mro__`, with `A`'s class no further from the query than
+   `B`'s and strictly nearer for at least one argument. Hints are unwrapped
+   for this comparison, and `Exact[C]` reads as `C`, so an `Exact[C]`
+   refines only at the argument where it agrees with `C`. This resolves a
+   diamond `class D(B, C)` to `B`,
    the same way `functools.singledispatch` resolves it. Protocols and ABCs
    that do not appear in the MRO, unions, literals, and parametrised
    generics give no refinement at all. As a result, a diamond over two
@@ -326,18 +331,20 @@ query's own MRO in place of an argument's runtime type. So `{Enum, str}`
 resolves `class Color(str, Enum)` to `str`, and `{C, B}` resolves the
 diamond `D(B, C)` to `B`.
 
-After every step, exactly one method surviving means that method is chosen;
-more than one means `AmbiguousMethodError`; and no method both bindable and
-applicable means `NoMethodError`, whose message distinguishes three causes:
-no method accepts a given keyword (with a `difflib`-based "did you mean"
-suggestion drawn from every method's parameter names), a required argument
-is missing for every candidate, or the argument types matched nothing.
-Priority is checked before MRO because an explicit choice should always beat
-an implicit one; both refinements are necessarily partial (each only ever
-compares one argument's hint against the same argument's counterpart
-elsewhere), so a genuine conflict across two different arguments is left
-ambiguous by either of them, and neither can override a strict specificity
-win.
+After every step, exactly one method surviving means that method is chosen.
+More than one means `AmbiguousMethodError`, and no method both bindable and
+applicable means `NoMethodError`. The latter's message distinguishes three
+causes: no method accepts a given keyword, with a `difflib`-based "did you
+mean" suggestion drawn from every method's parameter names; a required
+argument is missing for every candidate; or the argument types matched
+nothing.
+
+Priority is checked before MRO because an explicit choice should always
+beat an implicit one. Both refinements are necessarily partial, since each
+only ever compares one argument's hint against the same argument's
+counterpart elsewhere, so a genuine conflict across two different arguments
+is left ambiguous by either of them, and neither can override a strict
+specificity win.
 
 A handful of cases are worth spelling out, because they show what
 "name-aware" means in practice:
@@ -361,55 +368,87 @@ A handful of cases are worth spelling out, because they show what
 
 ### 2.3 Where variance enters
 
-PEP 483 defines variance for a generic type `G`: given `t2 ⊑ t1`, `G` is
+[PEP 483] defines variance for a generic type `G`: given `t2 ⊑ t1`, `G` is
 *covariant* if `G[t2] ⊑ G[t1]`, *contravariant* if `G[t1] ⊑ G[t2]`, and
 *invariant* if neither holds. Variance belongs to the generic's parameter
 *position*, as the type's author declares it, never to the particular
 argument filling that position at a call site. The relation reads each
-position's declared variance and applies it slot by slot: comparing a
+position's declared variance and applies it slot by slot, comparing a
 sub-hint's argument `A` against a super-hint's argument `B` at the same
-position, a covariant position requires `A ⊑ B`, a contravariant one
-requires `B ⊑ A`, and an invariant one requires `A ≡ B`, except that `Any`,
-or a free TypeVar, on the super side remains a top that even an invariant
-slot may widen to, following gradual typing's consistency rule rather than
-strict equivalence. Nesting composes by recursion, so the signs of nested
-positions multiply.
+position. A covariant position requires `A ⊑ B`, a contravariant one
+requires `B ⊑ A`, and an invariant one requires `A ≡ B`. The one exception
+is `Any`, or a free TypeVar, on the super side, which remains a top that
+even an invariant slot may widen to, following gradual typing's consistency
+rule rather than strict equivalence. Nesting composes by recursion, so the
+signs of nested positions multiply.
 
 #### Where a position's variance comes from
 
-A user-defined generic reads its own declared TypeVar live, off `__parameters__`: a TypeVar marked
-`covariant=True` gives a covariant position, one marked `contravariant=True`
-gives a contravariant one, and one marked as neither is invariant, following
-PEP 484. A PEP 695 TypeVar declared `infer_variance` cannot be inspected for
-its inferred variance at runtime and is read as invariant. A class whose
-only generic bases are PEP 585 aliases (`class GL(list[T])`,
-`class GD(dict[str, T])`, available from Python 3.9) lists no
-`__parameters__` of its own; its parameters are instead the TypeVars those
-bases mention, taken in order of first appearance, the way `Generic` itself
-would collect them, and each is read the same way. This is the variance the
-TypeVar *declares*, not necessarily the variance of the position it happens
-to fill: an unflagged `T` is invariant wherever it is used, so `GL[bool]` is
-not a sub-hint of `GL[int]` any more than the equivalent class written
-against `List[T]` would be, and a `T_co` written into one of `list`'s own
-invariant slots, a mistake a type checker reports on the class itself, is
-still read at its word, as covariant, matching what a checker goes on to do
-with it. Such a class is ill-typed, and the order over it is only a
-preorder rather than a genuine partial order among well-typed classes: it is
-possible for `Cov[bool] ⊑ Cov[int] ⊑ list[int]` to hold while `Cov[bool]` is
-not a sub-hint of `list[int]`.
+A user-defined generic reads its own declared TypeVar live, off
+`__parameters__`. A TypeVar marked `covariant=True` gives a covariant
+position, one marked `contravariant=True` gives a contravariant one, and one
+marked as neither is invariant, following [PEP 484]. This is the variance
+the TypeVar *declares*, not necessarily the variance of the position it
+happens to fill. An unflagged `T` is invariant wherever it is used, so the
+equivalent class written against `List[T]` gets no relief just because two
+of its parametrisations happen to be related. A `T_co` written into one of
+`list`'s own invariant slots is a mistake a type checker reports on the
+class itself, yet the relation still reads it at its word, as covariant,
+matching what a checker goes on to do with it. Such a class is ill-typed,
+and the order over it is only a preorder rather than a genuine partial order
+among well-typed classes: it is possible for `Cov[bool] ⊑ Cov[int] ⊑
+list[int]` to hold while `Cov[bool]` is not a sub-hint of `list[int]`.
+
+A [PEP 695] type parameter declared `infer_variance` asks a type checker to
+work out its variance from where it is used inside the class body. The
+result is covariant if it only appears in read or return positions,
+contravariant if it only appears in write or parameter positions, and
+invariant if it appears in both. That inference is a piece of static
+analysis a type
+checker performs; nothing about it is computed or stored at runtime. Such a
+parameter exposes only `__infer_variance__ = True` at runtime, with
+`__covariant__` and `__contravariant__` both `False`, and the inferred
+result itself is never materialized anywhere (checked directly against
+Python 3.13 and 3.14). The library could replicate the inference by walking
+the class body the way a checker does, but that would mean duplicating a
+type checker for a benefit too small to justify it. Reading such a
+parameter as invariant instead is the sound, conservative choice: invariant
+is the most restrictive variance in the order, so treating an
+`infer_variance` parameter this way can only make dispatch stricter, never
+produce an unsound match. Someone who needs the exact covariant or
+contravariant behaviour can declare an explicit `TypeVar(..., covariant=True)`
+or `contravariant=True`, whose variance the library reads directly.
+
+A class whose only generic bases are [PEP 585] aliases, such as
+`class GL(list[T])` or `class GD(dict[str, T])` (available from Python 3.9
+onward), lists no `__parameters__` of its own. Its parameters are instead
+the TypeVars those bases mention, taken in order of first appearance, the
+way `Generic` itself would collect them, and each is read the same way as
+above. `GL[bool]` is therefore not a sub-hint of `GL[int]`, for exactly the
+reason a plain `class GL(List[T])` would not be: the unflagged `T` it
+inherits from `list` is invariant, regardless of which spelling of the base
+introduced it.
+
+```python
+class GL(list[T]):  # a PEP 585 base, with no `Generic[T]` in sight
+    ...
+
+issubhint(GL[bool], GL[int])
+# False -- `T` is unflagged, so `list`'s invariance still applies
+```
 
 A standard-library generic's variance is looked up in a table vendored from
-CPython's own `typing` module, the reference implementation of the
-specification, keyed by runtime origin: `list`, `set`, `dict`, and
-`MutableSequence` are invariant; `Sequence`, `frozenset`, `Collection`,
-`Iterable`, and `Type[C]` are covariant; `Mapping` is invariant in its key
-and covariant in its value; `Generator` and `Coroutine` are covariant in
-what they yield and return and contravariant in what is sent to them. A CI
-test on Python 3.8 regenerates this table from the live `typing` module and
-asserts that it still agrees, so the table stays anchored to the
-specification rather than drifting from it. `Tuple` and `Callable` are not
-in this table: each keeps its own dedicated comparison (tuple shape for
-`Tuple`; contravariant parameters and a covariant return for `Callable`).
+CPython's own `typing` module, the reference implementation of the typing
+specification. `list`, `set`, `dict`, and `MutableSequence` are invariant.
+`Sequence`, `frozenset`, `Collection`, `Iterable`, and `Type[C]` are
+covariant, `Mapping` is invariant in its key and covariant in its value, and
+`Generator` and `Coroutine` are covariant in what they yield and return and
+contravariant in what is sent to them. A CI test on Python 3.8 regenerates
+this table from the live `typing` module and asserts that it still agrees,
+so the table stays anchored to the specification rather than drifting from
+it. `Tuple` and `Callable` are not in this table; each keeps its own
+dedicated comparison, tuple shape for `Tuple` and contravariant parameters
+with a covariant return for `Callable`.
 
 As a consequence, some same-origin comparisons are narrower than a naive
 subtype check would suggest. Because `list` is invariant, `List[bool]` is
@@ -431,27 +470,31 @@ Differing origins are handled by expressing the sub-hint through the
 super-hint's origin. When a sub-hint's origin differs from a super-hint's,
 as when a user subclass is compared against one of its generic bases, it is
 re-expressed as a parametrisation of the super-hint's origin, through the
-bases the sub-hint's own class was *written* with (its `__orig_bases__`,
-read off the class's own namespace; a class that declares none of its own is
-followed through its plain `__bases__` instead). Every base the class was
-written with is followed this way, and the sub-hint counts as below the
-super-hint if *any* of the parametrisations it reaches that way is: a
-diamond `class D(A, B)`, where `A` is written as `Box[int]` and `B` as
-`Box[str]`, is genuinely both a `Box[int]` and a `Box[str]`, the same way
-`class Two(List[T], Container[U])` makes `Two[int, str]` both a
-`Container[int]` and a `Container[str]`. A type checker would reject a class
-shaped like this; accepting it here is what keeps the relation transitive
-through every base a class names, rather than silently picking the first
-one. The consequence is that such a value is genuinely ambiguous between
-overloads on two of the parametrisations it reaches. `Both()`, for the
-`D(A, B)` example above, is ambiguous between a `Box[int]` overload and a
-`Box[str]` overload, and `Two[int, str]()` is ambiguous between a
-`Container[int]` overload and a `Container[str]` overload, where picking
-only the first listed base would have resolved it silently and, from the
-caller's point of view, arbitrarily. Registering a third overload on the
-more specific `Ints` type alone does not settle `Both()` either, since
-`Ints` is below `Box[int]` but not below `Box[str]`, and MRO refinement
-gives no index to a parametrised generic; a `priority` is needed to choose.
+bases the sub-hint's own class was *written* with. This means its
+`__orig_bases__`, read off the class's own namespace; a class that declares
+none of its own is followed through its plain `__bases__` instead.
+
+Every base the class was written with is followed this way, and the
+sub-hint counts as below the super-hint if *any* of the parametrisations it
+reaches that way is. For example, a diamond `class D(A, B)`, where `A` is
+written as `Box[int]` and `B` as `Box[str]`, is genuinely both a `Box[int]`
+and a `Box[str]`, the same way `class Two(List[T], Container[U])` makes
+`Two[int, str]` both a `Container[int]` and a `Container[str]`. A type
+checker would reject a
+class shaped like this. Accepting it here is what keeps the relation
+transitive through every base a class names, rather than silently picking
+the first one, and the consequence is that such a value is genuinely
+ambiguous between overloads on two of the parametrisations it reaches.
+
+`Both()`, for the `D(A, B)` example above, is ambiguous between a
+`Box[int]` overload and a `Box[str]` overload. `Two[int, str]()` is
+likewise ambiguous between a `Container[int]` overload and a
+`Container[str]` overload. Picking only the first listed base would have
+resolved either case silently and, from the caller's point of view,
+arbitrarily. Registering a third overload on the more specific `Ints` type
+alone does not settle `Both()` either, since `Ints` is below `Box[int]` but
+not below `Box[str]`, and MRO refinement gives no index to a parametrised
+generic; a `priority` is needed to choose.
 
 Filling in each base uses `typing`'s own subscription machinery: `Box[T][bool]`
 is `Box[bool]`, and this pairs each base's own type variables with the
@@ -462,14 +505,21 @@ sub-hint's arguments by identity rather than by position, so
 `class IntBox(Box[int])` a `Box[int]`. A parametrised standard-library base,
 such as `List[int]`, is read positionally against a standard-library origin
 it subclasses that takes the same number of arguments, exactly as two
-standard-library origins have always been compared. When nothing can be mapped this way (a runtime-only standard-library
-subclass such as `Counter`, which records no parametrised base at all; a
-generic class written bare, the way a bare `Box` would be; a `ParamSpec` or
-`TypeVarTuple` generic; a base whose substitution itself raises; or an
-arity mismatch, such as comparing `Dict[K, V]` against `Iterable`), the
-arguments fall back to being compared positionally, the way they always
-were before this mechanism existed. `Tuple`, `Callable`, and `Type` keep their
-own dedicated comparisons throughout.
+standard-library origins have always been compared.
+
+Sometimes nothing can be mapped this way:
+
+- a runtime-only standard-library subclass such as `Counter`, which records
+  no parametrised base at all;
+- a generic class written bare, the way a bare `Box` would be;
+- a `ParamSpec` or `TypeVarTuple` generic;
+- a base whose substitution itself raises;
+- an arity mismatch, such as comparing `Dict[K, V]` against `Iterable`.
+
+In each of these cases, the arguments fall back to being compared
+positionally, the way they always were before this mechanism existed.
+`Tuple`, `Callable`, and `Type` keep their own dedicated comparisons
+throughout.
 
 Argument positions in a call are themselves covariant, independently of the
 variance inside any one hint: a parameter *consumes* the value passed to it,
@@ -490,7 +540,7 @@ read, in order, from two places. The first is the instance's
 is called, and which the runtime alias type sets the same way for a class
 such as `class GL(list[T])` when `GL[int]()` is called. This is read only
 off an instance of a `Generic` subclass, or of a class whose MRO carries a
-PEP 585 base, and it is compared against any parametrised class hint,
+[PEP 585] base, and it is compared against any parametrised class hint,
 whether a user generic or a standard-library one (so `Row[int]()`, for
 `class Row(Sequence[T])`, is a `Sequence[int]` and not a `Sequence[str]`),
 and it is used whenever it re-expresses as a parametrisation of the hint's
@@ -505,43 +555,52 @@ them. `Two[Any, str]()`, for `class Two(List[T], Container[U])`, reaches
 `Container[Any]` through its `List` base and `Container[str]` through its
 own; because these disagree, the check stays shallow rather than picking one
 of them. Reading it by `Container[str]` alone, for instance, would reject
-the value as a `Container[bytes]` while still accepting it, shallowly
-through `List[Any]`, as a `Collection[bytes]`, which is below
-`Container[bytes]` in the order, putting the value in a sub-hint without
-putting it in that sub-hint's own super-hint. This is why the hint-level
-relation and the value-level check use different quantifiers over the same
-set of bases: the hint-level relation, above, accepts a sub-hint through
-*any one* base that reaches the super-hint's origin, because a hint carries
-no ambiguity about which parametrisation is meant; a value's *declared*
-parametrisation, by contrast, is trusted only when *every* base reaching a
-given origin agrees, because trusting just one while another disagrees could
-accept a value that a stricter reading through the other base would reject.
+the value as a `Container[bytes]`. Yet the same value would still pass,
+shallowly through `List[Any]`, as a `Collection[bytes]`, which sits below
+`Container[bytes]` in the order — putting the value in a sub-hint without
+putting it in that sub-hint's own super-hint.
 
-Short of a declared parametrisation, the check stays shallow: a plain
-built-in instance (including one built from a PEP 585 alias, such as
-`list[int]([1])`, which is simply a plain list); an instance built from a
-bare, unparametrised class; a `__slots__` class with no `__dict__` to record
-a parametrisation in; a frozen dataclass, where `typing` itself swallows the
-`FrozenInstanceError` it would otherwise raise while trying to record one;
-`self`, seen from inside its own `__init__`, since the record is only
-written after `__init__` returns; and a declared parametrisation whose
-arguments include a free TypeVar, `Any`, or an unresolved name
-(`class C(List[T])`, `Box[Any]()`, `Box["int"]()`), since none of these say
-what the value actually holds. A `ParamSpec` or `TypeVarTuple` generic,
-whose arguments do not pair one-to-one with parameters, also stays shallow.
+This is why the hint-level relation and the value-level check use different
+quantifiers over the same set of bases. The hint-level relation, above,
+accepts a sub-hint through *any one* base that reaches the super-hint's
+origin, because a hint carries no ambiguity about which parametrisation is
+meant. A value's *declared* parametrisation, by contrast, is trusted only
+when *every* base reaching a given origin agrees, because trusting just one
+while another disagrees could accept a value that a stricter reading
+through the other base would reject.
+
+Short of a declared parametrisation, the check stays shallow in a handful of
+cases:
+
+- a plain built-in instance, including one built from a [PEP 585] alias
+  such as `list[int]([1])`, which is simply a plain list;
+- an instance built from a bare, unparametrised class;
+- a `__slots__` class with no `__dict__` to record a parametrisation in;
+- a frozen dataclass, where `typing` itself swallows the
+  `FrozenInstanceError` it would otherwise raise while trying to record one;
+- `self`, seen from inside its own `__init__`, since the record is only
+  written after `__init__` returns;
+- a declared parametrisation whose arguments include a free TypeVar, `Any`,
+  or an unresolved name (`class C(List[T])`, `Box[Any]()`, `Box["int"]()`),
+  since none of these say what the value actually holds.
+
+A `ParamSpec` or `TypeVarTuple` generic, whose arguments do not pair
+one-to-one with parameters, also stays shallow.
 
 Where a value does carry a declared parametrisation, the comparison follows
 the specification's variance rules exactly, which is stricter than the
-shallow check in an invariant position: `Box[int]()` no longer matches
+shallow check in an invariant position. `Box[int]()` no longer matches
 `Box[object]`, `Box[Union[int, str]]`, or `Box[Optional[int]]`, and an
-instance of `class Strs(List[str])` no longer matches `List[object]`, though
-it still matches `List[Any]`, plain `list`, and the covariant
-`Sequence[object]`. A TypeVar filling the hint's invariant slot is solved
-the same way as at the hint level, below, so `Box[int]()` still matches
-`Box[T]` when `T` is unbound or bound by `object` or by `numbers.Real`, and
-matches a TypeVar constrained to `(int, str)`, but not one bound by
-`float`, since there is no numeric-tower promotion here. `Tuple`, `Callable`, `Type[C]`,
-and `TypedDict` each keep their own value-level checks, untouched by this
+instance of `class Strs(List[str])` no longer matches `List[object]`,
+though it still matches `List[Any]`, plain `list`, and the covariant
+`Sequence[object]`.
+
+A TypeVar filling the hint's invariant slot is solved the same way as at
+the hint level, below. `Box[int]()` still matches `Box[T]` when `T` is
+unbound or bound by `object` or by `numbers.Real`, and it matches a TypeVar
+constrained to `(int, str)`, but not one bound by `float`, since there is
+no numeric-tower promotion here. `Tuple`, `Callable`, `Type[C]`, and
+`TypedDict` each keep their own value-level checks, untouched by this
 mechanism.
 
 #### `Any` and gradual typing
@@ -562,9 +621,10 @@ of them.
 A TypeVar filling an invariant slot is solved against its bound or
 constraints, not read as exactly its bound. On the super side, it stands
 for *some* type within its bound or constraints, exactly as a type checker
-would solve it; on the sub side, it stands for the whole family of types
-that could fill it, which no single concrete type can be said to contain. A
-free TypeVar, or `Any`, remains the top of the order as above. For a TypeVar
+would solve it. On the sub side, by contrast, it stands for the whole
+family of types that could fill it, which no single concrete type can be
+said to contain. A free TypeVar, or `Any`, remains the top of the order as
+above. For a TypeVar
 bounded by `B`: `G[A] ⊑ G[TB]` when `A ⊑ B`, since the TypeVar is read by its
 own bound. So `Box[bool] ⊑ Box[TB]` when `TB` is bounded by `int`, and a
 `Box[TB]` fallback sits above every one of its concrete specialisations; two
@@ -595,14 +655,15 @@ parametrisations incomparable. `Generator[Y, S, R]` is covariant in what
 it yields and returns and contravariant in what is sent to it. `Any` is the
 top of a covariant position but the *bottom* of a contravariant one, so
 `Generator[int, None, None]` and `Generator[int, Any, Any]` order neither
-way: two overloads built on them are ambiguous, which is sound, since an
-antisymmetric preorder is allowed to leave some pairs incomparable.
+way. Two overloads built on them are therefore ambiguous, which is sound,
+since an antisymmetric preorder is allowed to leave some pairs
+incomparable.
 
 A generic-class TypeVar from `bagof.hints.typevars` carries its variance
 the same way. `hints.typevars.co.INT` declares a covariant position,
 `contra.INT` a contravariant one, and `inv.INT` (as well as `infer.INT`) an
 invariant one, when such a variable fills a user generic's declared
-parameter. PEP 484 and the type checkers forbid a variance-flagged TypeVar
+parameter. [PEP 484] and the type checkers forbid a variance-flagged TypeVar
 from being used as a plain function *parameter*; when one is anyway, it is
 read by its bound, and `Exact[int]` remains the tool for asking for
 exactness (§4).
@@ -628,100 +689,139 @@ preorder-law corpus described below, rather than special-cased into it.
 
 #### Protocols with data members
 
-Python's own `issubclass` refuses to answer
-for a runtime-checkable protocol that declares a data member, such as
-`name: str`, because whether an instance has that attribute is a property of
-the instance rather than the class. The relation instead reads such a
-protocol member by member, and reads a member differently depending on where
-the answer has to come from.
+Python's own `issubclass` refuses to answer for a runtime-checkable
+protocol that declares a data member, such as `name: str`, because whether
+an instance has that attribute is a property of the instance rather than
+the class. The relation instead reads such a protocol member by member. A
+class is below the protocol when it declares every member the protocol
+does. A value is in the protocol when it actually holds every member. These
+are two related but distinct questions, worked out below, whose answers can
+come apart for exactly the classes that never declare what they set.
 
-At the **value level**, a value `v` is in a protocol `P` when `type(v)`
-lists `P` among its bases, exactly as `isinstance` already counts it, or
-when every one of `P`'s members is satisfied: every **method** `P` declares
-is defined by `type(v)` (and not simply set to `None`); every member `P`
-declares as a **class variable** (through a `ClassVar` annotation) is
-declared as a class variable, with or without a value, somewhere in
-`type(v)`'s own MRO, read off the class alone, the way a type checker reads
-a class attribute; and every other, ordinary **data member** is either
-present in the instance's own `__dict__`, or declared as an instance
-variable anywhere in the class's MRO: by a plain annotation (`name: str`,
-so long as it is not itself marked `ClassVar`, `InitVar`, or `KW_ONLY`), or
-by a class attribute, a property, or a slot that the class defining it does
-not mark `ClassVar` or `InitVar`. Members are found statically: a property
-is never called, and `__getattr__` is never consulted, matching how
-`isinstance` itself reads a protocol from Python 3.12 onward. As a result,
-the relation answers the same way on every supported Python and with either
-typing module, where `isinstance` itself would not be consistent (before
-3.12, `typing`'s own `isinstance` calls `hasattr`, which does call
-properties). Because methods are read off the class, only the data members
-actually depend on the particular instance; a method assigned to one
-instance alone is not counted, even though a native `isinstance` from 3.12
-onward would count it. Three further points where this deliberately follows
-the type checkers' own reading rather than `isinstance`'s: an annotated
-member counts as present even on an instance that never actually set it; a
-member set on the instance that the class instead declares `ClassVar`, or a
-plain class attribute with no annotation at all, does not count as an
-instance member; and a class attribute declared `ClassVar` never counts
-toward an instance member either.
+```pycon
+>>> import typing_extensions as tx
+>>> from bagof.dispatchers.core import issubhint, ishintstance
+>>> @tx.runtime_checkable
+... class HasName(tx.Protocol):
+...     name: str
+...
+>>> class Named:
+...     name: str  # declares the member the protocol asks for
+...     def __init__(self, name):
+...         self.name = name
+...
+>>> issubhint(Named, HasName)
+True
+>>> ishintstance(Named("Ada"), HasName)
+True
 
-At the **hint level**, `C ⊑ P` when `C` itself lists `P` among its bases
-(including through a sub-protocol), or when `C` is not itself a protocol and
-*declares* every one of `P`'s members, the same way a type checker reads
-structural subtyping: each method `C` defines (again, not as `None`), and
-each data member declared, anywhere in `C`'s MRO, as the kind `P` declares
-it. An **instance variable** is declared by a plain annotation (including a
-dataclass field, whether or not it is `init=False`), or by a class
-attribute, a property, or a slot that the class defining it does not mark
-`ClassVar`; a value given in the class body for such an attribute is simply
-the instance variable's default. A **class variable** is declared
-only by a `ClassVar` annotation, with or without a value. The two kinds are
-mutually exclusive, matching how the typing specification treats a
-protocol's own members: a member is an instance variable unless it is
-explicitly declared `ClassVar`. This also matches what both mypy and pyright
-do:
-each rejects a plain class attribute standing in for a `ClassVar` member,
-and rejects a plain annotation standing in for an instance-variable member
-declared without one, with the message "expected class variable, got
-instance variable" or its mirror. The relation enforces the same
-exclusivity. When an annotation is still text, as it is under
-`from __future__ import annotations`, it is parsed rather than executed:
-its leading dotted name is resolved purely by dictionary lookup, first in
-the class's own namespace, then its defining module's, then the builtins
-(and, for a dotted name, in the intermediate module's own namespace), and
-the `ClassVar` marker is recognised by identity rather than by name, so an
-import alias such as `from typing import ClassVar as CV` still reads as
-`ClassVar`, and a user class the reader happens to have named `InitVar`
-reads as itself rather than being mistaken for `dataclasses.InitVar`; a
-name that cannot be resolved this way falls back to being read by its last
-dotted component. `InitVar`, `KW_ONLY`, and a `TypedDict`'s own keys declare
-no attribute at all. A protocol that does not itself list `P` among its
-bases is never below it merely for sharing the same member names. A
-protocol that only declares data members is below a method-only protocol
-`Q` when it lists `Q`, or when its own methods happen to cover `Q`'s
-members. It is never below `Q` through a data member alone, which Python's
-own `issubclass` would accept from a bare annotation but which an instance
-is free to hold without.
+```
+
+#### Reading members at the value level
+
+A value `v` is in a protocol `P` when `type(v)` lists `P` among its bases,
+exactly as `isinstance` already counts it, or when every one of `P`'s
+members is satisfied. Every **method** `P` declares must be defined by
+`type(v)`, and not simply set to `None`. Every member `P` declares as a
+**class variable**, through a `ClassVar` annotation, must be declared as a
+class variable somewhere in `type(v)`'s own MRO, with or without a value,
+read off the class alone the way a type checker reads a class attribute.
+Every other, ordinary **data member** must either be present in the
+instance's own `__dict__`, or declared as an instance variable anywhere in
+the class's MRO. Such a declaration is a plain annotation (`name: str`, so
+long as it is not itself marked `ClassVar`, `InitVar`, or `KW_ONLY`), or a
+class attribute, a property, or a slot that the class defining it does not
+mark `ClassVar` or `InitVar`.
+
+Members are found statically. A property is never called, and
+`__getattr__` is never consulted, matching how `isinstance` itself reads a
+protocol from Python 3.12 onward. As a result, the relation answers the
+same way on every supported Python and with either typing module, where
+`isinstance` itself would not be consistent: before 3.12, `typing`'s own
+`isinstance` calls `hasattr`, which does call properties. Because methods
+are read off the class, only the data members actually depend on the
+particular instance, so a method assigned to one instance alone is not
+counted, even though a native `isinstance` from 3.12 onward would count it.
+
+This deliberately follows the type checkers' own reading rather than
+`isinstance`'s in three further ways:
+
+- an annotated member counts as present even on an instance that never
+  actually set it;
+- a member set on the instance that the class instead declares `ClassVar`,
+  or a plain class attribute with no annotation at all, does not count as
+  an instance member;
+- a class attribute declared `ClassVar` never counts toward an instance
+  member either.
+
+#### Reading members at the hint level
+
+`C ⊑ P` when `C` itself lists `P` among its bases, including through a
+sub-protocol, or when `C` is not itself a protocol and *declares* every one
+of `P`'s members. This is the same way a type checker reads structural
+subtyping: each method `C` defines (again, not as `None`), and each data
+member declared, anywhere in `C`'s MRO, as the kind `P` declares it. An
+**instance variable** is declared by a plain annotation, including a
+dataclass field whether or not it is `init=False`, or by a class attribute,
+a property, or a slot that the class defining it does not mark `ClassVar`.
+A value given in the class body for such an attribute is simply the
+instance variable's default. A **class variable** is declared only by a
+`ClassVar` annotation, with or without a value.
+
+The two kinds are mutually exclusive, matching how the [typing
+specification](https://typing.python.org/en/latest/spec/protocol.html)
+treats a protocol's own members: a member is an instance variable unless it
+is explicitly declared `ClassVar`. This also matches what both mypy and
+pyright do. Each rejects a plain class attribute standing in for a
+`ClassVar` member, and each rejects a plain annotation standing in for an
+instance-variable member declared without one, with the message "expected
+class variable, got instance variable" or its mirror. The relation enforces
+the same exclusivity.
+
+When an annotation is still text, as it is under `from __future__ import
+annotations`, it is parsed rather than executed. Its leading dotted name is
+resolved purely by dictionary lookup, first in the class's own namespace,
+then its defining module's, then the builtins, and, for a dotted name, in
+the intermediate module's own namespace too. The `ClassVar` marker is
+recognised by identity rather than by name. An import alias such as `from
+typing import ClassVar as CV` still reads as `ClassVar`, and a user class
+the reader happens to have named `InitVar` reads as itself rather than
+being mistaken for `dataclasses.InitVar`. A name that cannot be
+resolved this way falls back to being read by its last dotted component.
+`InitVar`, `KW_ONLY`, and a `TypedDict`'s own keys declare no attribute at
+all.
+
+A protocol that does not itself list `P` among its bases is never below it
+merely for sharing the same member names. A protocol that only declares
+data members is below a method-only protocol `Q` when it lists `Q`, or when
+its own methods happen to cover `Q`'s members. It is never below `Q`
+through a data member alone — a distinction Python's own `issubclass` does
+not draw, since it would accept a bare annotation that an instance is
+nonetheless free to hold without.
+
+#### Keeping the two levels sound
 
 The order must never place `C` below `P` while some instance of `C` fails
-to actually satisfy `P`. A bare annotation with no value, such as
-`name: str` alone, promises nothing at runtime: a class that only annotates
+to actually satisfy `P`. A bare annotation with no value, such as `name:
+str` alone, promises nothing at runtime, since a class that only annotates
 `name` and never sets it in `__init__` produces instances with no such
 attribute at all.
 
-The relation does not refuse the annotation at the hint level. Refusing it,
-which the type checkers themselves do not do, would leave a class that both
-annotates a member and sets it in `__init__` incomparable with the
-protocol, making an overload on each ambiguous for every one of its
-instances. Instead, the value level counts a merely-annotated member as
+The relation does not, however, refuse the annotation at the hint level.
+Refusing it, which the type checkers themselves do not do, would leave a
+class that both annotates a member and sets it in `__init__` incomparable
+with the protocol, making an overload on each ambiguous for every one of
+its instances. Instead, the value level counts a merely-annotated member as
 present on *every* instance of the class, whether or not that particular
-instance ever set it. The class-by-class value check this used to require
-is gone: the two levels now read the same per-class record of what the
-whole MRO declares, gathered once across *every* class in the MRO rather
-than decided class by class. A subclass therefore automatically declares
-everything its bases do, and `v ∈ C ⊑ P` implies `v ∈ P` by construction,
-transitively through the whole class hierarchy; the test suite sweeps this
-property directly. A `ClassVar` member is read off the class at both
-levels, for the same reason.
+instance ever set it. The two levels read one shared per-class record of
+what the whole MRO declares, gathered once across every class in the MRO
+rather than decided class by class. A subclass therefore automatically
+declares everything its bases do, and `v ∈ C ⊑ P` implies `v ∈ P` by
+construction, transitively through the whole class hierarchy; the test
+suite sweeps this property directly. A `ClassVar` member is read off the
+class at both levels, for the same reason.
+
+#### Documented divergences from type checkers
 
 A few cases are left as documented residue rather than guarded against,
 because guarding against them is either impossible or not worth the cost:
@@ -730,40 +830,54 @@ because guarding against them is either impossible or not worth the cost:
 - an attribute or annotation added to a class after that class was first
   dispatched on, since the per-class record is memoised at first use;
 - a subclass that redeclares an inherited instance variable as a `ClassVar`
-  (as in `class SubCV(Ann): name: ClassVar[str]`, where `Ann` annotates
-  `name: str` as an instance variable) still sits below `HasName`, because
-  the union taken over the whole MRO keeps the base class's own declaration,
-  preserving `SubCV ⊑ Ann ⊑ HasName` (both type checkers reject the
-  redeclaration itself, for what that is worth);
-- a **read-only** member, such as a property with no setter or
-  `name: Final = "x"`, counts toward a protocol's instance-variable
-  requirement even though both type checkers reject it with "expected
-  settable variable, got read-only attribute": dispatch only ever reads a
-  member and never assigns to it, so the value genuinely has what dispatch
-  needs, which makes this a deliberate, documented divergence from the type
-  checkers rather than an oversight;
-- an annotated member that a particular instance never set, which simply
-  reaches the chosen overload as a value lacking that attribute, exactly as
-  it would reach a plain function a type checker had already accepted it
-  for.
+  still sits below the protocol, because the union taken over the whole MRO
+  keeps the base class's own declaration. In `class SubCV(Ann):
+  name: ClassVar[str]`, where `Ann` annotates `name: str` as an instance
+  variable, `SubCV ⊑ Ann ⊑ HasName` is preserved even though both type
+  checkers reject the redeclaration itself;
+- a **read-only** member, such as a property with no setter or `name:
+  Final = "x"`, counts toward a protocol's instance-variable requirement
+  even though both type checkers reject it with "expected settable
+  variable, got read-only attribute". Dispatch only ever reads a member and
+  never assigns to it, so the value genuinely has what dispatch needs, and
+  the divergence from the type checkers is deliberate rather than an
+  oversight;
+- an annotated member that a particular instance never set simply reaches
+  the chosen overload as a value lacking that attribute, exactly as it
+  would reach a plain function a type checker had already accepted it for.
 
-One gap the order genuinely cannot see: a class that declares none of a
-protocol's members at all (no annotation, attribute, property, slot,
-method, or dataclass field) is incomparable with that protocol at the hint
-level, yet a particular instance of it can still acquire the member at
-runtime and so belong to the protocol at the value level. An overload on the
-class and an overload on the protocol are then ambiguous for that one
-instance, and `AmbiguousMethodError` is the correct answer, since neither
-overload is more specific than the other. No warning fires at registration
-time, and `ambiguities()` reports nothing, because both overloads are
-genuinely incomparable at the hint level, which is all registration-time
-analysis can see. The remedy is the caller's: annotate the member on the
-class, or give one of the two overloads a higher `priority`. The guide's
-page on protocols shows this exact case running, together with the more
-common one where the class wins outright.
+#### The one gap the order cannot close
 
-Registration itself treats such a protocol like any other hint: an overload
-on it is reachable the normal way, and a protocol that is not
+A class that declares none of a protocol's members at all — no annotation,
+attribute, property, slot, method, or dataclass field — is incomparable
+with that protocol at the hint level. Yet a particular instance of it can
+still acquire the member at runtime, and so belong to the protocol at the
+value level:
+
+```pycon
+>>> class Quiet:
+...     def __init__(self, name):
+...         self.name = name  # set on the instance, never declared
+...
+>>> issubhint(Quiet, HasName)
+False
+>>> ishintstance(Quiet("Bo"), HasName)
+True
+
+```
+
+An overload on `Quiet` and an overload on `HasName` are then ambiguous for
+an instance like `Quiet("Bo")`, and `AmbiguousMethodError` is the correct
+answer, since neither overload is more specific than the other. No warning
+fires at registration time, and `ambiguities()` reports nothing, because
+both overloads are genuinely incomparable at the hint level, which is all
+registration-time analysis can see. The remedy is the caller's: annotate
+the member on the class, or give one of the two overloads a higher
+`priority`. The guide's page on protocols shows this exact case running,
+together with the more common one where the class wins outright.
+
+Registration itself treats such a protocol like any other hint, so an
+overload on it is reachable the normal way. A protocol that is not
 `runtime_checkable` is unaffected by any of this: it simply answers `False`
 at both levels, so an overload registered on it can never match a call.
 
@@ -776,21 +890,21 @@ at both levels, so an overload registered on it can never match a call.
 | unbound `T` | any value (`T` behaves as `Any`) | `Any` |
 | bound by `B` | an instance of `B` | `B` |
 | constrained to `(C1, C2)` | an instance of one `Ci` (`bool` solves as `int`) | `Union[C1, C2]` |
-| carrying a `default=` (PEP 696) | as above — the default is a static-checker fallback and plays no role at runtime | as above |
+| carrying a `default=` ([PEP 696]) | as above — the default is a static-checker fallback and plays no role at runtime | as above |
 
 The origin of a TypeVar does not matter to dispatch: a legacy
 `tx.TypeVar(...)`, a variance-flagged `bagof.hints.typevars.*` variable, and
-a PEP 695 `def f[T]` variable are all plain `TypeVar` instances and are
+a [PEP 695] `def f[T]` variable are all plain `TypeVar` instances and are
 dispatched on identically. `Signature.from_callable` reads a function's
 hints alone; `__type_params__` is only consulted to name a variable in an
 error message.
 
-PEP 696 defaults play no part in dispatch, for any of the three kinds above.
+[PEP 696] defaults play no part in dispatch, for any of the three kinds above.
 The relation reads a TypeVar's upper bound through a private helper that
 tries its bound, then the union of its constraints, then falls back to
-`Any`, reading `__default__` through `getattr(tv, "__default__", tx.NoDefault)`
-rather than the `.has_default()` method a native Python 3.12 PEP 695
-TypeVar lacks. Reading it this way also fixes a bug the summed-distance
+`Any`. It reads `__default__` through `getattr(tv, "__default__",
+tx.NoDefault)` rather than the `.has_default()` method a native Python 3.12
+[PEP 695] TypeVar lacks. Reading it this way also fixes a bug the summed-distance
 predecessor had: `TypeVar("TB", bound=float, default=int)` used to read as
 bound to `int`, its default, rather than `float`, its actual bound, because
 the older lookup helper preferred the default over the bound.
@@ -801,36 +915,37 @@ TypeVar's upper bound ignores it.
 
 #### Repeated TypeVars
 
-A signature such as `def same(x: T, y: T)` requires
-consistency over its **bound arguments**: the arguments whose landed hint is
-that same `T`, meaning every declared parameter with that hint together with
-any surplus positional absorbed by an `*args: T`, regardless of whether the
-call spells them positionally or by keyword (`same(1, 2)`, `same(x=1, y=2)`,
-and `same(y=2, x=1)` are all checked the same way). A call is applicable
-only when those argument types have a **greatest element** under `⊑`:
-`(int, bool)` solves `T = int`, since `bool ⊑ int`, while `(int, str)` has
-no such solution: joining them to `object` would collapse `(T, T)` into
-`(object, object)`, and the relation refuses to invent a join this way. A
-constrained `T` instead requires that every bound argument resolve to the
-*same* one of its constraints. A default-filled parameter annotated `T`
-contributes nothing, since it is not an argument at all. A `**kwargs: T`
-group solves `T` for applicability jointly, across the keywords it captures
-together with every other slot carrying `T`, the same greatest-element
-solve that `*args: T` performs over its positionals, and those same
-keywords also form one group for the specificity tie-break described below.
-This sits deliberately between Julia's strict diagonal dispatch, where a
-repeated TypeVar can additionally discriminate on which concrete type
-filled it, and mypy's static join, which would collapse `(T, T)` to the
-join of the two argument types rather than requiring them to already share
-one.
+A signature such as `def same(x: T, y: T)` requires consistency over its
+**bound arguments**: the arguments whose landed hint is that same `T`,
+meaning every declared parameter with that hint together with any surplus
+positional absorbed by an `*args: T`. This holds regardless of whether the
+call spells them positionally or by keyword — `same(1, 2)`, `same(x=1,
+y=2)`, and `same(y=2, x=1)` are all checked the same way. A call is
+applicable only when those argument types have a **greatest element** under
+`⊑`. `(int, bool)` solves `T = int`, since `bool ⊑ int`, while `(int, str)`
+has no such solution, because joining them to `object` would collapse `(T,
+T)` into `(object, object)`, and the relation refuses to invent a join this
+way. A constrained `T` instead requires that every bound argument resolve
+to the *same* one of its constraints. A default-filled parameter annotated
+`T` contributes nothing, since it is not an argument at all.
+
+A `**kwargs: T` group solves `T` for applicability jointly, across the
+keywords it captures together with every other slot carrying `T`. This is
+the same greatest-element solve that `*args: T` performs over its
+positionals, and those same keywords also form one group for the
+specificity tie-break described below. This sits deliberately between two
+other models. Julia's strict diagonal dispatch lets a repeated TypeVar
+additionally discriminate on which concrete type filled it. Mypy's static
+join, on the other hand, would collapse `(T, T)` to the join of the two
+argument types rather than requiring them to already share one.
 
 A constrained TypeVar whose constraint is itself a runtime protocol with
 data members is solved from the argument's *class*, through
-`issubhint(type(v), Ci)`, at every position it fills, so a value that only
-belongs to the protocol through what its particular instance holds does not
-select that constraint;
-declaring the member on the class, or using a plain `bound=` (which is
-checked value by value instead), is the way to reach it. A generic protocol
+`issubhint(type(v), Ci)`, at every position it fills. As a result, a value
+that only belongs to the protocol through what its particular instance
+holds does not select that constraint. Declaring the member on the class,
+or using a plain `bound=`, which is checked value by value instead, is the
+way to reach it. A generic protocol
 with data members, such as `HasItem[int]` declaring `item: T`, checks only
 that the members are present. Since a structural value declares no type
 arguments of its own, what it actually holds under `item` is never compared
@@ -842,9 +957,9 @@ its declared element type.
 Position by position, a TypeVar is replaced
 by the hint from the table above, so `(int, int)` is strictly below
 `(T, T)`, which is equivalent to `(Any, Any)`. One further tie-break applies
-inside that equivalence: when two methods are equivalent position by
+inside that equivalence. When two methods are equivalent position by
 position, the one whose repeated TypeVars group *strictly more* arguments
-into one consistent type is the more specific of the two, recovering the
+into one consistent type is the more specific of the two. This recovers the
 outcome Julia's own diagonal dispatch would give for the "same type" case.
 This tie-break is the very last selection step, reached only when two
 methods are already equally specific after priority, MRO refinement, and
@@ -852,9 +967,9 @@ tightness (§2.2) have all failed to separate them. It compares the two
 methods' TypeVar groupings over the bound arguments, meaning which argument
 positions share one TypeVar's identity, and one grouping wins only when it
 strictly refines the other: it ties every pair the other ties, and at least
-one pair more besides. When neither grouping refines the other this way
-(equal groupings, such as `(T, U)` against `(U, T)`, or groupings that each
-tie a pair the other does not, such as `(T, T, U)` against `(T, U, U)`), the
+one pair more besides. Neither grouping refines the other when they are
+equal, such as `(T, U)` against `(U, T)`, or when each ties a pair the
+other does not, such as `(T, T, U)` against `(T, U, U)`; in either case the
 two stay incomparable, and the call remains ambiguous. Because it only ever
 applies once every earlier step has failed to decide, this tie-break can
 never overturn a strict specificity win, and can never make two genuinely
@@ -862,25 +977,25 @@ independent signatures comparable; it only ever resolves a tie that would
 otherwise be ambiguous. A signature with any repeated group beats one with
 none at all, including a fully unannotated `(Any, Any)`; this is the least
 surprising reading of "more constraint is more specific" for the cases this
-section would otherwise leave silent. A group of exactly one argument
-constrains nothing on its own, so this refinement only ever applies when a
-TypeVar is bound at two or more positions of the actual call: `*args: T`
-against a plain `*args` is refined, and therefore resolved, for a call of
-two or more arguments, but the two tie for a call of zero or one argument,
-and are therefore ambiguous there. `**kwargs: T` against a plain `**kwargs`
-behaves the same way over the keywords a call spills into the catch-all:
-refined for two or more captured keywords, tied for zero or one.
+section would otherwise leave silent. A group of exactly one argument constrains nothing on its own, so this
+refinement only ever applies when a TypeVar is bound at two or more
+positions of the actual call. `*args: T` against a plain `*args` is
+refined, and therefore resolved, for a call of two or more arguments, but
+the two tie for a call of zero or one argument, and are therefore ambiguous
+there. `**kwargs: T` against a plain `**kwargs` behaves the same way over
+the keywords a call spills into the catch-all: refined for two or more
+captured keywords, tied for zero or one.
 
 Hint-level `resolve` queries containing a TypeVar use `issubhint` unchanged;
 there is no separate rule for them.
 
 Only a **top-level** TypeVar, meaning one that names an argument's own
-landed hint directly, is solved jointly across positions. A TypeVar nested *inside* a
-hint, such as the `T` in `Box[T]` or `List[T]`, is solved locally, once per
-position, inside `issubhint` itself, never jointly across positions:
-`(Box[T], Box[T])` still accepts `Box[int](), Box[str]()` as two independent
-arguments, the same way `(List[T], List[T])` accepts two lists that happen
-to declare different element types.
+landed hint directly, is solved jointly across positions. A TypeVar nested
+*inside* a hint, such as the `T` in `Box[T]` or `List[T]`, is solved
+locally instead, once per position, inside `issubhint` itself, and never
+jointly across positions. `(Box[T], Box[T])` still accepts `Box[int](),
+Box[str]()` as two independent arguments, the same way `(List[T], List[T])`
+accepts two lists that happen to declare different element types.
 
 #### Variadic parameter kinds
 
@@ -891,32 +1006,32 @@ as an `Any` tail for a single element. A bare `Ts` or `P`, a bare
 written on `*args` produces an error pointing the caller at
 `*args: Unpack[Ts]` instead). Two open runs inside one tuple or parameter
 list, such as `Tuple[*Ts, *Us]`, are refused at registration too, enforcing
-PEP 646's single-unpack rule, which `typing` itself does not enforce at
+[PEP 646]'s single-unpack rule, which `typing` itself does not enforce at
 runtime.
 
-A `ParamSpec` is solved at the **hint level**: named at several top-level
-`Callable` slots, it must capture a consistent parameter list at each one,
+A `ParamSpec` is solved at the **hint level**. Named at several top-level
+`Callable` slots, it must capture a consistent parameter list at each one —
 the direct analogue of a repeated TypeVar, where consistency again means
 the captured lists have a greatest element under the parameter-list order.
 
-A `TypeVarTuple` is solved at the hint level the same way: named at several
-top-level `Tuple` slots, it must capture a consistent *run* at each, the
+A `TypeVarTuple` is solved at the hint level the same way. Named at several
+top-level `Tuple` slots, it must capture a consistent *run* at each: the
 covariant, tuple-shaped analogue of the same idea, where consistency means
-the captured runs have a greatest element under the tuple-shape order:
-`(int,)` and `(bool,)` solve to `(int,)`; `(int,)` and `(str,)`, or two runs
-of different length, are inconsistent; and a closed run alongside an open
+the captured runs have a greatest element under the tuple-shape order.
+`(int,)` and `(bool,)` solve to `(int,)`. `(int,)` and `(str,)`, or two runs
+of different length, are inconsistent, and a closed run alongside an open
 one solves to the open one. A `*args: *Ts` absorbs its own positionals into
 one run of that same `Ts`, solved jointly with every `Tuple[..., *Ts]` slot
-elsewhere in the signature, so `(t: Tuple[*Ts], *args: *Ts)` applies to
-`resolve(Tuple[int, str], int, str)` but not to `resolve(Tuple[int])`, since
-the empty `*args` run there disagrees with `(int,)`. A
+elsewhere in the signature. So `(t: Tuple[*Ts], *args: *Ts)` applies to
+`resolve(Tuple[int, str], int, str)` but not to `resolve(Tuple[int])`,
+since the empty `*args` run there disagrees with `(int,)`. A
 `Callable[[int, *Ts], R]` parameter list rides the same open-tail machinery
 `ParamSpec` uses, with its own `*Ts` tail solved by that machinery, keyed
 separately from any tuple run of the same `Ts` elsewhere. Only a top-level,
-landed `Tuple` or `Callable` joins a group this way; a `*Ts` nested inside
-another hint, or a `*Ts` in the middle of a `Callable` parameter list
-followed by a fixed suffix (`Callable[[int, *Ts, str], R]`, which degrades
-to an open `Concatenate[int, P]` shape), does not. `*Ts` never enters the
+landed `Tuple` or `Callable` joins a group this way. A `*Ts` nested inside
+another hint does not, nor does a `*Ts` in the middle of a `Callable`
+parameter list followed by a fixed suffix — `Callable[[int, *Ts, str], R]`
+degrades to an open `Concatenate[int, P]` shape instead. `*Ts` never enters the
 repeated-TypeVar specificity tie-break above. It is not a `TypeVar` at all,
 deliberately the opposite of how `*args: T` behaves, so `*args: *Ts` against
 a plain `*args` stays ambiguous regardless of how many positional arguments
@@ -931,10 +1046,10 @@ inspecting its actual signature or element shape.
 ## 4. "Exact type" vs. "subtype": `Exact[C]`
 
 Ordinary type hints have no way to say "this class, and none of its
-subclasses." `Exact[C]`, spelled `bagof.dispatchers.Exact[int]` and
-implemented as `tx.Annotated[int, EXACT]` behind a private sentinel (the
-same pattern `bagof.magic`'s `Frozen[int]` uses), fills that gap while still
-presenting as plain `int` to a type checker. It is understood directly
+subclasses." `Exact[C]` fills that gap while still presenting as plain
+`int` to a type checker. It is spelled `bagof.dispatchers.Exact[int]` and
+implemented as `tx.Annotated[int, EXACT]` behind a private sentinel, the
+same pattern `bagof.magic`'s `Frozen[int]` uses. It is understood directly
 inside `issubhint` and `ishintstance`, rather than through a wrapper around
 them, so anything built on the relation, including converters and
 validators, gets exactness for free.
@@ -971,9 +1086,9 @@ just under `C` in the order, which is what keeps `⊑` a proper preorder
   containing `Exact`, reduces to `issub(C, P)`. A `P` that does contain
   `Exact`, such as a union member or a TypeVar's bound, is checked member by
   member instead of reducing this way, since reducing first would lose the
-  exactness (`issub(Exact[C], Union[Exact[C], …])` and
+  exactness. `issub(Exact[C], Union[Exact[C], …])` and
   `issub(Exact[C], TypeVar(bound=Exact[C]))` are both true for exactly this
-  reason). Two `Exact` hints over different classes are incomparable. MRO
+  reason. Two `Exact` hints over different classes are incomparable. MRO
   refinement (§2.2) treats `Exact[C]` as `C`, and it is keyed by class for
   the cache, so it caches exactly as a plain class hint would.
 - For **resolution**, the hint-level `resolve()` may additionally reach an
@@ -1042,10 +1157,11 @@ Closest candidates:
   area(x: !float) @ shapes.py:20
 ```
 
-"Closest" ranks candidates by how many positions are applicable and how well
-the call's arity matches, showing at most eight; when a function has no
-methods registered at all, the message instead reads "`area` has no methods
-yet: the module that defines them has not been imported." Both errors are
+"Closest" ranks candidates by how many positions are applicable and how
+well the call's arity matches, showing at most eight. When a function has
+no methods registered at all, the message instead reads "`area` has no
+methods yet: the module that defines them has not been imported." Both
+errors are
 raised from `Function.dispatch` or `Function.resolve`, never from inside the
 `__call__` frame itself, so a traceback does not point into the dispatch
 machinery. `Function.ambiguities()`, the analogue of Julia's
@@ -1058,14 +1174,14 @@ so the order in which modules happen to be imported can never break a
 program that was working before. A pair separated by an explicit, differing
 `priority` is resolved deterministically at every call, since the higher
 priority always wins, so it is neither warned about at registration nor
-listed by `ambiguities()`. A same-origin parametrised pair, such as `List[int]` and
-`List[str]` registered side by side, is likewise not warned about or
-listed: registering both is entirely legitimate, since a plain `list` value
-applies to both, and the incomparability between them only becomes visible
-at an actual call: a value that declares its own parametrisation (an
-instance of `Child(List[int])`, or one built as `Box[int]()` or `GL[int]()`)
-picks the right one outright, and only a value that declares nothing at all
-is genuinely ambiguous between them.
+listed by `ambiguities()`. A same-origin parametrised pair, such as `List[int]` and `List[str]`
+registered side by side, is likewise not warned about or listed.
+Registering both is entirely legitimate, since a plain `list` value applies
+to both, and the incomparability between them only becomes visible at an
+actual call. A value that declares its own parametrisation — an instance of
+`Child(List[int])`, or one built as `Box[int]()` or `GL[int]()` — picks the
+right one outright, and only a value that declares nothing at all is
+genuinely ambiguous between them.
 
 ---
 
@@ -1104,8 +1220,8 @@ extends *one* shared `Function`. This is how a shared, cross-module generic
 function is built.
 
 A `Function` is reached through its dispatcher's `functions` namespace,
-either `d.functions["area"]` by item or `d.functions.area` by attribute,
-both of which get the existing `Function` or create it on first access, so
+either `d.functions["area"]` by item or `d.functions.area` by attribute.
+Both of these get the existing `Function` or create it on first access, so
 `area = d.functions.area` written in one module composes correctly with
 registrations made from another. `@dispatch` also returns the `Function` it
 just extended. A method is added either with `@dispatch` decorating
@@ -1117,26 +1233,28 @@ as a tuple, named hints as a dict, and any keyword arguments passed
 alongside them are registration options such as `priority`, never hints.
 For example, `area.register((int,), {"scale": float}, priority=0)(callable)`.
 Passing a class as the implementation, as in `area.register(SomeClass)`,
-dispatches on that class's `__init__` or `__new__`. The signature-only form
-with no wrapped function at all, whether `from_hints` or `from_mapping`
-given a tuple key, is positional-only by construction; to declare a `/`, a `*`, an
-`*args`, or a `**kwargs` without writing a function, pass a `Signature`
-object directly as the `from_mapping` key instead.
+dispatches on that class's `__init__` or `__new__`. The signature-only
+form with no wrapped function at all, whether `from_hints` or
+`from_mapping` given a tuple key, is positional-only by construction. To
+declare a `/`, a `*`, an `*args`, or a `**kwargs` without writing a
+function, pass a `Signature` object directly as the `from_mapping` key
+instead.
 
 `d.functions` is a **protocol-only** namespace: it supports the mapping
 protocol (`d.functions["area"]`, `d.functions.area`, iterating over it by
-name, `len(d.functions)`, and `name in d.functions`) and defines no named
-methods of its own, so *every* function name, including `register`,
+name, `len(d.functions)`, and `name in d.functions`), and it defines no
+named methods of its own. So *every* function name, including `register`,
 `items`, or `map`, is safe to register there, while the `Dispatcher` itself
 keeps its ordinary methods (`d.register(...)`, `d.clear_cache()`) with no
 risk of collision. Attribute access ignores any name starting with an
 underscore, so that a tool or REPL probing the object for dunder or private
-attributes never accidentally creates an empty `Function`. Which key this
-namespace uses follows the identity rule above: on a constructed
-`Dispatcher()` it is the bare name, so `d.functions.area` is unambiguous,
-while on the module-level `dispatch` the key also carries the module, so
-there the `Function` is taken from the decorator's own return value, or
-from a qualified lookup, rather than a bare-name attribute.
+attributes never accidentally creates an empty `Function`.
+
+Which key this namespace uses follows the identity rule above. On a
+constructed `Dispatcher()` it is the bare name, so `d.functions.area` is
+unambiguous. On the module-level `dispatch`, the key also carries the
+module, so there the `Function` is taken from the decorator's own return
+value, or from a qualified lookup, rather than a bare-name attribute.
 
 ```python
 # registry.py -- a shared, cross-module generic function
@@ -1216,7 +1334,7 @@ Forward references are handled the way `bagof.magic._resolve._Deferred`
 already does: a raw annotation that raises `NameError` or `TypeError` when
 first read is kept as-is and retried on the function's first dispatch; if
 it is still unresolvable then, the error names the function and the
-parameter. On Python 3.14 and its lazy annotations (PEP 649/749), the
+parameter. On Python 3.14 and its lazy annotations ([PEP 649]/[PEP 749]), the
 resolution order is `tx.get_type_hints(include_extras=True)` first, then
 `annotationlib.get_annotations(fn, format=Format.FORWARDREF)`, and finally
 the raw `__annotations__` with deferral.
@@ -1235,19 +1353,19 @@ is *value-dependent*, *declaration-dependent*, or *member-dependent*.
 
 - A position is *value-dependent* when any method's hint there is a
   `Literal` or a `type[...]`, or a `Union` or `TypeVar` whose members or
-  upper bound include one, or a concrete `TypedDict`, since its
-  value-level check reads the mapping's own keys and value types rather
-  than the argument's type alone.
+  upper bound include one, or a concrete `TypedDict`. Its value-level check
+  reads the mapping's own keys and value types rather than the argument's
+  type alone.
 - A position is *declaration-dependent* when any method's hint there is a
   parametrised class generic, user-defined or standard-library, directly
   or through a `Union`, `TypeVar`, or `Annotated` (but never through
-  `Tuple`, `Callable`, `Type[C]`, or a `TypedDict`), since its value check
-  reads the `__orig_class__` recorded on an instance of a `Generic`
-  subclass, or of a class written against a PEP 585 alias (§2.3).
+  `Tuple`, `Callable`, `Type[C]`, or a `TypedDict`). Its value check reads
+  the `__orig_class__` recorded on an instance of a `Generic` subclass, or
+  of a class written against a [PEP 585] alias (§2.3).
 - A position is *member-dependent* when any method's hint there is a
   runtime protocol with data members, directly or through a `Union`,
-  `TypeVar`, or `Annotated`, since its value check reads those members off
-  the instance, recorded as the sorted union of every such protocol's data
+  `TypeVar`, or `Annotated`. Its value check reads those members off the
+  instance, recorded as the sorted union of every such protocol's data
   members landing at that position.
 
 The shape-plan cache itself is a bounded LRU, and every plan in it is
@@ -1255,29 +1373,30 @@ discarded whenever a method is registered.
 
 The second level is a **call cache**, under each shape plan, keyed by
 `tuple(type(v_i) for positional v_i) + tuple((k, type(w_k)) for k in sorted
-keyword names)`, with two adjustments: a value-dependent argument keys by
+keyword names)`, with two adjustments. A value-dependent argument keys by
 `(type, value)` rather than `type` alone, and a declaration-dependent one
 keys by `(type, __orig_class__)`, comparing the recorded parametrisation by
 identity rather than equality. `typing` itself caches `Box[int]`, so every
 `Box[int]()` shares one cache entry, and comparing by identity avoids
-merging entries that `==` would wrongly treat as equal
-(`Literal[1] == Literal[True]` on Python 3.8, for instance). A PEP 585
-record such as `GL[int]` is a fresh object at every subscription, so it is
-instead keyed by its origin, its own arguments (each keyed the same
-recursive way), and whether it is unpacked, and every `GL[int]()` still
-lands in the same cache entry this way. A position that is both
-value-dependent and declaration-dependent is safe to key this way even
-though the value's own `==` need not agree with the record. A dataclass
-generic, for instance, compares only its fields. The declared-parametrisation
-record itself is only ever read off an instance of a `Generic` subclass or
-of a class whose MRO carries a PEP 585 base, gated by one memoised
-per-class check that both the value check and the cache key consult, so the
-two stay in lockstep and no other value is ever probed for a record it
-cannot have. Because `typing`'s own subscription cache is a bounded LRU, a
-fresh `Box[int]` object created after eviction simply misses the call cache
-once; it can never produce a wrong method. A value the per-class gate
-refuses, such as a plain `list` at a `List[int]` argument, is never probed
-and keys simply as `(type, None)`.
+merging entries that `==` would wrongly treat as equal (`Literal[1] ==
+Literal[True]` on Python 3.8, for instance). A [PEP 585] record such as
+`GL[int]` is a fresh object at every subscription, so it is instead keyed
+by its origin, its own arguments, each keyed the same recursive way, and
+whether it is unpacked; every `GL[int]()` still lands in the same cache
+entry this way.
+
+A position that is both value-dependent and declaration-dependent is safe
+to key this way even though the value's own `==` need not agree with the
+record — a dataclass generic, for instance, compares only its fields. The
+declared-parametrisation record itself is only ever read off an instance of
+a `Generic` subclass or of a class whose MRO carries a [PEP 585] base. It
+is gated by one memoised per-class check that both the value check and the
+cache key consult, so the two stay in lockstep and no other value is ever
+probed for a record it cannot have. Because `typing`'s own subscription
+cache is a bounded LRU, a fresh `Box[int]` object created after eviction
+simply misses the call cache once; it can never produce a wrong method. A
+value the per-class gate refuses, such as a plain `list` at a `List[int]`
+argument, is never probed and keys simply as `(type, None)`.
 
 These extra key computations have a measured cost. A cached call at a
 gated-but-record-less position (a plain list at a `List[int]` argument)
@@ -1290,13 +1409,14 @@ member-dependent position, the key instead carries a tuple of booleans, one
 per recorded data member, saying whether the value has each one. This is
 read by the same function the value check itself uses, so the key always
 covers exactly what the check reads, and never the value's own identity:
-every instance of a class that declares the same members shares one entry. A
-member the class declares as an instance variable, whether by annotation or
-by attribute, property, or slot, reads `True` for every instance of that
-class, from a per-class memo that also records how to look up the class's
-own instances, so the read costs one set lookup rather than a walk of the
-MRO; a `ClassVar` member, being read off the class itself, is not part of
-the key at all. Because this read happens on every call, a cached call at a
+every instance of a class that declares the same members shares one entry.
+A member the class declares as an instance variable, whether by annotation
+or by attribute, property, or slot, reads `True` for every instance of that
+class. This comes from a per-class memo that also records how to look up
+the class's own instances, so the read costs one set lookup rather than a
+walk of the MRO. A `ClassVar` member, being read off the class itself, is
+not part of the key at all. Because this read happens on every call, a
+cached call at a
 member-dependent position costs roughly one microsecond more than an
 ordinary type-keyed one. A position with several of these dependences at
 once carries every relevant part of the key together: the value, the
@@ -1315,12 +1435,13 @@ is rebuilt and published in a single assignment following the same pattern
 watches. Registration takes a `threading.Lock`; reads are lock-free, which
 matters on the free-threaded Python 3.13 build.
 
-Every rendered error names the full signature involved:
+Every rendered error names the full signature involved, such as
 `area(shape: !Circle, scale: float = 1.0) @ shapes.py:12`, with `/` and `*`
-markers where relevant, and `*args: H` or `**kwargs: H` spelled out; the `!`
-marks the argument that actually failed, and a binding failure, as opposed
-to a type mismatch, is rendered in words after the signature
-(`-- no parameter 'scake'`, `-- missing 'y'`, `-- 'x' is positional-only`).
+markers where relevant, and `*args: H` or `**kwargs: H` spelled out. The
+`!` marks the argument that actually failed. A binding failure, as opposed
+to a type mismatch, is rendered in words after the signature instead, such
+as `-- no parameter 'scake'`, `-- missing 'y'`, or `-- 'x' is
+positional-only`.
 
 ---
 
@@ -1397,7 +1518,7 @@ did. Moving to the relation-based lookup settled two behavioural corners
 where the two disagreed, and confirmed a third already agreed:
 
 1. The MRO tie-break for equally specific class keys (§2.2, step 3)
-   carries over unchanged: when several keys in the mapping are equally
+   carries over unchanged. When several keys in the mapping are equally
    specific and the query itself is a class, the tie is broken by the
    query's own MRO, using the same `mro_index` helper the value-dispatch
    path uses. `{Enum, str}` resolves `class Color(str, Enum)` to `str`, and
@@ -1428,31 +1549,37 @@ unchanged.
 Beyond `resolve_hint` itself, building the relation on `issubhint` and
 `ishintstance` changed a handful of other behaviours relative to the
 package's summed-distance predecessor, each already described in its own
-section above: a non-`runtime_checkable` `Protocol` answers `False` rather
-than raising (§2.1); a constrained TypeVar behaves as the union of its
-constraints (§2.1, §3); `Callable`'s parameters are contravariant and its
-return type covariant (§2.1, §2.3); and `Exact` (§4) is understood by the
-relation directly. `eq_safenan`, which the cache and the relation both rely
-on for comparing `NaN`-bearing values, no longer imports `numpy` at all:
+section above:
+
+- a non-`runtime_checkable` `Protocol` answers `False` rather than raising
+  (§2.1);
+- a constrained TypeVar behaves as the union of its constraints (§2.1, §3);
+- `Callable`'s parameters are contravariant and its return type covariant
+  (§2.1, §2.3);
+- `Exact` (§4) is understood by the relation directly.
+
+`eq_safenan`, which the cache and the relation both rely on for comparing
+`NaN`-bearing values, no longer imports `numpy` at all, since
 `numbers.Real` already covers a numpy scalar through its own ABC
 registration.
 
 ### 8.2 Name-aware dispatch and `bagof.magic._polymorph`
 
 `bagof.magic._polymorph` already dispatches on **field name**, for a
-`Magic` class's polymorphic construction: it computes once, per class,
-where each constrained field arrives (a position for a positional field,
-its public name for a keyword-able one), binds one call to those names,
-checks each field's value against a `Literal`-shaped specification, and
-breaks ties by `(priority, number of specs, precision, MRO depth)`, a
-lexicographic stand-in for "priority, then specificity over names, then MRO
-depth." This is exactly this package's own bind-then-compare model,
-specialised to the parameter list of one generated `__init__`. A field's
-`on={...}` clause corresponds to a `Method` whose `Signature` is the owning
-class's `__init__` signature, with the constrained names' hints replaced by
-the field's own value specifications and every other name read as `Any`;
-selecting among them corresponds to
-`Function(dispatch_defaults=True).dispatch(*args, **kwargs)`; and
+`Magic` class's polymorphic construction. It computes once, per class,
+where each constrained field arrives — a position for a positional field,
+its public name for a keyword-able one. It then binds one call to those
+names and checks each field's value against a `Literal`-shaped
+specification. Ties are broken by `(priority, number of specs, precision,
+MRO depth)`, a lexicographic stand-in for "priority, then specificity over
+names, then MRO depth." This is exactly this package's own bind-then-compare model,
+specialised to the parameter list of one generated `__init__`.
+
+A field's `on={...}` clause corresponds to a `Method` whose `Signature` is
+the owning class's `__init__` signature, with the constrained names' hints
+replaced by the field's own value specifications and every other name read
+as `Any`. Selecting among them corresponds to
+`Function(dispatch_defaults=True).dispatch(*args, **kwargs)`, and
 `AmbiguousPolymorphError`/`NoPolymorphError` correspond to the dispatch
 errors of §5. No adapter from positions to names is needed to make this
 correspondence work, because both models are name-aware from the start.
@@ -1499,22 +1626,24 @@ Each case below is covered by a dedicated test.
   is reachable yet never actually matches, and the call raises
   `NoMethodError` rather than crashing.
 - A runtime protocol with data members is read member by member, with the
-  value-level check keyed by which members the value actually has (§2.3); a
-  class that annotates a member sits below the protocol and wins over it,
+  value-level check keyed by which members the value actually has (§2.3).
+- A class that annotates a member sits below the protocol and wins over it,
   whether the call is positional or keyword, and an instance of it that
-  never set the member is still in the protocol at the value level too; a
-  class that declares nothing, whose instance later acquires the member
-  anyway, stays genuinely ambiguous against the protocol; an inherited
-  annotation still counts; the two member kinds, instance variable and
-  class variable, are mutually exclusive, exactly as the type checkers
-  read them; a subclass that redeclares an inherited member as `ClassVar`
-  still sits below the protocol; a text annotation's marker is looked up by
-  name rather than evaluated, so an import alias, a module-qualified name,
-  or a user class named `InitVar` are all read correctly; a dataclass field
-  with `init=False` counts as a member; an `InitVar` and a `TypedDict`'s
-  own keys do not; and a read-only member, such as a property with no setter
-  or a `Final` attribute, counts, a deliberate divergence from what a type
-  checker would accept.
+  never set the member is still in the protocol at the value level too.
+- A class that declares nothing, whose instance later acquires the member
+  anyway, stays genuinely ambiguous against the protocol.
+- An inherited annotation still counts, and a subclass that redeclares an
+  inherited member as `ClassVar` still sits below the protocol.
+- The two member kinds, instance variable and class variable, are mutually
+  exclusive, exactly as the type checkers read them.
+- A text annotation's marker is looked up by name rather than evaluated, so
+  an import alias, a module-qualified name, or a user class named
+  `InitVar` are all read correctly.
+- A dataclass field with `init=False` counts as a member; an `InitVar` and
+  a `TypedDict`'s own keys do not.
+- A read-only member, such as a property with no setter or a `Final`
+  attribute, counts toward a protocol's requirement — a deliberate
+  divergence from what a type checker would accept.
 - ABC registration is honoured through `issubclass`; a late `register()`
   call invalidates the cache through the `abc` cache token.
 - A diamond `class D(B, C)` resolves to `B`; a class compared against a
@@ -1554,7 +1683,7 @@ Each case below is covered by a dedicated test.
 - `TypeVar(bound=float, default=int)` reads as bound to `float`; an `int`
   argument does not match it, since there is no numeric-tower promotion at
   runtime.
-- A native PEP 695 `TypeVar` with no `__default__` is read through
+- A native [PEP 695] `TypeVar` with no `__default__` is read through
   `getattr(..., NoDefault)` rather than `.has_default()`.
 - `list[int]`, on Python 3.9 and 3.10, is not mistaken for an ordinary
   class.
@@ -1636,12 +1765,16 @@ Each case below is covered by a dedicated test.
 Some capabilities are explicitly out of scope for the design, either
 permanently or pending further work.
 
-Some capabilities are not planned at all: `invoke`/next-method
-fall-through to a less specific overload; dispatch on a function's return
-type; dispatch on a keyword-only parameter that is not itself part of the
-call's binding; static overload synthesis (the kind a type checker performs
-at analysis time); and asymmetric, left-to-right argument precedence in the
-style of CLOS (§1). The design is symmetric throughout, by choice.
+A handful of capabilities are not planned at all, because they conflict with
+the symmetric design (§1):
+
+- `invoke`/next-method fall-through to a less specific overload;
+- dispatch on a function's return type;
+- dispatch on a keyword-only parameter that is not itself part of the call's
+  binding;
+- static overload synthesis, the kind a type checker performs at analysis
+  time;
+- asymmetric, left-to-right argument precedence in the style of CLOS.
 
 Other work is deferred, and is tracked separately:
 
@@ -1654,16 +1787,18 @@ Other work is deferred, and is tracked separately:
   repeated `ParamSpec` or `TypeVarTuple`: two incomparable open prefixes,
   or two incomparable runs, stay ambiguous, and `*args: *Ts` never beats a
   plain `*args`.
-- `P.args` and `P.kwargs` as first-class components (they remain an `Any`
-  tail); `ParamSpec(bound=...)`; PEP 696 defaults on a `ParamSpec`; and the
+- The following are all out of scope for `ParamSpec`: `P.args` and
+  `P.kwargs` as first-class components, which for now remain an `Any`
+  tail; `ParamSpec(bound=...)`; [PEP 696] defaults on a `ParamSpec`; and the
   consistency of one `ParamSpec` across *nested* positions within a single
-  hint (only a top-level, landed `Callable` joins a group) are all out of
-  scope.
-- More than one unpack in a single parameter list; `Unpack[Ts]` written on
-  `**kwargs`; PEP 696 defaults on a `TypeVarTuple`; `TypeVarTuple` bounds
-  (which do not exist in the specification); and a `*Ts` in the middle of
-  a `Callable` parameter list followed by a fixed suffix (which degrades to
-  an open shape instead) are all out of scope for `TypeVarTuple`.
+  hint, since only a top-level, landed `Callable` joins a group.
+- The following are all out of scope for `TypeVarTuple`: more than one
+  unpack in a single parameter list; `Unpack[Ts]` written on `**kwargs`;
+  [PEP 696] defaults on a `TypeVarTuple`; `TypeVarTuple` bounds, which do
+  not exist in the [typing
+  specification](https://typing.python.org/en/latest/spec/generics.html);
+  and a `*Ts` in the middle of a `Callable` parameter list followed by a
+  fixed suffix, which degrades to an open shape instead.
 
 ---
 
@@ -1677,12 +1812,12 @@ recognise. Two facts about the summed-distance baseline this improves on
 shaped the approach.
 
 First, nothing in that baseline actually crashed, but a great deal of it
-was silently dead: for every modern construct tested, its
+was silently dead. For every modern construct tested, its
 `issubhint`/`ishintstance` answered `False` in both directions, so a method
 annotated with a `type` alias, a `NewType`, `Never`, `TypeIs`, or
 `Required[...]`, for instance, registered successfully and simply never
 fired. For a dispatcher, that is worse than an outright crash, since
-nothing signals the mistake; §11.2 turns "silently dead" into "understood,
+nothing signals the mistake. §11.2 turns "silently dead" into "understood,
 or explicitly and visibly degraded."
 
 Second, `typing.X` and the corresponding `typing_extensions.X` are not the
@@ -1699,12 +1834,12 @@ the `_compat.spellings(name)` helper.
 
 | Construct | Native since | `typing_extensions` backport | Handling and scope |
 |---|---|---|---|
-| PEP 695 `def f[T]` / `class C[T]` | 3.12 | — (syntax only) | `__type_params__` holds ordinary `TypeVar`s; dispatch treats them identically to legacy ones. A default is read through `getattr(tv, "__default__", tx.NoDefault)`, since a native 3.12 TypeVar has no `has_default()`. **Supported.** |
-| PEP 695 `type X = …` (`TypeAliasType`) | 3.12 | 4.6+ | `resolve_alias` detects one by duck type (`__value__` plus `__type_params__`) or either spelling, returns `__value__`, and substitutes arguments for a subscripted `G[int]` through typing's own `__getitem__`; resolution is recursive, with a cycle guard, and runs at the top of `issubhint`/`ishintstance` and from `normalise_hint` (not from `unwrap`). **Supported.** |
-| PEP 613 `TypeAlias` | 3.10 | 4.x | The bound value is an ordinary hint; the bare marker itself falls under the unknown-form rule. **Supported (trivially).** |
-| PEP 696 defaults | 3.13 | 4.4+ | Only the bound or constraints are read, through `_typevar_upper`; the default is ignored. **Supported.** |
-| PEP 646 `TypeVarTuple`/`Unpack`/`*Ts` | 3.11 | 4.1+ | `Unpack[Ts]` inside `Tuple[...]` is an open run of zero or more `Any`, split into prefix and suffix by the tuple-shape classifier; a fixed prefix or suffix captures the rest, a longer one is stricter, and `Tuple[*Ts] ≡ Tuple[Any, ...]`; a repeated `*Ts` at top-level `Tuple` slots (and in `Callable[[int, *Ts], R]`, through the open-tail path) is solved jointly by greatest element at the hint level; `*args: *Ts` reads as an `Any` tail sharing that same run; a bare `Ts` or a top-level `Unpack[Ts]` used as a parameter, and two open runs in one list, both raise `TypeError` at registration. Value-level solving is deferred (§10); a `*Ts` in the middle of a list followed by a fixed suffix degrades to an open shape; `Unpack[Ts]` on `**kwargs`, and PEP 696 defaults on a `TypeVarTuple`, are both out of scope. **Supported at the hint level.** |
-| PEP 612 `ParamSpec`/`Concatenate` | 3.10 | 4.x | `Callable[[int], R] < Callable[Concatenate[int, P], R] < Callable[P, R] ≡ Callable[..., R]`, with `...`/bare `P` at the top of the parameter-list order (§2.1); `Concatenate` is a contravariant prefix, and a longer prefix is stricter; a repeated `P` is solved jointly by greatest element at the hint level; `*args: P.args` reads as an `Any` tail; a bare `P` or `Concatenate` used as a parameter raises `TypeError` at registration. Value-level solving is deferred (§10). **Supported at the hint level.** |
+| [PEP 695] `def f[T]` / `class C[T]` | 3.12 | — (syntax only) | `__type_params__` holds ordinary `TypeVar`s; dispatch treats them identically to legacy ones. A default is read through `getattr(tv, "__default__", tx.NoDefault)`, since a native 3.12 TypeVar has no `has_default()`. **Supported.** |
+| [PEP 695] `type X = …` (`TypeAliasType`) | 3.12 | 4.6+ | `resolve_alias` detects one by duck type (`__value__` plus `__type_params__`) or either spelling, returns `__value__`, and substitutes arguments for a subscripted `G[int]` through typing's own `__getitem__`; resolution is recursive, with a cycle guard, and runs at the top of `issubhint`/`ishintstance` and from `normalise_hint` (not from `unwrap`). **Supported.** |
+| [PEP 613] `TypeAlias` | 3.10 | 4.x | The bound value is an ordinary hint; the bare marker itself falls under the unknown-form rule. **Supported (trivially).** |
+| [PEP 696] defaults | 3.13 | 4.4+ | Only the bound or constraints are read, through `_typevar_upper`; the default is ignored. **Supported.** |
+| [PEP 646] `TypeVarTuple`/`Unpack`/`*Ts` | 3.11 | 4.1+ | `Unpack[Ts]` inside `Tuple[...]` is an open run of zero or more `Any`, split into prefix and suffix by the tuple-shape classifier; a fixed prefix or suffix captures the rest, a longer one is stricter, and `Tuple[*Ts] ≡ Tuple[Any, ...]`; a repeated `*Ts` at top-level `Tuple` slots (and in `Callable[[int, *Ts], R]`, through the open-tail path) is solved jointly by greatest element at the hint level; `*args: *Ts` reads as an `Any` tail sharing that same run; a bare `Ts` or a top-level `Unpack[Ts]` used as a parameter, and two open runs in one list, both raise `TypeError` at registration. Value-level solving is deferred (§10); a `*Ts` in the middle of a list followed by a fixed suffix degrades to an open shape; `Unpack[Ts]` on `**kwargs`, and [PEP 696] defaults on a `TypeVarTuple`, are both out of scope. **Supported at the hint level.** |
+| [PEP 612] `ParamSpec`/`Concatenate` | 3.10 | 4.x | `Callable[[int], R] < Callable[Concatenate[int, P], R] < Callable[P, R] ≡ Callable[..., R]`, with `...`/bare `P` at the top of the parameter-list order (§2.1); `Concatenate` is a contravariant prefix, and a longer prefix is stricter; a repeated `P` is solved jointly by greatest element at the hint level; `*args: P.args` reads as an `Any` tail; a bare `P` or `Concatenate` used as a parameter raises `TypeError` at registration. Value-level solving is deferred (§10). **Supported at the hint level.** |
 | `NewType` | 3.5 native / 3.10 class-based | typing_extensions class on 3.8/3.9 | `resolve_newtype` follows `__supertype__` recursively, inside `normalise_hint`. **Supported.** |
 | `Never`/`NoReturn` | 3.11/3.6 | 4.1+ | The bottom type; a `Never` parameter makes its method never applicable — an explicit way to forbid a combination. **Supported.** |
 | `TypeGuard`/`TypeIs` | 3.10/3.13 | 4.x/4.10+ | Treated as `bool`. **Supported.** |
@@ -1712,37 +1847,38 @@ the `_compat.spellings(name)` helper.
 | `Self` | 3.11 | 4.0+ | A method's `Self` resolves to the owner class through `__get__`; on a free function, it falls under the unknown-form rule. **Supported, or degraded, as appropriate.** |
 | `Required`/`NotRequired`/`ReadOnly` | 3.11/3.11/3.13 | 4.0+/4.9+ | Transparent qualifiers, unwrapped to their inner type. **Supported.** |
 | `Final`/`ClassVar` | 3.8 | — | Transparent qualifiers, unwrapped to their inner type. **Supported.** |
-| `Annotated`/`Doc` (PEP 727) | 3.9 / typing_extensions | 4.x/4.9+ | Transparent except for `EXACT` (§4); `Annotated` is a class through 3.12 but not on 3.13, which is pinned for. **Supported.** |
-| PEP 604 `X \| Y` | 3.10 | — | Recognised through `types.UnionType`, tracked in `UNION_TYPES`; on 3.14, `types.UnionType is typing.Union` is pinned for. **Supported.** |
-| PEP 585 `list[int]` | 3.9 | — | `isinstance(list[int], type)` is true on 3.9 and 3.10, so it is guarded with `get_origin(x) is None` before anything treats it as a plain class; equivalent to `List[int]`. A class written against one, such as `class GL(list[T])`, takes the TypeVars its PEP 585 bases mention, each at its declared variance, and its instances' declared parametrisations are read the same way a `Generic` instance's are (§2.3). **Supported.** |
+| `Annotated`/`Doc` ([PEP 727]) | 3.9 / typing_extensions | 4.x/4.9+ | Transparent except for `EXACT` (§4); `Annotated` is a class through 3.12 but not on 3.13, which is pinned for. **Supported.** |
+| [PEP 604] `X \| Y` | 3.10 | — | Recognised through `types.UnionType`, tracked in `UNION_TYPES`; on 3.14, `types.UnionType is typing.Union` is pinned for. **Supported.** |
+| [PEP 585] `list[int]` | 3.9 | — | `isinstance(list[int], type)` is true on 3.9 and 3.10, so it is guarded with `get_origin(x) is None` before anything treats it as a plain class; equivalent to `List[int]`. A class written against one, such as `class GL(list[T])`, takes the TypeVars its [PEP 585] bases mention, each at its declared variance, and its instances' declared parametrisations are read the same way a `Generic` instance's are (§2.3). **Supported.** |
 | User `Generic[T]` | 3.8 | — | The origin is checked by `isinstance`; arguments are compared by each position's declared variance, read live off `__parameters__` (`covariant`/`contravariant`/unflagged→invariant, `infer_variance`→invariant); a subclass is compared through the bases it was written with, and a value by the parametrisation it declares (§2.3). **Supported.** |
 | Unknown or future form | — | typing_extensions checked first | The opaque rule of §11.2. **Degraded, not crashed.** |
 
 A note on the numeric tower: `issubhint(int, TypeVar(bound=float))` is
-`False`. The specification's `float`/`complex` promotion is a convention
-type checkers apply statically; dispatch instead follows runtime
-`isinstance` semantics, which do not promote. Callers who want `int` and
-`float` to dispatch together write `numbers.Real` or `Union[int, float]`
-explicitly.
+`False`. [PEP 484]'s `float`/`complex` promotion is a convention type
+checkers apply statically; dispatch instead follows runtime `isinstance`
+semantics, which do not promote. Callers who want `int` and `float` to
+dispatch together write `numbers.Real` or `Union[int, float]` explicitly.
 
 ### 11.2 Forward-compatibility strategy
 
-An unrecognised hint is treated as opaque, behaving like `Any`: it is
+An unrecognised hint is treated as opaque, behaving like `Any`. It is
 accepted by every other hint as a superhint (`issubhint(x, unknown)` and
 `ishintstance(v, unknown)` both answer `True`), while being a subhint only
 of itself and of `Any`. The first time a given unrecognised form is
 encountered, it emits one `UnknownHintWarning` naming the form, so that a
-method built on it remains *reachable* rather than silently dead. Inside
-the relation, forms are handled in a fixed order: `normalise_hint` first
-resolves `None`, `NewType`, `TypeAliasType`, and any transparent qualifier;
-then known non-class forms are matched by identity, accepting either
-spelling; then an origin that is itself a class takes the ordinary
-structural path; and anything left over falls to the opaque rule above.
+method built on it remains *reachable* rather than silently dead.
+
+Inside the relation, forms are handled in a fixed order. `normalise_hint`
+first resolves `None`, `NewType`, `TypeAliasType`, and any transparent
+qualifier. Known non-class forms are then matched by identity, accepting
+either spelling, and an origin that is itself a class takes the ordinary
+structural path after that. Anything still left over falls to the opaque
+rule above.
 There is no bare `return False` fall-through anywhere for a form the
 relation simply does not recognise.
 
 The set of known special forms is kept as an explicit tuple for the common
-case, backed by a structural fallback in `_compat`: a value counts as a
+case, backed by a structural fallback in `_compat`. A value counts as a
 special form if it is a `type` whose `__module__` is `typing` or
 `typing_extensions` and it is not `Generic`, `Protocol`, or a `TypedDict`
 marker. Combined with the `try`/`except TypeError → False` guard already
@@ -1756,7 +1892,7 @@ on any currently supported Python, can raise its way out of the relation.
   stringified annotation using either raises `TypeError` inside
   `get_type_hints`, caught and deferred like any other forward reference.
   `NewType` is a `typing_extensions` class rather than a function.
-- On Python 3.9, PEP 585 arrives, and `isinstance(list[int], type)` is
+- On Python 3.9, [PEP 585] arrives, and `isinstance(list[int], type)` is
   true, so `issubclassable` and `safe_issubclass` guard against it with
   `get_origin(x) is None`.
 - On Python 3.10, `X | Y`, `ParamSpec`, `Concatenate`, `TypeAlias`, and
@@ -1764,11 +1900,11 @@ on any currently supported Python, can raise its way out of the relation.
   of everything are still required.
 - On Python 3.11, `Any` becomes a class; `Never`, `Self`, `LiteralString`,
   `TypeVarTuple`, `Unpack`, and `Required` all become native, and the
-  PEP 585 `GenericAlias` trap from 3.9/3.10 is fixed. `typing_extensions`
+  [PEP 585] `GenericAlias` trap from 3.9/3.10 is fixed. `typing_extensions`
   still supplies its own `Unpack`, `TypeVarTuple`, and `TypeVar`, distinct
-  from the native ones: `tx.Unpack is not typing.Unpack`, and the star
+  from the native ones. `tx.Unpack is not typing.Unpack`, and the star
   syntax `Tuple[int, *Ts]` produces `typing.Unpack[Ts]` while
-  `tx.Unpack[Ts]` produces the `typing_extensions` one, and the two are not
+  `tx.Unpack[Ts]` produces the `typing_extensions` one; the two are not
   even equal, so `spellings("Unpack")`, comparing by identity across both,
   is mandatory rather than a convenience. `tx.TypeVarTuple is not
   typing.TypeVarTuple` either, so a `TypeVarTuple` can only be recognised
@@ -1776,14 +1912,30 @@ on any currently supported Python, can raise its way out of the relation.
   switches between `*Ts` and `Unpack[Ts]` reads as a brand-new method,
   since structural equality compares the origin by identity. This is an
   acceptable consequence, not a bug.
-- On Python 3.12, PEP 695 syntax and a native `TypeAliasType` arrive
-  (duck-typed rather than assumed); native PEP 695 TypeVars still lack
+- On Python 3.12, [PEP 695] syntax and a native `TypeAliasType` arrive
+  (duck-typed rather than assumed); native [PEP 695] TypeVars still lack
   `__default__`; `Annotated` remains a class.
-- On Python 3.13, PEP 696 defaults, `TypeIs`, and `ReadOnly` all become
+- On Python 3.13, [PEP 696] defaults, `TypeIs`, and `ReadOnly` all become
   native; `Annotated` is no longer a class; the free-threaded build exists,
   which is why registration takes an explicit lock.
-- From Python 3.14 onward, lazy annotations (PEP 649/749) are read through
+- From Python 3.14 onward, lazy annotations ([PEP 649]/[PEP 749]) are read through
   `annotationlib` with `Format.FORWARDREF`; `Union` becomes a class, with
   `types.UnionType is typing.Union`. Anything newer than this is covered by
   the opaque rule, the structural special-form fallback, and `spellings()`,
   producing a warning rather than a crash.
+
+[PEP 483]: https://peps.python.org/pep-0483/
+[PEP 484]: https://peps.python.org/pep-0484/
+[PEP 585]: https://peps.python.org/pep-0585/
+[PEP 586]: https://peps.python.org/pep-0586/
+[PEP 604]: https://peps.python.org/pep-0604/
+[PEP 612]: https://peps.python.org/pep-0612/
+[PEP 613]: https://peps.python.org/pep-0613/
+[PEP 646]: https://peps.python.org/pep-0646/
+[PEP 649]: https://peps.python.org/pep-0649/
+[PEP 695]: https://peps.python.org/pep-0695/
+[PEP 696]: https://peps.python.org/pep-0696/
+[PEP 727]: https://peps.python.org/pep-0727/
+[PEP 749]: https://peps.python.org/pep-0749/
+[Julia]: https://docs.julialang.org/en/v1/manual/methods/
+[Wiki]: https://en.wikipedia.org/wiki/Multiple_dispatch
