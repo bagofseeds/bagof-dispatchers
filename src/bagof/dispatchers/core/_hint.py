@@ -47,12 +47,12 @@ class Hint(tx.Generic[_T_co]):
     !!! example
         ```pycon
         >>> from bagof.dispatchers import Hint
-        >>> from bagof.dispatchers.core import issubhint
-        >>> issubhint(int, Hint[int])
+        >>> from bagof.dispatchers.core import ishintstance
+        >>> ishintstance(int, Hint[int])
         True
-        >>> issubhint(bool, Hint[int])
+        >>> ishintstance(bool, Hint[int])
         True
-        >>> issubhint(str, Hint[int])
+        >>> ishintstance(str, Hint[int])
         False
         ```
     """

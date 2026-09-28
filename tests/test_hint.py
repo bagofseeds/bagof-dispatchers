@@ -114,6 +114,19 @@ def test_value_level_hint_of_exact() -> None:
     assert ishintstance(int, Hint[Exact[tx.Any]]) is False
 
 
+def test_hint_of_exact_is_structural_not_equivalent() -> None:
+    # `Hint[Exact[X]]` matches only the structurally identical hint `X`, not a
+    # hint merely equivalent to it. A free `TypeVar` accepts the same values as
+    # `Any` and so is equivalent to it, but it is not the hint `Any`, so it
+    # does not match `Hint[Exact[Any]]`. This is what makes the exact match use
+    # `_same_hint` rather than `_equivalent`.
+    T = tx.TypeVar("T")
+    assert ishintstance(T, Hint[Exact[tx.Any]]) is False
+    assert ishintstance(tx.Any, Hint[Exact[tx.Any]]) is True
+    assert issubhint(Hint[Exact[T]], Hint[Exact[tx.Any]]) is False
+    assert issubhint(Hint[Exact[tx.Any]], Hint[Exact[tx.Any]]) is True
+
+
 # --- hint level --------------------------------------------------------
 #
 # At the hint level, only another `Hint` form is ever a sub-hint of a `Hint`
