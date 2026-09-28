@@ -4,15 +4,19 @@ icon: fontawesome/solid/database
 
 # Your own registry
 
-`@dispatch` is a ready-made registry that keeps functions **separate per
-module** — the same name in two modules is two independent functions. Build a
-`Dispatcher` when you want a **shared** function several modules extend: a
-`Dispatcher` keys a function by its qualified name alone, so every module
-registering that name into the one instance extends a single function.
+[`dispatch`][bagof.dispatchers.dispatch] is a ready-made registry that keeps
+functions separate per module, so the same name defined in two different
+modules produces two independent functions. A
+[`Dispatcher`][bagof.dispatchers.Dispatcher] built directly behaves
+differently: it keys a function by its qualified name alone, so every module
+that registers that name into the same `Dispatcher` instance extends a
+single, shared function. Build one when several modules need to contribute
+overloads to what is conceptually one generic function.
 
-Reach a function to hand around through the `functions` namespace. It
-**get-or-creates**, so a registry and its callers can name the same function in
-any order:
+A function held by a `Dispatcher` is reached through its `functions`
+namespace, which get-or-creates: naming a function that does not exist yet
+creates it empty, so a registry and the modules that register onto it can
+name the same function in either order:
 
 ```pycon
 >>> from bagof.dispatchers import Dispatcher
@@ -27,8 +31,9 @@ True
 'int:7'
 ```
 
-`functions` is a bare namespace with **no methods of its own**, so a function
-may be named like anything — `register`, `items`, `map` — without colliding:
+The `functions` namespace exposes no methods of its own, so a function may be
+given any name, including one that would otherwise collide with a namespace
+method, such as `register`, `items`, or `map`:
 
 ```pycon
 >>> registry = Dispatcher()
@@ -42,10 +47,12 @@ may be named like anything — `register`, `items`, `map` — without colliding:
 True
 ```
 
-Attribute access ignores names beginning with `_`, so a REPL or a tool probing
-for dunders never mints an empty function; item access does not, so
-`registry.functions["_x"]` still names one. For the same reason, do not register
-an anonymous overload (`@dispatch def _`, or a `lambda`) directly on the
-module-level `dispatch`: they all key the one `"_"` or `"<lambda>"` name and
-collapse into a single function. Give each overload a real name, or overlay
-hints onto a named `def`.
+Attribute access ignores names beginning with an underscore, so a REPL or a
+tool probing for dunder attributes never mints an empty function by
+accident. Item access does not apply that rule, so `registry.functions["_x"]`
+still names a function whose name starts with an underscore. This distinction
+matters for anonymous overloads too: registering `@dispatch def _` or a
+`lambda` directly keys the function by the literal name `"_"` or
+`"<lambda>"`, so several such registrations on the same registry collapse
+into a single function instead of staying independent. Give each overload a
+real name, or overlay hints onto a named `def`, to avoid the collision.

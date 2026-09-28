@@ -4,8 +4,10 @@ icon: fontawesome/solid/plug
 
 # Protocols
 
-A `runtime_checkable` protocol matches a value by what it **has**, not by
-what it inherits. A protocol can ask for a data member as well as methods:
+A [`runtime_checkable`][typing.runtime_checkable] protocol describes a shape
+a value can have, rather than a class it must inherit from, and dispatch
+matches a value against it by checking whether the value has that shape. A
+protocol can require a data member as well as methods:
 
 ```pycon
 >>> import typing_extensions as tx
@@ -29,18 +31,19 @@ what it inherits. A protocol can ask for a data member as well as methods:
 'hello, Ada'
 ```
 
-A data member counts when the value sets it on itself, or when its class
-declares it: an annotation, a class attribute, a property or a slot. A
-method
-counts when the value's class defines it. Members are looked up without
-running any of the value's code: a property is not called, and
-`__getattr__` is not asked. A class that lists the protocol among its bases
-always matches, as with `isinstance`.
+A data member counts as present when the value sets it on itself, or when
+the value's class declares it through an annotation, a class attribute, a
+property, or a slot. A method counts as present when the value's class
+defines it. Dispatch looks up these members without running any of the
+value's own code: it never calls a property, and it never falls through to
+`__getattr__`. A class that lists the protocol among its bases always
+matches it, the same as `isinstance` would find.
 
 ## A class is more specific than a protocol it declares
 
-An overload on a class wins over one on a protocol when the class
-**declares** every member, much as a type checker reads it: an annotation
+When a class declares every member a protocol requires, an overload written
+for the class wins over one written for the protocol. A class declares a
+member the same way a type checker reads it: through an annotation
 (`name: str`), a class attribute, a property, a slot, or a dataclass
 field.
 
@@ -58,23 +61,29 @@ field.
 'hello, Ada'
 ```
 
-An annotation counts whether or not `__init__` sets the attribute, and
-whether it is written on the class or on one of its bases. So an instance
-of `User` matches `Named` even before `name` is set. Python's own
-`isinstance` differs here: it looks for the attribute itself.
+An annotation declares a member whether or not `__init__` actually sets the
+corresponding attribute, and whether the annotation is written on the class
+itself or inherited from one of its bases. An instance of `User` therefore
+matches `Named` even before `name` is set on it, which is where dispatch
+differs from `isinstance`: `isinstance` looks for the attribute to actually
+be present, while dispatch reads the declaration.
 
-A read-only member also counts: a property without a setter, or
-`name: Final = "x"`. A type checker rejects those for `Named`, whose `name`
-can be assigned; dispatch only reads the member, so it accepts them.
+A read-only member also counts as declared: a property without a setter, or
+an annotation such as `name: Final = "x"`. A type checker would reject
+either of these as satisfying `Named`, since `Named.name` can be assigned to,
+but dispatch only ever reads the member, so it accepts both.
 
 A sub-protocol is more specific than the protocols it extends.
 
 ## Class variables
 
-A member the protocol declares as a `ClassVar` is read off the class, and
-only a `ClassVar` annotation declares it, with a value or without. A plain
-class attribute does not (it is an instance variable's default), and
-neither does an attribute set on the instance:
+When a protocol declares a member as a [`ClassVar`][typing.ClassVar],
+dispatch reads that member off the class rather than off the instance. Only
+a `ClassVar` annotation declares a member this way, whether or not the
+annotation carries a value. A plain class attribute does not declare a class
+variable; it declares an instance variable's default, and dispatch reads it
+accordingly. An attribute set on the instance does not count as a class
+variable either:
 
 ```pycon
 >>> from typing import ClassVar
@@ -97,15 +106,17 @@ neither does an attribute set on the instance:
 'something'
 ```
 
-The other way round, a `ClassVar` never declares an ordinary member such as
-`name`, even with a value, and neither does a dataclass `InitVar`. Both
-rules are the ones type checkers apply.
+The relationship holds in the other direction too: a `ClassVar` declaration
+never declares an ordinary instance member such as `name`, even when it
+carries a value, and neither does a dataclass `InitVar`. Both rules match
+how static type checkers read class variables and instance variables.
 
 ## When a call matches both
 
-A class that declares none of the protocol's members is neither more nor
-less specific than the protocol. An instance that is given the member
-matches both overloads, and the call is ambiguous:
+A class that declares none of a protocol's members is neither more specific
+nor less specific than the protocol itself. When an instance of such a class
+is given the member some other way, it satisfies both the protocol and the
+class, and a call matching both overloads is ambiguous:
 
 ```pycon
 >>> from bagof.dispatchers import Function, AmbiguousMethodError
@@ -123,11 +134,13 @@ matches both overloads, and the call is ambiguous:
 ambiguous
 ```
 
-Registering the two gives no warning, and `ambiguities()` does not list
-them: the clash only shows at the call. Annotate the member on the class
-(`name: str`) to make its overload the more specific one, or give one
-overload a higher `priority`.
+Registering the two overloads produces no warning, and
+[`ambiguities()`][bagof.dispatchers.Function.ambiguities] does not list them
+as a pair, because the clash depends on what a particular instance happens
+to have and only shows up at the call. To resolve it, annotate the member on
+the class (`name: str`) so its overload becomes the more specific one, or
+give one overload a higher `priority`.
 
 !!! note
     A protocol without `@runtime_checkable` cannot be checked against a
-    value, so an overload on one never matches.
+    value at all, so an overload written for one never matches.

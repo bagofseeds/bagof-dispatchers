@@ -4,9 +4,11 @@ icon: fontawesome/solid/circle-xmark
 
 # When nothing matches
 
-A call no overload accepts raises `NoMethodError`, which is a `TypeError` — so
-existing `except TypeError:` handling keeps working. It carries the function
-name and the closest overloads:
+When no registered overload accepts a call, dispatch raises
+[`NoMethodError`][bagof.dispatchers.NoMethodError]. Because
+`NoMethodError` is also a `TypeError`, code that already catches
+`TypeError` keeps working without modification. The error carries the
+function's name and the overloads that came closest to matching:
 
 ```pycon
 >>> from bagof.dispatchers import Function, NoMethodError, DispatchError
