@@ -333,10 +333,14 @@ multiply.
   origin differs from the super-hint's is re-expressed as a parametrisation of
   the super-hint's origin before its slots are compared, through the bases each
   class was *written* with (`__orig_bases__`, read off the class's own
-  namespace; a class with none of its own is followed through `__bases__`),
-  breadth-first and cycle-guarded, so the nearest base wins and, between bases
-  at the same depth, the first listed (a diamond `class D(A, B)` over
-  `A(Box[int])` and `B(Box[str])` is a `Box[int]`). Each base is filled in with the sub-hint's
+  namespace; a class with none of its own is followed through `__bases__`).
+  Every base is followed, and the sub-hint is below the super-hint when any
+  parametrisation it reaches is (#64): a diamond `class D(A, B)` over
+  `A(Box[int])` and `B(Box[str])` is both a `Box[int]` and a `Box[str]`, as
+  `class Two(List[T], Container[U])` makes `Two[int, str]` both a
+  `Container[int]` and a `Container[str]`. A type checker rejects such a
+  class; accepting either keeps the order transitive through the bases a
+  class names. Each base is filled in with the sub-hint's
   own arguments by typing's own subscription (`Box[T][bool]` is `Box[bool]`),
   pairing arguments to variables by identity, not position — so `class
   Flip(Pair[B, A], Generic[A, B])` makes `Flip[int, str]` a `Pair[str, int]`. A

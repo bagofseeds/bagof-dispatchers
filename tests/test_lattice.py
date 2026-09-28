@@ -96,6 +96,39 @@ class _Child(tx.List[int]):
     """A list subclass declaring `List[int]` through its base (#50, V5)."""
 
 
+class _Two(tx.List[_A], tx.Container[_B_]):
+    """Reaches `Container` through both bases (#64): `_Two[int, str]` is a
+    `Container[int]` through `List`, and a `Container[str]` through its own
+    base. A type checker rejects it; the relation accepts either."""
+
+
+class _Mid(_Box[_T]):
+    """Passes its argument on to `_Box`, for the diamond below (#64)."""
+
+
+class _MidInt(_Mid[int]):
+    """`_Mid[int]`, so `_Box[int]`."""
+
+
+class _MidStr(_Mid[str]):
+    """`_Mid[str]`, so `_Box[str]`."""
+
+
+class _MidBoth(_MidInt, _MidStr):
+    """Reaches `_Mid` twice, with other arguments: below both `_Box`es."""
+
+
+def _pep585_rows() -> tx.List[tx.Any]:
+    """The `_Two` rows again, written against `list[...]` (3.9+ only)."""
+    if sys.version_info < (3, 9):
+        return []
+
+    class _Two585(list[_A], tx.Container[_B_]):  # type: ignore[misc]
+        """`_Two`, with its `list` base spelled as a PEP 585 alias."""
+
+    return [_Two585[int, str], _Two585[bool, str]]
+
+
 class _Movie(tx.TypedDict):
     """A concrete TypedDict, for the `TypedDict <= dict` corpus rows (#19)."""
 
@@ -228,6 +261,22 @@ CORPUS = [
     _Pair[int, str],
     _Flip[int, str],
     _Child,
+    # multi-base walks (#64): a class reaching `Container` through two bases
+    # with other arguments, and a diamond reaching `_Mid` twice. Each is below
+    # every parametrisation it reaches, so `_MidBoth <= _MidStr <= _Mid[str]
+    # <= _Box[str]` must give `_MidBoth <= _Box[str]` for transitivity.
+    _Two[int, str],
+    _Two[bool, str],
+    tx.Container[int],
+    tx.Container[bool],
+    tx.Container[str],
+    tx.Container[object],
+    _Mid[int],
+    _Mid[str],
+    _MidInt,
+    _MidStr,
+    _MidBoth,
+    *_pep585_rows(),
     # TypedDict rows (#19): the bare marker ("any TypedDict") and a concrete
     # TypedDict both sit strictly below `dict` -- every TypedDict value is a
     # dict, but a plain `dict` is neither. The marker is reduced to `dict` only

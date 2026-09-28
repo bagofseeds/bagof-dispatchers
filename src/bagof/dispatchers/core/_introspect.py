@@ -850,7 +850,6 @@ def _class_parameters(cls: type) -> tx.Tuple[tx.Any, ...]:
     return tuple(collected)
 
 
-@functools.lru_cache(maxsize=None)
 def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
     """The per-position variance of a generic's origin, or `#!python None`.
 
@@ -888,9 +887,35 @@ def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
         >>> _generic_variances(Box)
         ('covariant',)
         ```
+
+    Memoised per origin. A class whose metaclass defines `#!python __eq__`
+    without `#!python __hash__` cannot key the memo, and is read afresh on
+    each call instead.
     """
+    try:
+        return _memoised_variances(origin)
+    except TypeError:
+        # An unhashable class -- its metaclass defines `__eq__` alone -- can
+        # key neither the memo nor the standard-library table, which holds
+        # only hashable origins. A `TypeError` raised while reading a hashable
+        # origin is raised again by this second read.
+        return _declared_variances(origin)
+
+
+@functools.lru_cache(maxsize=None)
+def _memoised_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
+    """[`_generic_variances`][] for a hashable origin, memoised."""
     if origin in _STDLIB_VARIANCE:
         return _STDLIB_VARIANCE[origin]
+    return _declared_variances(origin)
+
+
+def _declared_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
+    """[`_generic_variances`][] for an origin outside the standard library.
+
+    Each position gives the variance its type variable declares; see
+    [`_generic_variances`][].
+    """
     if not isinstance(origin, type):
         return None
     params = _class_parameters(origin)

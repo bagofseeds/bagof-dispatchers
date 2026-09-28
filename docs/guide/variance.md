@@ -94,7 +94,8 @@ parametrised generic, both say what they hold:
 ```
 
 On Python 3.9 and later, a class written against a builtin generic works the
-same way, without `Generic`. Its `T` is invariant, like `list`'s:
+same way, without `Generic`. Its unflagged `T` is invariant, as it would be
+under `Generic`:
 
 ```python
 class GL(list[T]):
