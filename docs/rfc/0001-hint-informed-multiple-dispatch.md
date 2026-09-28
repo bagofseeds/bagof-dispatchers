@@ -10,9 +10,9 @@ icon: fontawesome/solid/file-lines
 This document is the design record for the dispatch engine: the subtype
 relation between type hints, the rule that decides which registered method a
 call selects, and the corner cases the hint vocabulary forces a position on.
-Citations name a source without quoting it verbatim: \\[[PEP 483]\] and
-\\[[PEP 484]\] for the typing specification, \\[[Julia]\] for Julia's own
-multiple-dispatch semantics, and \\[[Wiki]\] for background terminology.
+Citations name a source without quoting it verbatim: \[[PEP 483]\] and
+\[[PEP 484]\] for the typing specification, \[[Julia]\] for Julia's own
+multiple-dispatch semantics, and \[[Wiki]\] for background terminology.
 
 ---
 
@@ -86,7 +86,7 @@ discriminate on *which* type filled it, is out of scope.
 *Single dispatch* is the model behind Python's ordinary methods and
 [`functools.singledispatch`]: it chooses an implementation from the dynamic
 type of one argument. *Multiple dispatch* chooses from the dynamic types of
-several arguments at once \[[Wiki]\]. The dispatched name is a *generic
+several arguments at once [Wiki]\]. The dispatched name is a *generic
 function*; each registered implementation is a *method*; the methods
 *applicable* to a call are those whose parameter types accept the call's
 argument types; and the method actually chosen is the *most specific*
@@ -94,7 +94,7 @@ applicable one. Castagna, Ghelli and Longo formalised this in 1995 as
 overloaded functions with late binding, governed by a partial order over
 signatures.
 
-A type can be understood as the set of values it describes \[[PEP 483]\]: `t1` is
+A type can be understood as the set of values it describes [PEP 483]\]: `t1` is
 a subtype of `t2` when every value of `t1` is a value of `t2`, equivalently
 when every function accepting a `t2` also accepts a `t1`. For instance,
 `bool` is a subtype of `int`, which is a subtype of `object`. Hints other
