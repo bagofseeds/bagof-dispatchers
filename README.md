@@ -1,10 +1,9 @@
 # bagof-dispatchers
 
-**Multiple dispatch driven by type hints.**
-
-`bagof.dispatchers` lets you register several implementations of a function
-and picks the right one from the **runtime types of the arguments**, choosing
-the most specific matching signature the way Julia's multiple dispatch does.
+`bagof.dispatchers` provides multiple dispatch for Python. Register several
+implementations of a function, and each call runs the implementation whose
+declared parameter types most specifically match the runtime types of the
+arguments, the way Julia's multiple dispatch works.
 
 ```pycon
 >>> from bagof.dispatchers import dispatch
@@ -20,31 +19,34 @@ the most specific matching signature the way Julia's multiple dispatch does.
 12.0
 ```
 
-A second `def` of the same name **adds an overload** rather than replacing it;
-the name stays bound to a dispatched function you keep calling. See
-[Getting started][getting-started].
+The second `def` named `area` does not replace the first. It adds an
+overload, and the name `area` stays bound to a single dispatched function
+that chooses between the two on every call. [Getting started][getting-started]
+walks through registering overloads in more detail.
 
 ## What sets it apart
 
-- **Dispatch understands the full hint vocabulary**, not just plain classes:
-  unions, literals, generics, `TypedDict`, and `TypeVar` — ordered by its
-  declared variance — all narrow which overload matches. See
+- Dispatch reads the full vocabulary of type hints, not only plain classes.
+  Unions, literals, generics, `TypedDict`, and type variables ordered by
+  their declared variance all narrow which overload applies. See
   [Variance][variance].
-- **`Exact[C]` matches a type without its subclasses**, for the cases where
-  a subclass shouldn't quietly take another overload's place — `bool` is
-  otherwise also an `int`. See [Exact types][exact-types].
-- **Ambiguity and no-match are both clear errors, never a silent guess.**
-  `AmbiguousMethodError` names the overloads that tie; `NoMethodError` is a
-  `TypeError` carrying the closest ones. See
+- `Exact[C]` matches a value only when its type is exactly `C`, for the cases
+  where a subclass should not quietly take over another overload's place;
+  `bool` is otherwise also an `int`. See [Exact types][exact-types].
+- A call that matches no overload, or that matches two equally specific
+  overloads, is always a clear error rather than a silent guess.
+  `NoMethodError` is a `TypeError` carrying the closest candidates, and
+  `AmbiguousMethodError` names the overloads that tie. See
   [When two overloads are equally specific][ambiguous] and
   [When nothing matches][no-match].
-- **Dispatch is name-aware**: a call binds by position or by keyword, either
-  way, against the same overloads. See [Registering overloads][registering].
-- **Registries are explicit.** `@dispatch` keeps functions separate per
-  module; build a [`Dispatcher`][registries] when several modules should
-  extend one shared function instead.
-- Python 3.8 through current, with only
-  [`typing_extensions`][typing_extensions] as a dependency.
+- Dispatch is aware of argument names as well as positions, so a call binds
+  by position or by keyword, either way, against the same overloads. See
+  [Registering overloads][registering].
+- Registries are explicit. `@dispatch` keeps functions separate per module;
+  build a [`Dispatcher`][registries] when several modules should extend one
+  shared function instead.
+- The library supports Python 3.8 through the current release, and depends
+  on nothing beyond [`typing_extensions`][typing_extensions].
 
 ## Install
 
@@ -54,12 +56,13 @@ pip install git+https://github.com/bagofseeds/bagof-dispatchers.git
 
 ## Status
 
-Early. The API is settling, and things may still move. Issues and ideas are
-welcome at [bagofseeds/bagof-dispatchers][issues].
+The project is at an early stage: the API is still settling, and some of it
+may still move. Issues and ideas are welcome at
+[bagofseeds/bagof-dispatchers][issues].
 
-`bagof.dispatchers` is the low-level root of the `bagof` family: it owns the
-hint subtype relation and introspection helpers the other bags build on. See
-[Part of bagof][part-of-bagof] and the [project overview][bagof].
+`bagof.dispatchers` is the low-level root of the `bagof` family. It owns the
+hint subtype relation and the introspection helpers the other bags build on;
+see [Part of bagof][part-of-bagof] and the [project overview][bagof].
 
 [getting-started]: https://bagofseeds.github.io/bagof-dispatchers/guide/getting-started/
 [registering]: https://bagofseeds.github.io/bagof-dispatchers/guide/registering-overloads/
