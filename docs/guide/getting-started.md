@@ -4,9 +4,11 @@ icon: fontawesome/solid/rocket
 
 # Getting started
 
-Decorate each overload with `@dispatch`. A second `def` of the same name **adds
-an overload** rather than replacing the name, and a call runs the most specific
-one:
+Register each overload by decorating its `def` with
+[`dispatch`][bagof.dispatchers.dispatch]. A second `def` that shares the name
+of an earlier one does not replace it; it adds another overload to the same
+function, and a call runs whichever overload most specifically matches the
+arguments:
 
 ```pycon
 >>> from bagof.dispatchers import dispatch
@@ -22,5 +24,7 @@ one:
 12.0
 ```
 
-The name stays bound to a dispatched function you can keep calling; `@dispatch`
-returns it.
+After both definitions, the name `area` refers to a single dispatched
+function rather than to either `def` on its own. `@dispatch` returns that
+function, so `area` keeps working as an ordinary callable, except that it now
+chooses among every overload registered under that name.

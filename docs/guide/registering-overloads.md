@@ -4,10 +4,13 @@ icon: fontawesome/solid/list-ul
 
 # Registering overloads
 
-`@dispatch` reads the signature from the `def` it decorates. To register
-something that already exists, or to lay explicit hints over a function's
-parameters, register onto the function directly. All of these do the same job —
-add an overload:
+`@dispatch` reads its signature from the `def` it decorates, which covers the
+common case of writing a fresh function for each overload. Registering
+directly on the underlying
+[`Function`][bagof.dispatchers.Function] covers the rest: an implementation
+that already exists elsewhere, a class whose constructor should be
+dispatched on, or a function whose own parameters carry no hints of their
+own. Each of the forms below adds one overload.
 
 #### A `def`
 
@@ -22,6 +25,11 @@ add an overload:
 
 #### An existing callable
 
+A [`Function`][bagof.dispatchers.Function] built directly, and registered on
+by calling [`register`][bagof.dispatchers.Function.register], reaches the
+same overloads that `@dispatch` would have built, without requiring the
+implementation to be defined as a fresh `def`:
+
 ```pycon
 >>> from bagof.dispatchers import Function
 >>> describe = Function("describe")
@@ -32,7 +40,10 @@ add an overload:
 'a string'
 ```
 
-#### A class (on its `__init__`)
+#### A class, on its constructor
+
+Registering a class dispatches on its constructor's parameters, so calling
+the resulting function builds an instance:
 
 ```pycon
 >>> from bagof.dispatchers import Function
@@ -49,6 +60,11 @@ IntBox(5)
 
 #### Explicit hints
 
+`register` also accepts hints directly, instead of an implementation. Passed
+a tuple, a dict, or both, it returns a decorator that lays those hints over
+the wrapped function's own parameters, keeping that function's names,
+argument kinds, and defaults:
+
 ```pycon
 >>> from bagof.dispatchers import Function
 >>> scale = Function("scale")
@@ -59,9 +75,8 @@ IntBox(5)
 12
 ```
 
-In the explicit-hints form the hints are laid over the wrapped function's own
-parameters, keeping its names, kinds and defaults: **positional hints are a
-tuple** (always a tuple, even for one — `(int,)`), **named hints a dict**, and
-**keyword arguments are options** — only `priority`, a tie-break between
-otherwise equally specific overloads. Named hints go in the dict, never as
-keyword arguments.
+Positional hints are always a tuple, even for a single hint (`(int,)`), and
+named hints are always a dict. A keyword argument to `register` is not a
+hint: the only one it recognizes is `priority`, which breaks a tie between
+overloads that would otherwise be equally specific. Named hints belong in
+the dict; passing one as a keyword argument to `register` is an error.

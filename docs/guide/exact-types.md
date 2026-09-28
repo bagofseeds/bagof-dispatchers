@@ -4,8 +4,10 @@ icon: fontawesome/solid/bullseye
 
 # Exact types
 
-By default an overload for `int` also accepts `bool`, since `bool` is a subclass
-of `int`. `Exact[C]` accepts a value only when its type is **exactly** `C`:
+By default, an overload registered for `int` also accepts `bool`, because
+`bool` is a subclass of `int`. `Exact[C]` narrows a hint against that
+default: it matches a value only when the value's type is exactly `C`, not
+any of its subclasses:
 
 ```pycon
 >>> from bagof.dispatchers import dispatch, Exact
@@ -21,4 +23,5 @@ of `int`. `Exact[C]` accepts a value only when its type is **exactly** `C`:
 'a boolean'
 ```
 
-To a type checker `Exact[int]` reads as plain `int`.
+To a static type checker, `Exact[int]` is indistinguishable from plain
+`int`.
