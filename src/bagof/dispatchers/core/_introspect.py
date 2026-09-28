@@ -19,6 +19,7 @@ import re
 import sys
 import types
 from collections import abc
+from decimal import Decimal
 
 # dependencies
 import typing_extensions as tx
@@ -1040,9 +1041,11 @@ def eq_safenan(x: tx.Any) -> tx.Any:
         imaginary part is normalised component by component, so a
         NaN-bearing complex compares equal to itself, and two complex
         values compare equal when their non-NaN parts match and NaN
-        falls in the same position. A numpy scalar is recognised through
-        its registration under the [`numbers.Real`][] ABC, so this needs
-        no numpy import of its own.
+        falls in the same position. A [`Decimal`][decimal.Decimal]
+        carrying a NaN, whether quiet or signaling, is recognised too and
+        maps onto the same marker as a real NaN. A numpy scalar is
+        recognised through its registration under the [`numbers.Real`][]
+        ABC, so this needs no numpy import of its own.
 
     !!! example
         ```pycon
@@ -1055,6 +1058,11 @@ def eq_safenan(x: tx.Any) -> tx.Any:
         >>> cnan == cnan
         False
         >>> eq_safenan(cnan) == eq_safenan(cnan)
+        True
+        >>> from decimal import Decimal
+        >>> Decimal("nan") == Decimal("nan")
+        False
+        >>> eq_safenan(Decimal("nan")) == eq_safenan(Decimal("nan"))
         True
         ```
     """
@@ -1069,6 +1077,15 @@ def eq_safenan(x: tx.Any) -> tx.Any:
         math.isnan(x.real) or math.isnan(x.imag)
     ):
         return (_COMPLEX_NAN, eq_safenan(x.real), eq_safenan(x.imag))
+    # A Decimal is numbers.Number but neither numbers.Real nor
+    # numbers.Complex, so it misses both branches above and needs its own.
+    # Its NaN is a scalar real-valued NaN, so it collapses onto the same
+    # shared marker as a real NaN. Ask Decimal itself rather than
+    # math.isnan: a signaling NaN cannot be converted to float, so
+    # math.isnan(Decimal("snan")) raises, while Decimal.is_nan never does
+    # and recognises quiet and signaling NaN alike.
+    if isinstance(x, Decimal) and x.is_nan():
+        return _NAN
     return x
 
 
