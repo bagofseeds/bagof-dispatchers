@@ -179,30 +179,103 @@ _TYPEVAR_FAMILY = tuple(
 )
 
 
+# Every spelling of `TypeAliasType`, the runtime object behind a PEP 695
+# `type X = ...` alias, from both typing modules.
+_TYPE_ALIAS_TYPES = spellings("TypeAliasType")
+
+
+def _is_newtype(x: tx.Any) -> bool:
+    """Report whether `x` is a `NewType`, under any of its runtime forms."""
+    return callable(x) and hasattr(x, "__supertype__")
+
+
+def _is_type_alias_type(x: tx.Any) -> bool:
+    """Report whether `x` is a PEP 695 `type X = ...` alias, in either
+    spelling.
+
+    Both an instance check and a duck-typed fallback are tried, because a
+    native 3.12 `type X = ...` alias is not an instance of
+    `typing_extensions.TypeAliasType`, even though every alias, whichever
+    way it was spelled, carries `__value__` and `__type_params__`.
+    """
+    for alias_type in _TYPE_ALIAS_TYPES:
+        try:
+            if isinstance(x, alias_type):
+                return True
+        except TypeError:  # pragma: no cover  -- not a class on this version
+            pass
+    return hasattr(x, "__value__") and hasattr(x, "__type_params__")
+
+
+def ishint(x: tx.Any) -> bool:
+    """Report whether `x` is a type hint, rather than an ordinary value.
+
+    A type hint is anything that can legitimately stand as an annotation
+    or as an argument to the subtype relation, which includes far more
+    than a class alone. `x` counts as a hint when it is any of the
+    following: a bare [`None`][], which stands for
+    [`NoneType`][types.NoneType]; a string or
+    [`ForwardRef`][typing.ForwardRef] naming a type not yet resolved; a
+    class; a parametrised generic such as `#!python List[int]`, which has
+    a typing origin; a recognised special form such as
+    [`Union`][typing.Union] or [`Literal`][typing.Literal], or any other
+    object defined in [`typing`][] or `typing_extensions`, which leaves
+    room for a construct those modules add in a future release; and the
+    [`TypedDict`][tx.TypedDict] marker, a [`NewType`][typing.NewType], or
+    a PEP 695 `#!python type X = ...` alias.
+
+    An everyday value that was never meant to be a hint, such as a
+    number, a container instance, an ordinary function, or a sentinel
+    object, fails this check. A bare string is the one deliberate
+    exception: it counts as a hint here, since it may be a forward
+    reference, even though most callers that reject non-hints reject a
+    bare string too.
+
+    !!! example
+        ```pycon
+        >>> ishint(int)
+        True
+        >>> ishint(tx.Union)
+        True
+        >>> ishint("Foo")
+        True
+        >>> ishint(1)
+        False
+        ```
+    """
+    if x is None:
+        return True
+    if isinstance(x, (str, tx.ForwardRef)):
+        return True
+    if isinstance(x, type):
+        return True
+    if tx.get_origin(x) is not None:
+        return True
+    if is_special_form(x) or type(x).__module__ in (
+        "typing",
+        "typing_extensions",
+    ):
+        return True
+    return (
+        is_typeddict_marker(x)
+        or _is_newtype(x)
+        or _is_type_alias_type(x)
+    )
+
+
 def is_plausible_hint(obj: tx.Any) -> bool:
     """Report whether `obj` is shaped like something that could be a hint.
 
-    `obj` counts as plausible when it is a class, a recognised typing
-    special form, a member of the [`TypeVar`][typing.TypeVar] family, a
-    [`ForwardRef`][typing.ForwardRef], or simply an object defined
-    somewhere in `typing` or `typing_extensions`, which leaves room for a
-    construct those modules add in a future release. An everyday value
-    that was never meant to be a hint, such as a number, a string, a
-    container instance, or an ordinary function, fails this check, so
-    that the subtype relation can raise a clear error for it instead of
-    quietly treating it as equivalent to [`Any`][typing.Any].
+    This is [`ishint`][] with the one bare-string case excluded, since a
+    caller that rejects an implausible hint outright, such as a method
+    registration, has no namespace in which to resolve a forward
+    reference and so cannot accept a bare string name either. Every other
+    hint [`ishint`][] recognises counts as plausible here too. An everyday
+    value that was never meant to be a hint fails this check, so that the
+    caller can raise a clear error for it rather than register a method
+    that silently never matches.
     """
-    if isinstance(obj, type):
-        return True
-    if is_special_form(obj):
-        return True
-    if _TYPEVAR_FAMILY and isinstance(obj, _TYPEVAR_FAMILY):
-        return True
-    forward_ref = getattr(tx, "ForwardRef", None)
-    if isinstance(forward_ref, type) and isinstance(obj, forward_ref):
-        return True
-    module = getattr(obj, "__module__", None)
-    return module in ("typing", "typing_extensions")
+    return ishint(obj) and not isinstance(obj, str)
 
 
 # `typing.TypedDict` and `typing_extensions.TypedDict` are distinct objects

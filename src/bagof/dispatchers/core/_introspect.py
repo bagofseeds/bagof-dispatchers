@@ -29,6 +29,8 @@ from ._compat import (
     _LITERAL_FORMS,
     UNION_TYPES,
     NoneType,
+    _is_newtype,
+    _is_type_alias_type,
     canonical_typeddict,
     is_special_form,
     is_typeddict_marker,
@@ -178,8 +180,6 @@ _QUALIFIER_FORMS = (
     + spellings("ClassVar")
 )
 
-_TYPE_ALIAS_TYPES = spellings("TypeAliasType")
-
 # The bare, unparametrised tuple spellings. Used to tell a bare `Tuple` /
 # `tuple` from a subscripted alias whose arguments happen to be empty -- the
 # empty-tuple type `Tuple[()]` (mirrors `_relation._is_subscripted_tuple`,
@@ -189,24 +189,6 @@ _BARE_TUPLE_FORMS = spellings("Tuple") + (tuple,)
 # A generous cap: each pass either resolves one wrapper (strictly reducing
 # the hint) or leaves it untouched, so a handful of passes always settles.
 _MAX_NORMALISE_STEPS = 100
-
-
-def _is_type_alias_type(x: tx.Any) -> bool:
-    """Report whether `x` is a PEP 695 `type X = ...` alias, in either
-    spelling.
-
-    Both an instance check and a duck-typed fallback are tried, because a
-    native 3.12 `type X = ...` alias is not an instance of
-    `typing_extensions.TypeAliasType`, even though every alias, whichever
-    way it was spelled, carries `__value__` and `__type_params__`.
-    """
-    for alias_type in _TYPE_ALIAS_TYPES:
-        try:
-            if isinstance(x, alias_type):
-                return True
-        except TypeError:  # pragma: no cover  -- not a class on this version
-            pass
-    return hasattr(x, "__value__") and hasattr(x, "__type_params__")
 
 
 def resolve_alias(hint: tx.Any) -> tx.Any:
@@ -253,11 +235,6 @@ def _resolve_alias(hint: tx.Any, seen: tx.Tuple[tx.Any, ...]) -> tx.Any:
         except Exception:  # pragma: no cover  -- a value that refuses args
             return hint
     return _resolve_alias(value, seen + (alias,))
-
-
-def _is_newtype(x: tx.Any) -> bool:
-    """Report whether `x` is a `NewType`, under any of its runtime forms."""
-    return callable(x) and hasattr(x, "__supertype__")
 
 
 def resolve_newtype(hint: tx.Any) -> tx.Any:
