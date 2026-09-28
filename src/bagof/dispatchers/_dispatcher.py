@@ -1,19 +1,21 @@
-"""Registries of named functions: [`Dispatcher`][] and [`dispatch`][].
+"""Groups of dispatched functions: [`Dispatcher`][] and [`dispatch`][].
 
-A [`Dispatcher`][] holds a collection of named [`Function`][]s and
-hands them out through a small `functions` namespace. The module-level
-[`dispatch`][] is the ready-made registry most code uses: decorate a
-`#!python def` with it, and the most specific overload runs on each
-call.
+A [`Dispatcher`][] gathers several named [`Function`][]s together and
+gives access to them through its small `functions` namespace. Most code
+never builds one directly and instead uses the module-level
+[`dispatch`][] registry: decorating an ordinary `#!python def` with it
+turns that definition into an overload, and calling the resulting name
+runs whichever registered overload fits the arguments best.
 
-The two registries differ only in what identifies a function.
-[`dispatch`][] keys a function by its module together with its
-qualified name, so the same name defined in two modules produces two
-independent functions; a `#!python @dispatch def area` in one module
-never merges with one in another. A [`Dispatcher`][] you build yourself
-keys a function by its qualified name alone, so every module that
-registers that name into the same instance extends one shared
-function, which is how a generic function is built across modules.
+The two kinds of registry differ only in how they identify which
+function a given definition belongs to. [`dispatch`][] keys a function
+by its defining module together with its qualified name, so two modules
+that each define `#!python @dispatch def area` end up with two separate
+functions rather than one shared between them. A [`Dispatcher`][] built
+directly keys by qualified name alone, with no regard to the module, so
+several modules registering under the same name all extend one function
+in common. That sharing across modules is how a single dispatched
+function is assembled piece by piece from code spread across a package.
 """
 
 # stdlib
@@ -30,7 +32,7 @@ __all__ = ["Dispatcher", "dispatch"]
 
 
 def _qualname(fn: tx.Any) -> str:
-    """Return the qualified name a callable is keyed by, best effort."""
+    """Find the qualified name a callable should be keyed by."""
     name = getattr(fn, "__qualname__", None)
     if name is None:
         name = getattr(fn, "__name__", None)
@@ -42,17 +44,18 @@ def _qualname(fn: tx.Any) -> str:
 
 
 def _module_of(fn: tx.Any) -> tx.Optional[str]:
-    """Return the module a callable was defined in, or `None` if none."""
+    """Return the module a callable was defined in, or `None` if it has none.
+    """
     return getattr(fn, "__module__", None)
 
 
 def _is_impl(value: tx.Any) -> bool:
-    """Report whether `value` is an implementation rather than a hint overlay.
+    """Report whether `value` is an implementation, not a hint overlay.
 
-    A `#!python tuple` of positional hints, or a `#!python dict` of
-    named hints, is the overlay form. Any other callable, whether a
-    function, a class, or a callable instance, is the implementation
-    itself.
+    Registration accepts two shapes for its first argument: an overlay of
+    hints, written as a `#!python tuple` of positional hints or a
+    `#!python dict` of named ones, or the implementation itself, which
+    can be a plain function, a class, or any other callable object.
     """
     return callable(value) and not isinstance(value, (tuple, dict))
 
@@ -60,12 +63,12 @@ def _is_impl(value: tx.Any) -> bool:
 def _caller_module() -> tx.Optional[str]:
     """Return the `#!python __name__` of the module two frames up, if any.
 
-    This is called from a dunder method of the `functions` namespace,
-    and it names the module where the access was written: the user's
-    frame sits two levels above the call, above this helper and above
-    the dunder method that calls it. Only the module-level [`dispatch`][],
-    whose functions are keyed per module, uses this; a [`Dispatcher`][]
-    ignores it.
+    This is always called from within a dunder method of the `functions`
+    namespace, so the code that triggered the lookup sits two frames
+    above it, above both this helper and the dunder method calling it.
+    Naming that caller's module is only meaningful for the module-level
+    [`dispatch`][] registry, whose functions are keyed per module; a
+    [`Dispatcher`][] built directly has no use for it.
     """
     try:
         frame = sys._getframe(2)
@@ -79,10 +82,11 @@ def _caller_module() -> tx.Optional[str]:
 def _is_qualified(key: tx.Any) -> bool:
     """Report whether `key` is a `#!python (module, name)` pair of two strings.
 
-    That pair is the qualified spelling accepted alongside a bare name.
-    It names the module explicitly instead of taking it from the
-    calling frame, which is what looking up a function from a
-    cross-module re-export needs.
+    Naming a function this way, alongside the plain bare-name spelling,
+    names its module explicitly rather than inferring it from the
+    calling frame. Explicit naming is what a cross-module re-export of a
+    function needs, since the frame that performs the lookup there is not
+    the frame that registered the function.
     """
     return (
         isinstance(key, tuple)
@@ -93,29 +97,30 @@ def _is_qualified(key: tx.Any) -> bool:
 
 
 class _Functions:
-    """A protocol-only view onto a dispatcher's functions.
+    """A namespace of a dispatcher's functions, reached by name.
 
-    It exposes only the mapping protocol, `#!python view["area"]`,
+    Only the mapping protocol is exposed: `#!python view["area"]`,
     `#!python view.area`, `#!python "area" in view`,
-    `#!python for name in view`, and `#!python len(view)`, and defines
-    no named methods of its own, so every function name (`register`,
-    `items`, `map`, and so on) can be reached through it without
-    colliding with a method.
+    `#!python for name in view`, and `#!python len(view)`. No named
+    method of its own is defined, which matters because it means a
+    function called `register`, `items`, `map`, or anything else could
+    still be reached through this view without colliding with a method
+    of the same name.
 
-    Both item access and attribute access get or create: naming a
-    function that does not exist yet creates an empty one, so a
-    registry and its callers can reach the same function by name in any
-    order. Attribute access ignores names beginning with
-    `#!python _`, so a REPL or a tool probing for dunder attributes
-    never mints an empty function by accident; item access applies no
-    such filter, so a function can still be named with a leading
-    underscore through `#!python view["_x"]`.
+    Both item access and attribute access create a function on demand:
+    naming one that does not yet exist brings an empty one into being, so
+    a registry and whatever code reaches into it can agree on a function
+    by name regardless of which one runs first. Attribute access skips
+    names starting with `#!python _`, so that a REPL or a tool probing
+    for dunder attributes never creates an empty function as a side
+    effect; item access carries no such restriction, so a function whose
+    name does begin with an underscore is still reachable through
+    `#!python view["_x"]`.
 
-    Item access also accepts a `#!python (module, name)` pair, the
-    qualified spelling, which names the module explicitly rather than
-    reading it from the calling frame. That is how the module-level
-    registry's function is reached from a module other than the one
-    that registered it.
+    Item access additionally accepts a `#!python (module, name)` pair,
+    which names the module explicitly instead of inferring it from the
+    calling frame. That pair is how a module other than the one that
+    registered a function reaches it through the module-level registry.
     """
 
     # A name-mangled slot, so even the reference back to the dispatcher is not
@@ -163,16 +168,20 @@ class _Functions:
 
 
 class Dispatcher:
-    """A registry of named [`Function`][]s.
+    """A registry that groups overloads into named [`Function`][]s.
 
-    Register overloads by decorating a `#!python def` with the
-    dispatcher. Each `#!python def` of the same name adds an overload
-    rather than replacing the name, and the dispatcher returns the
-    [`Function`][] the overload joined, so the name stays bound to it.
+    Decorating an ordinary `#!python def` with a `Dispatcher` registers
+    it as an overload rather than binding the name to that one plain
+    function; a second `#!python def` given the same name adds a second
+    overload to the same name instead of replacing the first. In both
+    cases the decorator hands back the [`Function`][] the overload joined,
+    so the decorated name ends up bound to the dispatched function rather
+    than to the last individual implementation.
 
-    A `Dispatcher` you build keys each function by its qualified name
-    alone, so registering the same name from several modules into one
-    instance builds a single generic function shared across them.
+    A `Dispatcher` built this way keys each function purely by its
+    qualified name, with no reference to the module it was registered
+    from, so several modules that register under the same name all
+    contribute overloads to the same shared function.
 
     !!! example
         ```pycon
@@ -208,54 +217,56 @@ class Dispatcher:
 
     @property
     def functions(self) -> _Functions:
-        """The get-or-create namespace of this dispatcher's functions.
+        """The namespace through which this dispatcher's functions are reached.
 
-        This is a protocol-only view: `#!python d.functions.area` and
-        `#!python d.functions["area"]` both return the function named
-        `#!python "area"`, creating it empty if it does not already
-        exist, and the view defines no named methods of its own, so no
-        function name can collide with one.
+        `#!python d.functions.area` and `#!python d.functions["area"]`
+        both return the function named `#!python "area"`, creating an
+        empty one first if none exists yet under that name. The view
+        defines no named method of its own, so no function name can ever
+        collide with one.
 
-        Attribute access ignores names beginning with `#!python _`, so
-        a REPL or a tool probing for dunder attributes never mints an
-        empty function by accident. Item access applies no such filter,
-        so `#!python d.functions["_x"]` still names a function whose
-        name starts with an underscore. For that reason, avoid
-        registering an anonymous overload, such as
-        `#!python @dispatch def _` or a `#!python lambda`, on the
-        module-level [`dispatch`][]: every anonymous overload keys the
-        same `#!python "_"` or `#!python "<lambda>"` name and collapses
-        into a single function. Give each overload a real name instead,
-        or overlay hints onto a named `#!python def`.
+        Attribute access skips names beginning with `#!python _`, so
+        that a REPL or a tool probing for dunder attributes never
+        creates an empty function as a side effect. Item access carries
+        no such restriction, so `#!python d.functions["_x"]` still names
+        a function whose own name starts with an underscore. This is why
+        an anonymous overload, such as `#!python @dispatch def _` or a
+        bare `#!python lambda`, should be avoided on the module-level
+        [`dispatch`][] registry. Every anonymous overload shares the same
+        `#!python "_"` or `#!python "<lambda>"` name and so collapses
+        into one function regardless of where it was written. Giving each
+        overload a real name, or overlaying hints onto a named
+        `#!python def`, avoids that collision.
         """
         return self._view
 
     def __call__(self, *args: tx.Any, **options: tx.Any) -> tx.Any:
         """Register an overload, or return a decorator that does.
 
-        Used bare on a `#!python def`, as `#!python @d`, it registers
-        that function directly, taken as the implementation dispatched
-        on its own parameters, and returns the [`Function`][] it
-        belongs to. Used with an overlay of hints, as
-        `#!python @d((int,), {"scale": float})`, or with options, as
-        `#!python @d(priority=5)`, it instead returns a decorator that
-        registers the function it wraps with those hints laid over its
-        parameters.
+        Applied bare to a `#!python def`, as `#!python @d`, it registers
+        that function immediately, dispatched on the parameter hints it
+        already carries, and returns the [`Function`][] it now belongs
+        to. Applied with an overlay of hints instead, as
+        `#!python @d((int,), {"scale": float})`, or with options such as
+        `#!python @d(priority=5)`, it returns a decorator, which performs
+        the registration once it is applied to the function, using
+        whichever hints were laid over its parameters.
 
         The overlay follows the same convention as
-        [`Function.register`][]: positional hints are given as a tuple,
-        named hints as a dict, and keyword arguments are always
-        options, currently only `#!python priority`, never hints.
+        [`Function.register`][]: positional hints go in a tuple, named
+        hints in a dict, and any keyword argument is always an option
+        (currently only `#!python priority`) rather than a hint.
         """
         return self.register(*args, **options)
 
     def register(self, *args: tx.Any, **options: tx.Any) -> tx.Any:
         """Register an overload, or return a decorator that does.
 
-        This does the same thing as calling the dispatcher directly,
-        `#!python @d`; see [`__call__`][]. It returns the [`Function`][]
-        the overload joined, so the decorated name binds to the
-        dispatched function rather than to the plain implementation.
+        Calling `register` has exactly the same effect as calling the
+        dispatcher directly with `#!python @d`; see [`__call__`][] for
+        the full behaviour. It hands back the [`Function`][] the overload
+        just joined, so a decorated name is bound to the dispatched
+        function rather than to the plain implementation underneath it.
         """
         self._reject_bad_first_arg(args)
         if args and _is_impl(args[0]):
@@ -294,11 +305,12 @@ class Dispatcher:
     def _reject_bad_first_arg(args: tx.Tuple[tx.Any, ...]) -> None:
         """Reject a first argument that is neither hints nor a callable.
 
-        An overload is registered on a callable, or on a tuple or dict
-        overlay of hints. Anything else, such as a bare string or a
-        number, could only fail later in a more confusing way, so it is
-        refused immediately, with a message that points at the correct
-        spelling.
+        Registration only ever makes sense given a callable, or a tuple
+        or dict overlay of hints, as its first argument. Anything else,
+        such as a plain string or a number, would eventually fail deeper
+        inside registration in a way that is harder to trace back to the
+        mistake, so it is rejected here instead, with a message that
+        points toward the correct spelling.
         """
         if (
             args
@@ -315,13 +327,14 @@ class Dispatcher:
     def _discard_orphan(self, key: tx.Any, function: Function) -> None:
         """Drop a function created for a registration that then failed.
 
-        Registration creates the function before validating the
-        overload, so a failure would otherwise leave an empty function
-        reachable through the namespace. This is called only for a
-        function that this particular registration created, and it
-        removes the function only if it is still that same one and
-        still holds no methods, so a concurrent writer's registration
-        is never disturbed.
+        The function a registration targets is created before its
+        overload is validated, so a validation failure would otherwise
+        leave a permanently empty function sitting in the namespace. This
+        is called only on behalf of a registration that created the
+        function itself, and even then it only removes the function when
+        it is still the very same object and still has no methods, so a
+        concurrent registration that has since added to it is left
+        undisturbed.
         """
         with self._lock:
             if (
@@ -333,10 +346,11 @@ class Dispatcher:
     def clear_cache(self) -> None:
         """Drop every function's dispatch cache.
 
-        This is rarely needed, since caches are invalidated
-        automatically on registration and whenever the ABC registry
-        changes, but it remains available for a registry whose
-        applicable types were altered in a way nothing else observes.
+        Registration already invalidates a function's cache
+        automatically, and so does a change to the ABC registry, so this
+        method is rarely needed in practice. It stays available for the
+        remaining case: a change to what a type is applicable to that
+        nothing else in the dispatcher observes on its own.
         """
         with self._lock:
             for function in self._functions.values():
@@ -370,7 +384,8 @@ class Dispatcher:
     def _function_by_name(
         self, name: str, module: tx.Optional[str]
     ) -> Function:
-        """Return the function named `name`, creating it empty if new."""
+        """Return the function named `name`, creating an empty one if needed.
+        """
         function, _created = self._get_or_create(
             self._key_for_name(name, module), name
         )
@@ -391,12 +406,13 @@ class Dispatcher:
     def _get_or_create(
         self, key: tx.Any, name: tx.Optional[str]
     ) -> tx.Tuple[Function, bool]:
-        """Return the function at `key`, and whether this call created it.
+        """Return the function stored at `key`, and whether it was just
+        created.
 
-        The second value is `#!python True` only when the key was
-        absent and a fresh, empty function was created for it, so a
-        caller can tell a function it just created apart from one a
-        namespace access minted earlier.
+        The second value comes back `#!python True` only when `key` was
+        previously absent and a fresh, empty function had to be created
+        for it, letting a caller distinguish a function it just brought
+        into being from one that already existed, however it got there.
         """
         with self._lock:
             function = self._functions.get(key)
@@ -408,16 +424,17 @@ class Dispatcher:
 
 
 class _ModuleDispatcher(Dispatcher):
-    """The module-level [`dispatch`][] registry.
+    """The class behind the module-level [`dispatch`][] registry.
 
-    This behaves exactly like a [`Dispatcher`][] you build yourself,
-    except that a function is keyed by its module together with its
-    qualified name, so the same name defined in two modules names two
-    independent functions.
+    Everything about this matches an ordinary [`Dispatcher`][] built
+    directly, with one difference: a function is keyed by its defining
+    module together with its qualified name, so the same name defined in
+    two different modules names two separate functions rather than one
+    shared function.
 
-    Decorate a `#!python def` to register an overload; each
-    `#!python def` of the same name in the same module adds another
-    overload to it.
+    Decorating a `#!python def` registers an overload; a second
+    `#!python def` of the same name in the same module adds a second
+    overload to that same function.
 
     !!! example
         ```pycon
@@ -434,8 +451,9 @@ class _ModuleDispatcher(Dispatcher):
         'a string'
         ```
 
-    Lay explicit hints over a function's parameters with the overlay
-    form: positional hints as a tuple, named hints as a dict, and
+    The overlay form lays explicit hints over a function's parameters
+    instead of reading them from its annotations, with positional hints
+    given as a tuple and named hints as a dict, alongside
     `#!python priority` as a keyword option.
 
     !!! example
@@ -452,10 +470,10 @@ class _ModuleDispatcher(Dispatcher):
         return (_module_of(fn), _qualname(fn))
 
     def _key_for_name(self, name: str, module: tx.Optional[str]) -> tx.Any:
-        # A bare name here is resolved against the caller's module, so
-        # `dispatch.functions.area` names this module's `area`. (For the
+        # A bare name is resolved against the caller's module here, so
+        # `dispatch.functions.area` names this module's own `area`. (For the
         # module-level registry, prefer the value the decorator returns; the
-        # namespace is unambiguous on a `Dispatcher` you build.)
+        # namespace is unambiguous on a `Dispatcher` built directly.)
         return (module, name)
 
     def _names_for(self, module: tx.Optional[str]) -> tx.Iterator[str]:
@@ -465,15 +483,17 @@ class _ModuleDispatcher(Dispatcher):
 
 
 dispatch = _ModuleDispatcher()
-"""The ready-made registry for hint-informed multiple dispatch.
+"""The ready-made registry most code uses for multiple dispatch.
 
-Decorate a `#!python def` with `#!python @dispatch` to register an
-overload. Each `#!python def` of the same name in the same module adds
-an overload, and `#!python @dispatch` returns the [`Function`][] it
-belongs to, so the name stays bound to the dispatched function rather
-than to the plain implementation. Functions are keyed by module
-together with qualified name, so the same name defined in another
-module names an independent function.
+Decorating a `#!python def` with `#!python @dispatch` turns it into a
+registered overload; a second `#!python def` sharing its name in the
+same module becomes a second overload of the same function rather than
+replacing the first. Either way, `#!python @dispatch` hands back the
+[`Function`][] the overload belongs to, so the decorated name stays
+bound to the dispatched function instead of to one individual
+implementation. Functions are keyed by their defining module together
+with their qualified name, so the same name defined in a different
+module names a function of its own.
 
 !!! example
     ```pycon
@@ -490,8 +510,9 @@ module names an independent function.
     'a string'
     ```
 
-Lay explicit hints over a function's parameters with the overlay form:
-positional hints as a tuple, named hints as a dict, and
+The overlay form lays explicit hints over a function's parameters
+instead of reading them from its annotations, with positional hints
+given as a tuple and named hints as a dict, alongside
 `#!python priority` as a keyword option.
 
 !!! example

@@ -1,20 +1,22 @@
-"""Name-aware signatures, parameters and call binding.
+"""Signatures, parameters and call binding, all aware of argument names.
 
-A [`Signature`][] is what dispatch compares. It records each parameter
-by name, together with its type hint, how it may be passed (positional,
-keyword, and so on), and whether it has a default, along with the
-`#!python *args` and `#!python **kwargs` hints. From this, a signature
-can bind a call the way Python itself does ([`bind`][Signature.bind]),
-working out which parameter each argument lands in, or that the call
-does not fit at all. It can also say whether it applies to a given set
+Everything dispatch compares two methods by ultimately comes down to a
+[`Signature`][]. It records each of a callable's parameters by name,
+together with its type hint, the way it may be passed (positionally, by
+keyword, or both), and whether it has a default, and it records the
+`#!python *args` and `#!python **kwargs` hints separately from the named
+parameters. Given a call, a signature works out which parameter each
+argument lands in exactly the way Python itself would
+([`bind`][Signature.bind]), or that the call does not fit the signature
+at all. From a binding it can then say whether it accepts a given set
 of argument values ([`applies_to_values`][Signature.applies_to_values])
 or argument hints ([`applies_to_hints`][Signature.applies_to_hints]),
-and it can order itself against another signature by specificity for a
-given call shape ([`le`][Signature.le]).
+and it can compare its own specificity against another signature's for
+a particular call shape ([`le`][Signature.le]).
 
-Binding follows [`inspect.Signature.bind`][] exactly, but the
-per-signature plan is worked out once, when the signature is built, so
-that a call binds without rebuilding that plan every time.
+The binding logic mirrors [`inspect.Signature.bind`][] precisely, but
+the plan it follows is worked out once, when the signature is first
+built, rather than recomputed on every call.
 """
 
 # stdlib
@@ -69,11 +71,12 @@ _PLACEHOLDER = object()
 
 
 class _CatchAll:
-    """A stand-in for `*args` or `**kwargs` in the binding plan.
+    """A stand-in for `*args` or `**kwargs` inside the binding plan.
 
-    It carries only what the binding loop reads off a parameter: its
-    kind, a name that never matches a keyword, and "no default", so the
-    loop can treat it like any other entry.
+    It offers exactly what the binding loop reads off any ordinary
+    parameter: a `kind`, a `name` that can never match an actual keyword,
+    and a `default` of "none", so the loop can walk it alongside real
+    parameters without a special case.
     """
 
     __slots__ = ("kind",)
@@ -116,9 +119,9 @@ _CONCATENATE_FORMS = spellings("Concatenate")
 class Parameter:
     """One parameter of a [`Signature`][].
 
-    A parameter is immutable, and carries four things: its `name`, its
-    type `hint`, its `kind`, meaning how it may be passed, and its
-    `default`. A parameter with no default is required.
+    A `Parameter` is immutable once constructed and holds its `name`,
+    its type `hint`, its `kind` (how it may be passed to a call), and its
+    `default` value. A parameter that has no default value is required.
 
     !!! example
         ```pycon
@@ -132,21 +135,23 @@ class Parameter:
     name
         The parameter's name.
     hint
-        The type hint dispatch reads. An unannotated parameter is given
-        [`Any`][typing.Any], so it accepts anything.
+        The type hint dispatch reads for this parameter. Leaving a
+        parameter unannotated gives it [`Any`][typing.Any], so it
+        accepts any argument.
     kind
         One of `Parameter.POSITIONAL_ONLY`,
         `Parameter.POSITIONAL_OR_KEYWORD` or `Parameter.KEYWORD_ONLY`,
         mirroring [`inspect.Parameter`][]. The `#!python *args` and
-        `#!python **kwargs` hints live on the signature, not here.
+        `#!python **kwargs` hints are not represented this way; they live
+        directly on the signature instead.
     default
-        The default value, or `Parameter.empty` when the parameter is
+        The parameter's default value, or `Parameter.empty` when it is
         required.
 
     Attributes
     ----------
     required : bool
-        Whether the parameter has no default.
+        Whether the parameter has no default value.
     """
 
     __slots__ = ("name", "hint", "kind", "default")
@@ -178,7 +183,7 @@ class Parameter:
 
     @property
     def required(self) -> bool:
-        """Report whether the parameter has no default."""
+        """Report whether the parameter has no default value."""
         return self.default is _empty
 
     def __eq__(self, other: tx.Any) -> bool:
@@ -202,27 +207,30 @@ class Parameter:
 
 
 class Binding:
-    """The result of binding a call to a [`Signature`][].
+    """Where every argument of a successfully bound call landed.
 
-    A binding records where every argument of a call landed. It is
-    what [`bind`][Signature.bind] returns on success, while
-    [`None`][] is returned on failure.
+    [`bind`][Signature.bind] returns a `Binding` on success and
+    [`None`][] on failure, so a `Binding` only ever describes a call that
+    did fit the signature it was bound against.
 
     Attributes
     ----------
     slots : Mapping
-        Each argument's key, an integer for a positional argument or
-        the name for a keyword one, mapped to where it landed: a
-        parameter name, or `Parameter.VAR_POSITIONAL` or
-        `Parameter.VAR_KEYWORD` for an argument absorbed by
-        `#!python *args` or `#!python **kwargs`.
+        Each argument's key (an integer for a positional argument, or
+        the keyword's name for a keyword one) mapped to where that
+        argument landed: a parameter name, or `Parameter.VAR_POSITIONAL`
+        or `Parameter.VAR_KEYWORD` for one absorbed by `#!python *args`
+        or `#!python **kwargs`.
     extra_positional : tuple
-        The indices of positional arguments absorbed by `#!python *args`.
+        The indices of the positional arguments absorbed by
+        `#!python *args`.
     extra_keywords : Mapping
-        The keyword arguments absorbed by `#!python **kwargs`, by name.
+        The keyword arguments absorbed by `#!python **kwargs`, keyed by
+        name.
     defaulted : frozenset
-        The names of parameters left to their defaults. These are not
-        arguments of the call, so dispatch ignores them.
+        The names of the parameters left to their own defaults. These
+        were never arguments of the call itself, so dispatch never
+        checks their hints.
     """
 
     __slots__ = ("slots", "extra_positional", "extra_keywords", "defaulted")
@@ -259,17 +267,19 @@ class Binding:
 
 
 class Signature:
-    """A name-aware signature that dispatch can bind and order.
+    """The set of parameters, and their hints, dispatch binds a call against.
 
-    A signature holds its `parameters` in order, plus the
-    `#!python *args` hint ([`varargs`][]) and the `#!python **kwargs`
-    hint ([`varkw`][]) when the callable accepts them. Build one from a
-    callable with [`from_callable`][], or from hints alone, with no
-    callable at all, with [`from_hints`][].
+    A `Signature` holds its `parameters` in declaration order, together
+    with the `#!python *args` hint ([`varargs`][]) and the
+    `#!python **kwargs` hint ([`varkw`][]) when the callable it describes
+    accepts either. Build one from an existing callable with
+    [`from_callable`][], or, with no callable at all, straight from a
+    list of hints with [`from_hints`][].
 
-    Every declared parameter takes part in dispatch. An unannotated
-    parameter is treated as [`Any`][typing.Any], so it still takes part
-    in binding a call but never narrows which method is chosen.
+    Every declared parameter takes part in dispatch, whether or not it
+    carries a hint of its own. An unannotated parameter is treated as
+    [`Any`][typing.Any], so it still has to be filled for a call to bind
+    but never narrows down which method gets chosen.
 
     !!! example
         ```pycon
@@ -302,17 +312,18 @@ class Signature:
         varargs: tx.Any = None,
         varkw: tx.Any = None,
     ) -> None:
-        """Build a signature from parameters and the catch-all hints.
+        """Build a signature from its parameters and its catch-all hints.
 
         Parameters
         ----------
         parameters
-            The parameters, in order, keyed by name.
+            The parameters, keyed by name, in the order they should be
+            considered.
         varargs
             The `#!python *args` element hint, or [`None`][] when the
-            callable takes no `#!python *args`. An unannotated
-            `#!python *args` is [`Any`][typing.Any], not
-            `#!python None`.
+            callable takes no `#!python *args` at all. An unannotated
+            `#!python *args` is represented as [`Any`][typing.Any], not
+            as `#!python None`.
         varkw
             The `#!python **kwargs` value hint, or [`None`][] when the
             callable takes no `#!python **kwargs`.
@@ -331,24 +342,24 @@ class Signature:
 
     @classmethod
     def from_callable(cls, fn: tx.Callable[..., tx.Any]) -> "Signature":
-        """Read a signature off a callable.
+        """Read a signature off an existing callable.
 
-        The parameter names, kinds, and defaults come from
-        [`inspect.signature`][], and the hints come from
-        [`typing_extensions.get_type_hints`][], keeping
-        [`Annotated`][typing.Annotated] metadata so that
-        `#!python Exact[...]` survives. A `#!python *args: H` parameter
-        becomes the signature's `varargs`, and a `#!python **kwargs: H`
-        parameter becomes its `varkw`; the return annotation is
-        ignored. Any parameter without an annotation is dispatched on
-        [`Any`][typing.Any].
+        Parameter names, kinds, and defaults come from
+        [`inspect.signature`][], while the hints themselves come from
+        [`typing_extensions.get_type_hints`][], read with
+        [`Annotated`][typing.Annotated] metadata preserved so that a
+        construct such as `#!python Exact[...]` survives intact. A
+        `#!python *args: H` parameter becomes the signature's `varargs`,
+        a `#!python **kwargs: H` parameter becomes its `varkw`, and the
+        return annotation is ignored entirely. Any parameter with no
+        annotation of its own dispatches on [`Any`][typing.Any].
 
-        When a hint is a forward reference that cannot be resolved yet,
-        such as a name defined further down the module or one imported
-        only under `#!python TYPE_CHECKING`, the signature keeps the
-        raw annotations and resolves them the first time it is actually
-        used for dispatch. If the name is still undefined at that
-        point, a [`NameError`][] is raised.
+        A hint can be a forward reference that cannot yet be resolved,
+        for instance a name defined further down the same module or one
+        imported only under `#!python TYPE_CHECKING`. When that happens,
+        the signature holds onto the raw annotation and resolves it the
+        first time the signature is actually used for dispatch. A name
+        still undefined at that point raises [`NameError`][].
         """
         try:
             isig = inspect.signature(fn)
@@ -396,13 +407,15 @@ class Signature:
     def from_hints(
         cls, *hints: tx.Any, **named_hints: tx.Any
     ) -> "Signature":
-        """Build a signature from hints alone, with no callable.
+        """Build a signature straight from hints, with no callable behind it.
 
-        This is the primitive behind the def-less registration forms,
+        This is the primitive that def-less registration forms build on,
+        such as
         [`Function.from_mapping`][bagof.dispatchers.Function.from_mapping].
-        Each positional hint becomes a positional-only parameter, and
-        each keyword hint becomes a parameter of that name that may be
-        passed either way. Every parameter built this way is required.
+        Each positional hint given becomes a positional-only parameter,
+        and each keyword hint becomes a parameter of that name that a
+        call may fill either positionally or by keyword. Every parameter
+        produced this way is required, with no default of its own.
 
         !!! example
             ```pycon
@@ -436,7 +449,9 @@ class Signature:
         deferred: bool,
         raw: tx.Optional[tx.Dict[str, tx.Any]],
     ) -> "Signature":
-        """Build a signature from an [`inspect.Signature`][] and its hints."""
+        """Assemble a signature from an [`inspect.Signature`][] and its
+        hints.
+        """
         params = {}  # type: tx.Dict[str, Parameter]
         varargs = None
         varkw = None
@@ -468,13 +483,14 @@ class Signature:
         return self
 
     def _build_plan(self) -> None:
-        """Precompute the binding plan from the parameters.
+        """Precompute the order [`bind`][Signature.bind] walks the
+        parameters in.
 
-        `_pre` holds the parameters an argument may fill by position,
-        in order. `_kwonly` holds the keyword-only ones. `_canonical`
-        holds the full order the binder walks, with the
-        `#!python *args` and `#!python **kwargs` stand-ins slotted in
-        where Python itself puts them.
+        `_pre` holds, in order, every parameter an argument could fill by
+        position. `_kwonly` holds the keyword-only parameters. `_canonical`
+        holds the complete order the binder actually walks, with the
+        `#!python *args` and `#!python **kwargs` stand-ins inserted at
+        the same points Python itself would put them.
         """
         values = list(self._parameters.values())
         self._pre = tuple(
@@ -492,11 +508,12 @@ class Signature:
         self._canonical = tuple(canonical)
 
     def _settle(self) -> None:
-        """Resolve deferred forward-reference hints, once.
+        """Resolve any deferred forward-reference hints, once.
 
-        This runs before any dispatch use. When the names are still
-        undefined by then, it raises a [`NameError`][] naming the
-        callable.
+        This runs ahead of every use of the signature for dispatch. When
+        a name it needs is still undefined by the time it runs, it
+        raises [`NameError`][], naming the callable it was resolving
+        hints for.
         """
         if not self._deferred:
             return
@@ -544,15 +561,16 @@ class Signature:
 
     @property
     def parameters(self) -> tx.Mapping[str, Parameter]:
-        """The parameters, in order, keyed by name. Read-only."""
+        """A read-only, name-keyed view of the parameters, in order."""
         return _ReadonlyMap(self._parameters)
 
     @property
     def varargs(self) -> tx.Any:
         """The `#!python *args` element hint, or [`None`][] if there is none.
 
-        An unannotated `#!python *args` reads as [`Any`][typing.Any];
-        `#!python None` means the callable takes no `#!python *args`.
+        An unannotated `#!python *args` is represented as
+        [`Any`][typing.Any]; `#!python None` means the callable does not
+        accept `#!python *args` at all.
         """
         return self._varargs
 
@@ -560,18 +578,19 @@ class Signature:
     def varkw(self) -> tx.Any:
         """The `#!python **kwargs` value hint, or [`None`][] if there is none.
 
-        An unannotated `#!python **kwargs` reads as [`Any`][typing.Any];
-        `#!python None` means the callable takes no `#!python **kwargs`.
+        An unannotated `#!python **kwargs` is represented as
+        [`Any`][typing.Any]; `#!python None` means the callable does not
+        accept `#!python **kwargs` at all.
         """
         return self._varkw
 
     @property
     def dispatched_names(self) -> tx.Tuple[str, ...]:
-        """The names an argument may be dispatched on by keyword.
+        """The names an argument may be given by keyword and still dispatch.
 
-        These are the positional-or-keyword and keyword-only
-        parameters, in order. A positional-only parameter is dispatched
-        by position instead, so it is not named here.
+        This covers the positional-or-keyword and keyword-only
+        parameters, in order. A positional-only parameter can only be
+        dispatched on by its position, so it never appears here.
         """
         return tuple(
             name
@@ -583,14 +602,14 @@ class Signature:
     def shape(
         args: tx.Sequence[tx.Any], kwargs: tx.Mapping[str, tx.Any]
     ) -> tx.Tuple[int, tx.Tuple[str, ...]]:
-        """Return the call shape: the number of positionals and the
-        keyword names.
+        """Reduce a call to its shape: how many positionals, which keywords.
 
-        Whether one signature is more specific than another is decided
-        per shape, because which parameter each argument lands in
-        depends on how the call is spelled. Two spellings of "the same"
-        call, such as `#!python f(1, 2)` and `#!python f(1, y=2)`, are
-        different shapes.
+        Whether one signature is more specific than another can only be
+        decided relative to a particular shape, because which parameter
+        an argument lands in depends on how the call was actually
+        written. Two calls that pass "the same" arguments differently,
+        such as `#!python f(1, 2)` and `#!python f(1, y=2)`, count as
+        different shapes here.
         """
         return (len(args), tuple(sorted(kwargs)))
 
@@ -601,15 +620,16 @@ class Signature:
         args: tx.Sequence[tx.Any],
         kwargs: tx.Mapping[str, tx.Any],
     ) -> tx.Optional[Binding]:
-        """Bind a call to the parameters, the way Python itself would.
+        """Bind a call to the parameters, exactly the way Python itself would.
 
-        Returns a [`Binding`][] saying where each argument landed, or
-        [`None`][] when the call does not fit: too many positionals
-        with no `#!python *args`, an unexpected keyword with no
-        `#!python **kwargs`, a value given twice, or a required
-        parameter left unfilled. This mirrors
-        [`inspect.Signature.bind`][] exactly, using the plan that was
-        worked out once when the signature was built.
+        The [`Binding`][] returned on success says where every argument
+        landed. [`None`][] comes back instead when the call simply does
+        not fit, whether because it has too many positionals for a
+        signature with no `#!python *args`, an unexpected keyword for one
+        with no `#!python **kwargs`, the same parameter filled twice, or
+        a required parameter left with nothing to fill it.
+        This follows [`inspect.Signature.bind`][] precisely, working from
+        the plan computed once when the signature was built.
 
         !!! example
             ```pycon
@@ -711,14 +731,17 @@ class Signature:
         args: tx.Sequence[tx.Any],
         kwargs: tx.Mapping[str, tx.Any],
     ) -> bool:
-        """Report whether the signature accepts a call of these values.
+        """Report whether the signature accepts a call made with these values.
 
-        The call must bind, every bound value must be an instance of
-        the hint it landed in, where an unannotated catch-all accepts
-        anything, and any repeated [`TypeVar`][typing.TypeVar] must be
-        consistent across the values that reached it. A parameter left
-        to its default is not an argument of the call, so its hint is
-        not checked.
+        Three things must all hold for this to succeed. The call has to
+        bind in the first place; every bound value then has to be an
+        instance of whichever hint it landed in, with an unannotated
+        catch-all accepting anything at all; and any
+        [`TypeVar`][typing.TypeVar] repeated across more than one
+        parameter has to be solvable consistently across every value
+        that reached it. A parameter left to its own default was never
+        an argument of the call, so its hint plays no part in this
+        check.
 
         !!! example
             ```pycon
@@ -758,15 +781,16 @@ class Signature:
     ) -> bool:
         """Report whether the signature accepts a call described by hints.
 
-        This is the hint-level twin of [`applies_to_values`][]: the
-        call must bind, and each query hint must be a sub-hint of the
-        hint it landed in, with the same repeated-`TypeVar` consistency
-        required there. As a lookup convenience, described in RFC 0001
-        §4 and shared with
-        [`resolve_hint`][bagof.dispatchers.core.resolve_hint], an
-        [`Exact`][bagof.dispatchers.Exact]`[C]` slot also accepts a
-        query equivalent to `#!python C`, even though `#!python C` on
-        its own is not a sub-hint of `#!python Exact[C]`.
+        This mirrors [`applies_to_values`][] at the level of hints:
+        the call still has to bind, and every query hint then has to be
+        a sub-hint of whatever hint it landed in, with the same
+        consistency required of a `TypeVar` repeated across positions.
+        As a lookup convenience, described in RFC 0001 §4 and shared
+        with [`resolve_hint`][bagof.dispatchers.core.resolve_hint], a
+        slot typed as [`Exact`][bagof.dispatchers.Exact]`[C]` also
+        accepts a query equivalent to plain `#!python C`, even though
+        `#!python C` by itself is not actually a sub-hint of
+        `#!python Exact[C]`.
         """
         self._settle()
         binding = self.bind(hints, named_hints)
@@ -817,12 +841,12 @@ class Signature:
     def _iter_arguments(
         self, binding: Binding
     ) -> tx.Iterator[tx.Tuple[tx.Any, tx.Any]]:
-        """Yield `(key, landed hint)` for each bound argument.
+        """Yield `(key, landed hint)` for each argument of a binding.
 
         Every keyword captured by a `#!python **kwargs: T` parameter
-        lands on the one variable, so all of them take part in the same
-        repeated-`TypeVar` solve as `#!python *args: T` and the named
-        slots do.
+        lands on that one variable, so all of them join the same
+        repeated-`TypeVar` solve that `#!python *args: T` and the
+        explicitly named slots take part in.
         """
         for key, landed in binding.slots.items():
             if landed is _VAR_POSITIONAL:
@@ -834,7 +858,7 @@ class Signature:
 
     @staticmethod
     def _catch_all_hint(hint: tx.Any) -> tx.Any:
-        """Read an unannotated catch-all as `Any`, accepting anything."""
+        """Treat an unannotated catch-all hint as `Any`, accepting anything."""
         return tx.Any if hint is None else hint
 
     # -- specificity ----------------------------------------------------
@@ -842,19 +866,20 @@ class Signature:
     def le(self, other: "Signature", shape: tx.Any) -> bool:
         """Report whether this signature is at least as specific as `other`.
 
-        For the given call `shape`, both signatures are bound and,
-        for every argument, this signature's landed hint must be a
-        sub-hint of `other`'s landed hint, written `A ⊑ B`. A signature
-        that cannot bind the shape at all is not comparable to the
-        other, so the answer is [`False`][].
+        Both signatures are bound to the given call `shape`, and then,
+        at every argument position, this signature's landed hint has to
+        be a sub-hint of `other`'s landed hint there, written `A ⊑ B`.
+        A signature unable to bind the shape at all is not comparable to
+        the other one, and the answer comes back [`False`][] in that
+        case.
 
-        The repeated-`TypeVar` grouping-refinement tie-break described
-        in RFC 0001 §3, where a method whose repeated `TypeVar`s
-        strictly refine another's grouping is more specific, is a
-        separate selection step that belongs to
-        [`Function`][bagof.dispatchers.Function]. It is deliberately
-        not part of this base order, which stays the plain per-argument
-        sub-hint relation.
+        The repeated-`TypeVar` grouping refinement from RFC 0001 §3,
+        where a method whose repeated `TypeVar`s tie strictly more
+        arguments together than another's counts as more specific, is a
+        separate selection step living on
+        [`Function`][bagof.dispatchers.Function] rather than here. This
+        method deliberately stays the plain, per-argument sub-hint
+        comparison and leaves that refinement out.
 
         !!! example
             ```pycon
@@ -881,14 +906,16 @@ class Signature:
         return True
 
     def _bind_shape(self, shape: tx.Any) -> tx.Optional[Binding]:
-        """Bind a bare call shape, using placeholder arguments."""
+        """Bind a bare call shape, filling every position with a
+        placeholder.
+        """
         count, names = shape
         args = (_PLACEHOLDER,) * count
         kwargs = {name: _PLACEHOLDER for name in names}
         return self.bind(args, kwargs)
 
     def _hints_by_key(self, binding: Binding) -> tx.Dict[tx.Any, tx.Any]:
-        """Return each bound argument's key mapped to the hint it landed in."""
+        """Map each bound argument's key to the parameter hint it landed in."""
         result = {}  # type: tx.Dict[tx.Any, tx.Any]
         for key, landed in binding.slots.items():
             if landed is _VAR_POSITIONAL:
@@ -900,12 +927,12 @@ class Signature:
         return result
 
     def _full_shape(self) -> tx.Tuple[int, tx.Tuple[str, ...]]:
-        """Return the shape of a call that fills every parameter here.
+        """Find the shape of a call that would fill every parameter here.
 
-        Positional and positional-or-keyword parameters are passed by
-        position, and keyword-only ones by name. This is the shape
-        implied when two signatures are compared with `#!python <=` or
-        `#!python <`.
+        Positional-only and positional-or-keyword parameters are counted
+        as filled by position, and keyword-only parameters by name. This
+        is the shape implicitly used whenever two signatures are compared
+        with `#!python <=` or `#!python <`.
         """
         return (
             len(self._pre),
@@ -948,26 +975,28 @@ class Signature:
         ) and self._catch_all_eq(self._varkw, other._varkw)
 
     def same_as(self, other: "Signature") -> bool:
-        """Report whether two signatures are written the same way,
+        """Report whether two signatures were written the same way,
         structurally.
 
-        This is stricter than [`==`][Signature.__eq__],
-        which holds whenever two signatures accept and order calls
-        identically. Under `==`, `#!python (x: T, y: T)` and
-        `#!python (x: T, y: U)` are equal, since both reduce to
-        `#!python (Any, Any)`, and `#!python Exact[int]` equals a
-        `#!python TypeVar` bound to `#!python int`. `same_as` instead
-        asks whether the two signatures were spelled identically: the
-        same parameter names, kinds, and required-ness, with hints that
-        match structurally, meaning [`TypeVar`][typing.TypeVar]s by
-        identity, generic aliases by origin and arguments, and forward
-        references by name.
+        `same_as` is stricter than [`==`][Signature.__eq__], which holds
+        whenever two signatures accept and order calls identically
+        regardless of how they were spelled. Under `==`,
+        `#!python (x: T, y: T)` equals `#!python (x: T, y: U)`, since
+        both reduce to `#!python (Any, Any)`, and
+        `#!python Exact[int]` equals a `#!python TypeVar` bound to
+        `#!python int`. `same_as` instead asks whether the two
+        signatures were spelled identically: the same parameter names,
+        kinds, and required-ness, with hints that match structurally,
+        meaning [`TypeVar`][typing.TypeVar]s compared by identity,
+        generic aliases compared by origin and arguments, and forward
+        references compared by name.
 
-        This is what a registry uses to decide a replacement: only a
-        method registered with the very same spelling, as from a module
-        reload or a doubled decorator, replaces an existing one, while
-        two different methods that merely happen to be equivalent are
-        both kept.
+        This is the comparison a registry uses to decide whether a new
+        method replaces an existing one. Only a method registered with
+        exactly the same spelling, the shape produced by a module reload
+        or an accidentally doubled decorator, replaces what is already
+        there, while two methods that merely happen to be equivalent
+        despite being written differently are both kept.
         """
         self._settle_quietly()
         other._settle_quietly()
@@ -989,8 +1018,8 @@ class Signature:
 
     @staticmethod
     def _catch_all_same(a: tx.Any, b: tx.Any) -> bool:
-        """Report whether two `*args`/`**kwargs` hints are the same as
-        written.
+        """Report whether two `*args`/`**kwargs` hints were written the same
+        way.
         """
         if (a is None) != (b is None):
             return False
@@ -999,12 +1028,12 @@ class Signature:
         return _structural_hint_eq(a, b)
 
     def _settle_quietly(self) -> None:
-        """Settle deferred hints for equality, swallowing an unresolved name.
+        """Settle deferred hints for an equality check, tolerating a bad name.
 
-        Unlike [`_settle`][],
-        which a dispatch use calls and which raises on a name that never
-        became defined, this leaves an unresolvable signature deferred so
-        that equality stays total.
+        [`_settle`][], which a dispatch use calls directly, raises when
+        a name it needs never became defined. This calls it too but
+        swallows that failure instead, leaving the signature deferred, so
+        that comparing two signatures for equality never itself raises.
         """
         try:
             self._settle()
@@ -1039,7 +1068,7 @@ class Signature:
 
 
 class _ReadonlyMap(tx.Mapping):
-    """A small read-only view over an ordered mapping."""
+    """A thin read-only view over an already-ordered mapping."""
 
     __slots__ = ("_data",)
 
@@ -1063,11 +1092,12 @@ class _ReadonlyMap(tx.Mapping):
 
 
 def _forward_name(hint: tx.Any) -> tx.Optional[str]:
-    """Return the forward-reference name of a still-unresolved hint, or `None`.
+    """Find the forward-reference name a still-unresolved hint carries, if any.
 
-    A hint kept as a raw string, a stringised annotation, or as a
-    [`ForwardRef`][typing.ForwardRef] carries only a name. Two such
-    hints are compared by that name; a resolved hint has none.
+    A hint kept as a raw string, a stringised annotation, or a
+    [`ForwardRef`][typing.ForwardRef] object carries nothing but a name.
+    Two such hints are therefore compared by that name alone; a hint
+    that has already resolved carries no such name at all.
     """
     if isinstance(hint, str):
         return hint
@@ -1075,33 +1105,31 @@ def _forward_name(hint: tx.Any) -> tx.Optional[str]:
 
 
 def _has_forward_ref(hint: tx.Any) -> bool:
-    """Report whether a hint holds a forward reference anywhere,
-    however nested.
+    """Report whether a hint holds a forward reference anywhere inside it.
 
     A hint kept as a raw string, as a [`ForwardRef`][typing.ForwardRef],
-    or as a generic that carries one at any depth, such as
-    `#!python List["Later"]` or `#!python Optional["Node"]`, is still
-    unresolved. Such a hint has no namespace behind it, so the sub-hint
-    relation cannot read it, and it is compared structurally instead.
+    or as a generic carrying one at any depth, as in
+    `#!python List["Later"]` or `#!python Optional["Node"]`, still counts
+    as unresolved. Such a hint has no namespace behind it for the
+    sub-hint relation to read, so it has to be compared structurally
+    instead of through that relation.
 
-    Every bare string reached here is a genuine forward reference. The
-    two sources of a merely decorative string, a
-    [`Literal`][typing.Literal] member and
-    [`Annotated`][typing.Annotated] metadata, are guarded before any
-    string is reached: a `Literal` returns early without descending
-    into its members, and an `Annotated` recurses into its wrapped type
-    only, never into its metadata. So every other string encountered at
-    any depth is a genuine reference, whether a
-    [`ForwardRef`][typing.ForwardRef] or a bare string that a PEP 585
-    builtin generic, `#!python list["Node"]`, or a `#!python Union`
-    member keeps unwrapped.
+    Every bare string this function reaches really is a forward
+    reference, because the two sources of a merely decorative string are
+    both guarded before that point: a [`Literal`][typing.Literal]
+    returns early without ever descending into its members, and
+    [`Annotated`][typing.Annotated] recurses only into its wrapped type,
+    never into its metadata. So any other string found at any depth is a
+    genuine reference, whether it is a
+    [`ForwardRef`][typing.ForwardRef] or a bare string left unwrapped by
+    a PEP 585 builtin generic such as `#!python list["Node"]` or by a
+    `#!python Union` member.
 
     A [`Callable`][typing.Callable]'s parameter list arrives from
-    [`get_args`][typing.get_args] as a plain `#!python list`, so
-    `#!python Callable[["X"], int]` becomes
-    `#!python ([ForwardRef("X")], int)`, rather than as a direct
-    argument, so a `#!python list` element is descended into element by
-    element.
+    [`get_args`][typing.get_args] as a plain `#!python list` rather than
+    as a direct argument, so `#!python Callable[["X"], int]` becomes
+    `#!python ([ForwardRef("X")], int)`, and such a list is descended
+    into element by element to find a reference inside it.
     """
     if isinstance(hint, str):
         return True
@@ -1130,19 +1158,20 @@ def _hint_eq(a: tx.Any, b: tx.Any) -> bool:
     references included.
 
     An unresolved name is never handed to the sub-hint relation, since
-    it has no namespace to resolve the name and would otherwise treat
-    it as [`Any`][typing.Any]. When either side is a top-level forward
-    reference, the two are compared by name, so a raw string and a
-    [`ForwardRef`][typing.ForwardRef] naming the same thing match. When
-    the forward reference is nested inside a generic, as in
-    `#!python List["Later"]` or `#!python Optional["Node"]`, the two are
-    compared structurally instead: a generic alias compares by its
-    origin and its arguments, and each nested `ForwardRef` by name, so
-    two genuinely different spellings do not collapse to equal. A
-    reference's `__forward_module__` is not consulted, so the same name
-    recorded against different modules compares equal, just as it does
-    at the top level. Two fully resolved hints are compared with
-    [`equivalent`][].
+    the relation has no namespace to resolve it against and would
+    otherwise treat it as [`Any`][typing.Any] by default. When either
+    side is a top-level forward reference, the two hints are compared by
+    name instead, so a raw string and a
+    [`ForwardRef`][typing.ForwardRef] naming the same thing are found
+    equal. When the forward reference sits nested inside a generic, as
+    in `#!python List["Later"]` or `#!python Optional["Node"]`, the
+    comparison is structural: a generic alias is compared by its origin
+    and its arguments, and each nested `ForwardRef` by name, so two
+    genuinely different spellings are not collapsed together. A
+    reference's `__forward_module__` plays no part in this, so the same
+    name recorded against two different modules still compares equal,
+    matching the top-level case. Two hints that have both fully resolved
+    are compared with [`equivalent`][] instead.
     """
     a_name = _forward_name(a)
     b_name = _forward_name(b)
@@ -1162,14 +1191,16 @@ def _hint_eq(a: tx.Any, b: tx.Any) -> bool:
 def _hint_query_accepts(query: tx.Any, hint: tx.Any) -> bool:
     """Report whether a hint-level query is accepted by a landed slot `hint`.
 
-    Ordinarily this is just `#!python issubhint(query, hint)`. An
-    [`Exact`][bagof.dispatchers.Exact]`[C]` slot is additionally
-    reachable by a query equivalent to `#!python C`, the RFC 0001 §4
-    lookup convenience kept in step with
+    In the ordinary case this is simply
+    `#!python issubhint(query, hint)`. A slot typed as
+    [`Exact`][bagof.dispatchers.Exact]`[C]` is additionally reachable by
+    a query equivalent to `#!python C`, the RFC 0001 §4 lookup
+    convenience kept consistent with
     [`resolve_hint`][bagof.dispatchers.core.resolve_hint]. This only
-    widens applicability; it does not touch the sub-hint relation or
-    the specificity order, both of which compare `#!python Exact[C]`
-    as the leaf that it is.
+    widens which queries count as applicable; it leaves the sub-hint
+    relation and the specificity order untouched, and both of those
+    still compare `#!python Exact[C]` as the distinct leaf hint that it
+    is.
     """
     if issubhint(query, hint):
         return True
@@ -1182,24 +1213,25 @@ def _hint_query_accepts(query: tx.Any, hint: tx.Any) -> bool:
 def _structural_hint_eq(a: tx.Any, b: tx.Any) -> bool:
     """Report whether two hints are the same as written, not merely equivalent.
 
-    This is the stricter twin of [`_hint_eq`][]: it asks whether two
-    hints have the same structure, never whether they accept the same
-    values. So `#!python T` and `#!python U`, two distinct
-    [`TypeVar`][typing.TypeVar]s, are not equal here even though each is
-    equivalent to [`Any`][typing.Any], and a bound `#!python TypeVar` is
-    not equal to its bound. This is what tells a genuine
-    re-registration, with an identical spelling from a module reload or
-    a doubled decorator, apart from two different methods that merely
-    happen to be equivalent under the sub-hint relation.
+    This is the stricter counterpart to [`_hint_eq`][]: it asks whether
+    two hints share the same structure, never whether they happen to
+    accept the same values. `#!python T` and `#!python U`, two distinct
+    [`TypeVar`][typing.TypeVar]s, are therefore not equal here even
+    though each is equivalent to [`Any`][typing.Any] on its own, and a
+    bound `#!python TypeVar` is not equal to its own bound either. This
+    distinction is what separates a genuine re-registration, with an
+    identical spelling produced by a module reload or a doubled
+    decorator, from two different methods that merely happen to be
+    equivalent under the sub-hint relation.
 
-    A forward reference is compared by its name, whether it is a raw
-    string or a [`ForwardRef`][typing.ForwardRef]. A `#!python TypeVar`
-    is compared by identity. A generic alias is compared by its origin
-    and its arguments, each compared the same way recursively, so
-    `#!python List[int]` equals `#!python List[int]` but not
-    `#!python List[str]`, and `#!python Annotated` or `#!python Exact`
-    metadata is compared too. Anything else is compared by ordinary
-    equality.
+    A forward reference is compared by its name, whether written as a
+    raw string or as a [`ForwardRef`][typing.ForwardRef]. A
+    `#!python TypeVar` is compared by identity. A generic alias is
+    compared by its origin and its arguments, each of those compared
+    the same way recursively, so `#!python List[int]` equals
+    `#!python List[int]` but not `#!python List[str]`, and any
+    `#!python Annotated` or `#!python Exact` metadata is compared as
+    well. Everything else falls back to ordinary equality.
     """
     a, b = normalise_hint(a), normalise_hint(b)
     a_name, b_name = _forward_name(a), _forward_name(b)
@@ -1258,16 +1290,16 @@ def _structural_hint_eq(a: tx.Any, b: tx.Any) -> bool:
 
 
 def _is_plain_typevar(hint: tx.Any) -> bool:
-    """Report whether `hint` is a plain `TypeVar`, not a `TypeVarTuple`
-    or `Unpack[Ts]`.
+    """Report whether `hint` is a plain `TypeVar`, excluding `TypeVarTuple`.
 
-    Below Python 3.11, `typing_extensions` makes
-    `#!python isinstance(Unpack[Ts], tx.TypeVar)`, and even
-    `#!python isinstance(Ts, tx.TypeVar)`, return `#!python True`, so a
-    bare `#!python isinstance(hint, tx.TypeVar)` would fold a
+    Below Python 3.11, `typing_extensions` makes both
+    `#!python isinstance(Unpack[Ts], tx.TypeVar)` and
+    `#!python isinstance(Ts, tx.TypeVar)` come back `#!python True`, so a
+    bare `#!python isinstance(hint, tx.TypeVar)` check would fold a
     `#!python *args: *Ts` tail into the repeated-`TypeVar` solve and
-    reject a call of differing types. A `TypeVarTuple` is solved
-    separately, so it is excluded here.
+    wrongly reject a call whose types genuinely differ there. A
+    `TypeVarTuple` has its own separate solving process, so it is
+    excluded from this check.
     """
     return (
         isinstance(hint, tx.TypeVar)
@@ -1277,21 +1309,22 @@ def _is_plain_typevar(hint: tx.Any) -> bool:
 
 
 def _catch_all_or_any(hint: tx.Any) -> tx.Any:
-    """Return a `*args`/`**kwargs` hint, reading an unsupported
-    variadic form as `Any`.
+    """Normalise a `*args`/`**kwargs` hint, treating an unsupported form
+    as `Any`.
 
     `*args: P.args`, `**kwargs: P.kwargs`, and
-    `**kwargs: Unpack[TypedDict]` all read as an unannotated catch-all
-    in this version of dispatch, as described in RFC 0001 §2.2, §3, and
-    §11.1: the tail takes anything, so the hint becomes
-    [`Any`][typing.Any].
+    `**kwargs: Unpack[TypedDict]` are all treated as an unannotated
+    catch-all in this version of dispatch, following RFC 0001 §2.2, §3,
+    and §11.1: since the tail accepts anything regardless, the hint
+    simply becomes [`Any`][typing.Any].
 
-    An unpacked `TypeVarTuple`, `*args: *Ts`, is kept verbatim instead.
-    On its own it behaves like [`Any`][typing.Any] for a single element,
-    but the same `Ts` may also appear at a
-    `#!python Tuple[..., *Ts]` slot, where the two are solved jointly,
-    following RFC 0001 §3, so the tail must stay identifiable rather
-    than being collapsed to `Any`. Every other hint is left unchanged.
+    An unpacked `TypeVarTuple` written as `*args: *Ts` is the one
+    exception, kept exactly as written. On its own it would behave just
+    like [`Any`][typing.Any] for a single element. But the same `Ts` can
+    also appear at a `#!python Tuple[..., *Ts]` slot elsewhere, where the
+    two are solved jointly under RFC 0001 §3, so the tail has to stay
+    identifiable rather than being collapsed away. Every other hint
+    passes through unchanged.
     """
     if _is_unpacked_typevartuple(hint):
         return hint
@@ -1306,25 +1339,28 @@ def _catch_all_or_any(hint: tx.Any) -> tx.Any:
 def _reject_variadic_param(
     name: str, hint: tx.Any, fn: tx.Any, catch_all: bool = False
 ) -> None:
-    """Refuse a variadic-only hint used where a value hint belongs.
+    """Refuse a variadic-only hint written where an ordinary value hint
+    belongs.
 
     A [`ParamSpec`][typing.ParamSpec], a `#!python Concatenate[...]`, or
     a [`TypeVarTuple`][typing.TypeVarTuple] describes a
-    `#!python Callable`'s parameter list or a `#!python Tuple` run,
-    never a value on its own, so written as a plain parameter's
-    annotation it describes nothing, and it is refused at registration
-    with a message that names the parameter.
+    `#!python Callable`'s parameter list or a `#!python Tuple`'s run of
+    elements, never a value on its own. Written as a plain parameter's
+    annotation, it describes nothing at all, so registration refuses it
+    with a message naming the parameter.
 
     The `#!python *args: P.args`, `#!python **kwargs: P.kwargs`, and
-    `#!python *args: Unpack[Ts]` forms are read as a catch-all before
-    they reach a declared parameter, so they are accepted here. Only a
-    bare `#!python TypeVarTuple` on `#!python *args` is refused, through
-    the `catch_all` branch, with a message pointing at the
-    `#!python *args: Unpack[Ts]` spelling instead.
+    `#!python *args: Unpack[Ts]` forms are already turned into a
+    catch-all before they would reach this check as a declared
+    parameter, so they pass through here without complaint. Only a bare
+    `#!python TypeVarTuple` written directly on `#!python *args` is
+    refused, through the `catch_all` branch, with a message pointing at
+    the `#!python *args: Unpack[Ts]` spelling it should have used
+    instead.
 
-    A single unpacked `#!python TypeVarTuple` per tuple or parameter
-    list is allowed, following PEP 646; a second open run is refused
-    here, since `typing` does not reject it at runtime on its own.
+    PEP 646 allows a single unpacked `#!python TypeVarTuple` per tuple or
+    parameter list; a second open run in the same one is refused here,
+    since `typing` itself does not reject that case at runtime.
     """
     if catch_all:
         # A `*args` slot: `*args: Unpack[Ts]` (a run) and `*args: P.args` (an
@@ -1360,17 +1396,18 @@ def _reject_variadic_param(
 
 
 def _top_level_typeddicts(hint: tx.Any) -> tx.List[tx.Any]:
-    """Return the `TypedDict`s a hint carries at its top level.
+    """Collect the `TypedDict`s a hint carries at its own top level.
 
-    This is the hint itself when it is a `TypedDict`, with its
-    [`Annotated`][typing.Annotated] wrapper stripped first, or each such
-    member of a top-level [`Union`][typing.Union] or
-    [`Optional`][typing.Optional]. A parametrised generic `TypedDict`,
-    such as `#!python Movie[int]`, is read through its origin, so a
-    malformed generic used parametrised is still checked. A `TypedDict`
-    buried inside a container, such as `#!python List[Movie]`, is not
-    returned, since its shape is not what a value binds against at this
-    slot.
+    The result is the hint itself, once its
+    [`Annotated`][typing.Annotated] wrapper is stripped, when the hint
+    is a `TypedDict`, or each such member found in a top-level
+    [`Union`][typing.Union] or [`Optional`][typing.Optional]. A
+    parametrised generic `TypedDict` such as `#!python Movie[int]` is
+    read through its origin, so a malformed generic is still caught even
+    when it is used parametrised. A `TypedDict` buried inside a
+    container, as in `#!python List[Movie]`, is left out, since a value
+    at that slot binds against the container's own shape, not the
+    `TypedDict`'s.
     """
     hint = unwrap(normalise_hint(hint))
     if safe_get_origin(hint) in UNION_TYPES:
@@ -1393,17 +1430,18 @@ def _reject_malformed_typeddict(
 ) -> None:
     """Refuse a parameter whose hint is a malformed `TypedDict` (PEP 728).
 
-    A `TypedDict` whose nominal hint order disagrees with the
-    value-level shape check would make a method registered with it
-    mis-dispatch, breaking the rule that `v in Sub` and `Sub <= Base`
-    together imply `v in Base`, so it is refused at registration with a
-    message naming the parameter and the specific violation. A
-    well-formed `TypedDict`, and any other hint, is accepted.
+    A `TypedDict` whose nominal hint ordering disagrees with its
+    value-level shape check would make a method registered against it
+    mis-dispatch, breaking the guarantee that `v in Sub` together with
+    `Sub <= Base` implies `v in Base`. Registration refuses such a hint
+    with a message naming both the parameter and the specific
+    violation. A well-formed `TypedDict`, and any hint that is not a
+    `TypedDict` at all, is accepted without complaint.
 
-    `subject` overrides how the slot is named in the message, for a
-    synthetic parameter with no user-facing name, so the message reads
-    `positional hint 0` rather than the internal name `'_0'`; otherwise
-    the parameter name is shown.
+    `subject` overrides how the slot is named in that message, for a
+    synthetic parameter with no name meant for a user to see, so the
+    message reads `positional hint 0` rather than the internal name
+    `'_0'`; otherwise the parameter's own name is shown.
     """
     for typeddict in _top_level_typeddicts(hint):
         reason = _malformed_typeddict_reason(typeddict)
@@ -1416,14 +1454,15 @@ def _reject_malformed_typeddict(
 
 
 def _has_two_open_runs(hint: tx.Any) -> bool:
-    """Report whether any tuple or parameter list in `hint` holds two or more
-    unpacked runs.
+    """Report whether any tuple or parameter list inside `hint` holds two
+    or more unpacked runs.
 
-    PEP 646 permits a single unpacked
-    [`TypeVarTuple`][typing.TypeVarTuple] per list, and `typing` does
-    not enforce this at runtime, so a nested `#!python Tuple[*Ts, *Us]`,
-    at any depth and inside a `#!python Callable` parameter list too, is
-    caught here by walking the arguments.
+    PEP 646 allows only a single unpacked
+    [`TypeVarTuple`][typing.TypeVarTuple] per list, but `typing` does not
+    enforce that at runtime on its own, so this walks `hint`'s arguments
+    recursively to catch a violation such as
+    `#!python Tuple[*Ts, *Us]` wherever it occurs, including nested
+    inside a `#!python Callable` parameter list.
     """
     args = tx.get_args(hint)
     if not args:
@@ -1443,21 +1482,21 @@ def _has_two_open_runs(hint: tx.Any) -> bool:
 
 
 def _hint_source(fn: tx.Callable[..., tx.Any]) -> tx.Any:
-    """Return the object whose annotations describe `fn`'s parameters.
+    """Find the object whose annotations actually describe `fn`'s parameters.
 
     [`get_type_hints`][typing_extensions.get_type_hints] reads
-    annotations off a function, a method, or a module, but the
-    parameters of a class live on its constructor, and those of a
-    callable instance live on its `#!python __call__`, not on the
-    object itself. Each of these is therefore unwrapped to the member
-    whose parameter names match what [`inspect.signature`][] reports
-    for the original callable: a class unwraps to its
-    `#!python __init__`, dropping `#!python self`, or to its
-    `#!python __new__` when `#!python __init__` is inherited from
-    `#!python object`, matching the constructor
-    `inspect.signature(cls)` reads; a callable instance unwraps to its
-    type's `#!python __call__`; and a [`functools.partial`][] unwraps
-    to the callable it wraps.
+    annotations off a function, a method, or a module, but a class's
+    parameters live on its constructor and a callable instance's live on
+    its `#!python __call__`, neither of which is the object itself. Each
+    of these is unwrapped here to whichever member's parameter names
+    match what [`inspect.signature`][] reports for the original
+    callable. A class unwraps to its `#!python __init__` (with
+    `#!python self` dropped), or to its `#!python __new__` when
+    `#!python __init__` is only the one inherited from
+    `#!python object`, matching the constructor that
+    `inspect.signature(cls)` itself reads; a callable instance unwraps to
+    its type's `#!python __call__`; and a [`functools.partial`][]
+    unwraps to the callable it wraps.
     """
     if isinstance(fn, functools.partial):
         return _hint_source(fn.func)
@@ -1472,13 +1511,14 @@ def _hint_source(fn: tx.Callable[..., tx.Any]) -> tx.Any:
 
 
 def _constructor_of(cls: type) -> tx.Any:
-    """Return the member whose annotations describe a class's constructor.
+    """Find the member whose annotations describe a class's constructor.
 
-    This mirrors how [`inspect.signature`][] picks a class's signature:
-    the `#!python __init__` when the class defines one, otherwise the
-    `#!python __new__` when it defines that, and otherwise the class
-    itself, since a plain `#!python object`-constructed class takes no
-    dispatched parameters.
+    This mirrors how [`inspect.signature`][] itself picks a class's
+    signature: the class's own `#!python __init__` when it defines one,
+    otherwise its own `#!python __new__` when it defines that, and
+    otherwise the class itself, since a class built entirely by
+    `#!python object`'s own construction takes no parameters worth
+    dispatching on.
     """
     init = getattr(cls, "__init__", None)
     if init is not None and init is not object.__init__:
@@ -1492,9 +1532,10 @@ def _constructor_of(cls: type) -> tx.Any:
 def _has_forward(raw: tx.Optional[tx.Dict[str, tx.Any]]) -> bool:
     """Report whether any raw annotation still holds a forward reference.
 
-    A nested forward reference counts too: a stringised modern spelling
-    such as `#!python Optional["list[int]"]` on an older Python defers
-    as a whole.
+    A nested forward reference counts here too, so a stringised modern
+    spelling such as `#!python Optional["list[int]"]`, written on an
+    older Python that cannot evaluate it directly, defers as a whole
+    rather than being read only partway.
     """
     return any(
         _has_forward_ref(value)
@@ -1503,18 +1544,20 @@ def _has_forward(raw: tx.Optional[tx.Dict[str, tx.Any]]) -> bool:
 
 
 def _resolve_hints(fn: tx.Callable[..., tx.Any]) -> tx.Dict[str, tx.Any]:
-    """Return a callable's hints, keeping `Annotated` metadata."""
+    """Resolve a callable's hints, preserving any `Annotated` metadata."""
     return dict(tx.get_type_hints(fn, include_extras=True))
 
 
 def _raw_annotations(
     fn: tx.Callable[..., tx.Any],
 ) -> tx.Dict[str, tx.Any]:
-    """Return the raw, unresolved annotations, for deferral and rendering.
+    """Read a callable's raw, unresolved annotations, for deferral and
+    rendering.
 
-    On Python 3.14, annotations are lazy, so reading them the ordinary
-    way may itself raise; the [`annotationlib`][] forward-reference
-    format reads them without evaluating the names.
+    On Python 3.14, annotations are evaluated lazily, so reading them the
+    ordinary way can itself raise; the [`annotationlib`][]
+    forward-reference format is tried as a fallback there, since it reads
+    each annotation without evaluating the names inside it.
     """
     try:
         return dict(getattr(fn, "__annotations__", {}) or {})
@@ -1538,9 +1581,7 @@ def _hint_for(
     raw: tx.Optional[tx.Dict[str, tx.Any]],
     deferred: bool,
 ) -> tx.Any:
-    """Return the hint for one parameter, resolved now or kept raw
-    for later.
-    """
+    """Find the hint for one parameter, resolved now or kept raw for later."""
     if deferred:
         return (raw or {}).get(name, tx.Any)
     return normalise_hint((hints or {}).get(name, tx.Any))
@@ -1550,7 +1591,7 @@ def _hint_for(
 
 
 def _render_hint(hint: tx.Any) -> str:
-    """Return a short, readable spelling of a hint for a signature's `repr`."""
+    """Render a short, readable spelling of a hint for a signature's `repr`."""
     if isinstance(hint, str):
         return hint
     forward = getattr(hint, "__forward_arg__", None)
@@ -1573,16 +1614,16 @@ def _render_parameters(
 ) -> str:
     """Render a signature's parameters with `/`, `*`, `*args`, `**kwargs`.
 
-    The markers land where Python itself puts them: a `/` after the
-    positional-only group, a bare `*` (or `#!python *args: H`) before
-    the keyword-only group, and `#!python **kwargs: H` last.
+    Every marker lands exactly where Python itself would place it: a `/`
+    after the positional-only group, a bare `*` (or
+    `#!python *args: H`) before the keyword-only group, and
+    `#!python **kwargs: H` last of all.
 
-    When `highlight` is given, each named slot it lists is marked with
-    a leading `#!python !` on its hint, as in `#!python x: !int`,
-    pointing out the offending argument in a dispatch error. A slot is
-    named by its parameter name, or by `Parameter.VAR_POSITIONAL` or
-    `Parameter.VAR_KEYWORD` for the `#!python *args` and
-    `#!python **kwargs` catch-alls.
+    When `highlight` is given, every slot it names has its hint marked
+    with a leading `#!python !`, as in `#!python x: !int`, pointing out
+    the argument responsible for a dispatch error. A slot is named
+    either by its parameter's own name or, for the catch-alls, by
+    `Parameter.VAR_POSITIONAL` or `Parameter.VAR_KEYWORD`.
     """
     marked = frozenset(highlight) if highlight else frozenset()
     out = []  # type: tx.List[str]

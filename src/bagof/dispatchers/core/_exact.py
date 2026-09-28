@@ -1,11 +1,11 @@
-"""`Exact[C]`, a hint that matches a type but excludes its subclasses."""
+"""A hint that matches only a type itself, never one of its subclasses."""
 
 # dependencies
 import typing_extensions as tx
 
 
 class _ExactMarker:
-    """The metadata value that marks an [`Exact`][] hint."""
+    """The piece of `Annotated` metadata that tags a hint as [`Exact`][]."""
 
     def __new__(cls) -> "_ExactMarker":
         if "_INSTANCE" not in cls.__dict__:
@@ -17,7 +17,7 @@ class _ExactMarker:
 
 
 EXACT = _ExactMarker()
-"""The metadata value carried by an [`Exact`][] hint."""
+"""The sentinel that an [`Exact`][] hint attaches as `Annotated` metadata."""
 
 
 if tx.TYPE_CHECKING:
@@ -31,19 +31,22 @@ if tx.TYPE_CHECKING:
 else:
 
     class Exact:
-        """A hint that matches a type but not its subclasses.
+        """Restrict a dispatch parameter to one type, excluding its subtypes.
 
-        `Exact[C]` describes a value whose type is precisely `C`, so an
-        overload registered for `#!python Exact[int]` does not fire for a
-        `#!python bool`, even though `bool` is a subclass of `int` and an
-        ordinary `#!python int` parameter would accept it. This is the
-        reverse of the usual multiple-dispatch situation, where a base
-        class is registered once and its subclasses share the overload:
-        `Exact` is for the times a handler for a base type must not run
-        on a more specific one.
+        Ordinary dispatch treats a parameter annotated with a class as
+        accepting that class and anything derived from it, so that one
+        implementation can serve a base type and every subclass alike.
+        `Exact[C]` asks for the opposite: an implementation with a
+        parameter annotated `#!python Exact[int]` matches an argument
+        whose type is exactly `int`, and not one whose type is `bool`,
+        even though `bool` is an `int` subclass that an ordinary `int`
+        parameter would gladly accept. `Exact` exists for the cases where
+        a handler written for a base type would misbehave if a more
+        specific subtype reached it.
 
-        A type checker sees straight through `Exact[C]` to `C`, because
-        `Exact[C]` is defined as `#!python Annotated[C, EXACT]`.
+        A type checker reads `Exact[C]` as plain `C`, since it is defined
+        as `#!python Annotated[C, EXACT]` and a checker looks straight
+        through `Annotated` metadata to the wrapped type.
 
         !!! example
             ```pycon
@@ -58,15 +61,16 @@ else:
 
 
 def is_exact(hint: tx.Any) -> bool:
-    """Report whether `hint` is an [`Exact`][]`[C]`."""
+    """Report whether `hint` was built with [`Exact`][]`[C]`."""
     return any(meta is EXACT for meta in getattr(hint, "__metadata__", ()))
 
 
 def exact_target(hint: tx.Any) -> tx.Any:
-    """Return the type `C` that an [`Exact`][]`[C]` hint wraps.
+    """Return the wrapped type `C` from an [`Exact`][]`[C]` hint.
 
-    The caller must already know that [`is_exact`][]`(hint)` holds. The
-    `EXACT` marker and any other metadata attached to the hint are
-    dropped, leaving the plain type.
+    Calling this only makes sense once [`is_exact`][]`(hint)` has already
+    been confirmed. The `EXACT` marker and any other `Annotated` metadata
+    riding alongside it are discarded, leaving the plain type that the
+    dispatch value is compared against.
     """
     return tx.get_args(hint)[0]

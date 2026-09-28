@@ -1,21 +1,22 @@
-"""What a dispatch call can raise, and how its message is written.
+"""The exceptions a dispatch call fails with, and their message text.
 
-When no registered method accepts a call, dispatch raises
-[`NoMethodError`][]. When two methods are equally specific and both
-accept the call, it raises [`AmbiguousMethodError`][]. Both are
-[`DispatchError`][], and `DispatchError` is itself a [`TypeError`][]:
-calling a function with argument types it does not support is
-ordinarily a `TypeError` in Python, so existing code that guards a call
-with `#!python except TypeError:` keeps catching a dispatch failure
-too.
+A call can fail to resolve to a single method in one of two ways: no
+registered method accepts the arguments given, which raises
+[`NoMethodError`][], or more than one method accepts them equally well,
+which raises [`AmbiguousMethodError`][]. Both inherit from
+[`DispatchError`][], which is itself a [`TypeError`][], since calling a
+function with arguments of the wrong type already means `TypeError` in
+ordinary Python; code that catches `TypeError` around a call therefore
+keeps working once that call goes through dispatch.
 
-Every message is written for someone who has just hit the error. It
-names the function, shows the call by the types of its arguments
-rather than their values, lists the methods that competed or came
-closest (marking with `#!python !` the argument that did not fit), and
-ends with the signature that would resolve the problem if it were
-defined, the same "possible fix" line Julia prints for the same
-situation.
+The functions in this module build the message text for both errors.
+Each message states the function's name, describes the call by the
+types of the arguments rather than their values, and lists the
+implementations that were closest to matching, marking with a leading
+`#!python !` whichever argument kept each one from succeeding. It then
+closes with a signature that would resolve the situation if it were
+defined, following the same "possible fix" convention that Julia's
+multiple-dispatch errors use.
 """
 
 # stdlib
@@ -28,12 +29,16 @@ __all__ = ["DispatchError", "NoMethodError", "AmbiguousMethodError"]
 
 
 class DispatchError(TypeError):
-    """A call could not be resolved to exactly one method.
+    """The base of both errors a dispatch call can raise.
 
-    `DispatchError` is the common base of [`NoMethodError`][] and
-    [`AmbiguousMethodError`][]. It subclasses [`TypeError`][], so code
-    that already guards a call with `#!python except TypeError:`
-    catches a dispatch failure as well.
+    A call reaches `DispatchError` when it cannot be pinned down to
+    exactly one method, whether because none matched or because several
+    matched equally well; [`NoMethodError`][] and
+    [`AmbiguousMethodError`][] cover those two cases respectively.
+    Inheriting from [`TypeError`][] keeps a dispatch failure inside the
+    exception hierarchy that an ordinary Python call already raises for
+    a type mismatch, so a broad `#!python except TypeError:` around a
+    call needs no change to keep working.
 
     Attributes
     ----------
@@ -61,25 +66,30 @@ class DispatchError(TypeError):
 
 
 class NoMethodError(DispatchError):
-    """Raised when no registered method accepts the call.
+    """Raised when the call matches none of a function's methods.
 
-    Every method either fails to bind the call at all, because it
-    declares no such keyword, is missing a required argument, or was
-    given too many positional arguments, or rejects one of the argument
-    types once bound. The message names the function, shows the call by
-    the types of its arguments, and lists the closest methods with
-    `#!python !` marking each argument that did not fit.
+    A method can fall short of a call in two different ways before
+    dispatch ever gets to compare types. It can fail to bind the
+    arguments at all, for instance because it takes no such keyword, is
+    missing a required argument, or was handed more positional arguments
+    than it accepts. Or it can bind successfully and then reject one of
+    the argument values against its declared types. Either way, the
+    message names the function, describes the call by argument type, and
+    lists whichever methods came closest, marking the argument that
+    defeated each one with a leading `#!python !`.
     """
 
 
 class AmbiguousMethodError(DispatchError):
-    """Raised when two equally specific methods both accept the call.
+    """Raised when more than one method matches a call equally well.
 
-    Neither method is more specific than the other, so choosing between
-    them would make the result depend on the order in which they
-    happened to be registered rather than on their signatures. The
-    message lists the competing methods and suggests a more specific
-    signature that would take precedence over both.
+    This happens when two methods both accept the call and neither is
+    more specific than the other, so picking one over the other would
+    depend on the order the methods happened to be registered in rather
+    than on anything about their signatures. Dispatch refuses to make
+    that arbitrary choice and raises instead, listing the competing
+    methods and suggesting a signature specific enough to take
+    precedence over both.
     """
 
 
@@ -90,24 +100,26 @@ def render_no_method(
     closest: tx.Sequence[str],
     note: tx.Optional[str] = None,
 ) -> str:
-    """Build the message for a [`NoMethodError`][].
+    """Compose the text of a [`NoMethodError`][] message.
 
     Parameters
     ----------
     name
         The function's name.
     call_desc
-        The call rendered by argument type, for example
+        The call, rendered by the types of its arguments, for example
         `#!python "area(str)"`.
     method_count
-        How many methods the function has registered.
+        The number of methods currently registered under `name`, used to
+        distinguish a function with no methods at all from one whose
+        methods simply do not cover this combination of types.
     closest
-        The already-rendered lines describing the closest candidates,
-        in order.
+        Lines already rendered for whichever methods came closest to
+        matching, in the order they should appear.
     note
-        An extra line inserted between the summary and the candidates,
-        used for the "did you mean" suggestion when an unrecognised
-        keyword is close to a known one.
+        An extra line placed between the summary and the candidate list,
+        used to carry a "did you mean" suggestion when the call used an
+        unrecognised keyword close to one a method declares.
     """
     head = f"no method matching {call_desc}."
     if method_count == 0:
@@ -135,18 +147,19 @@ def render_ambiguous(
     candidates: tx.Sequence[str],
     possible_fix: str,
 ) -> str:
-    """Build the message for an [`AmbiguousMethodError`][].
+    """Compose the text of an [`AmbiguousMethodError`][] message.
 
     Parameters
     ----------
     call_desc
-        The call rendered by argument type, for example
+        The call, rendered by the types of its arguments, for example
         `#!python "area(int, int)"`.
     candidates
-        The already-rendered lines describing the competing methods,
-        in order.
+        Lines already rendered for the methods tied for the best match,
+        in the order they should appear.
     possible_fix
-        The signature that, if defined, would resolve the ambiguity.
+        A signature that, if a method were defined with it, would be
+        specific enough to settle the ambiguity.
     """
     parts = [f"{call_desc} is ambiguous.", "Candidates:"]
     parts.extend(f"  {line}" for line in candidates)
@@ -156,6 +169,10 @@ def render_ambiguous(
 
 
 def did_you_mean(name: str, options: tx.Iterable[str]) -> tx.Optional[str]:
-    """Return the declared name closest to `name`, if any is close enough."""
+    """Find the name in `options` closest to `name`, if one is close enough.
+
+    Returns `None` when nothing in `options` resembles `name` closely
+    enough to be worth suggesting.
+    """
     matches = difflib.get_close_matches(name, list(options), n=1)
     return matches[0] if matches else None

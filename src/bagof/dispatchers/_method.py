@@ -1,9 +1,11 @@
-"""A single registered implementation: [`Method`][].
+"""One implementation registered under a dispatched function's name.
 
-A [`Method`][] pairs one function with the [`Signature`][] that
-dispatch reads off it, an optional `priority` used to break ties, and
-the location where the function was defined, so that an error can point
-back at the exact `#!python def`.
+A [`Method`][] wraps a single callable together with the
+[`Signature`][] dispatch reads its parameter types from, and with an
+optional priority for breaking ties that type alone cannot settle. It
+also records the location where the callable was defined, so that a
+dispatch error can point a reader straight at the `#!python def`
+responsible.
 """
 
 # stdlib
@@ -20,13 +22,14 @@ __all__ = ["Method"]
 
 
 class Method:
-    """One implementation registered under a function's name.
+    """A callable paired with the signature dispatch selects it by.
 
-    A `Method` wraps a callable together with the [`Signature`][] that
-    describes its parameters. Calling the method calls the wrapped
-    function; its [`repr`][] shows the named signature and the location
-    where it was defined, which is what a dispatch error uses to point
-    a reader at the right line.
+    Calling a `Method` calls the function it wraps, so a `Method` can
+    stand in for the function itself once it has been registered. Its
+    [`repr`][] prints the function's name together with its parameters
+    and the file and line it was defined on, and a dispatch error reuses
+    that same rendering to point a reader at the exact candidate that
+    did, or did not, match.
 
     !!! example
         ```pycon
@@ -39,14 +42,16 @@ class Method:
     Parameters
     ----------
     function
-        The callable this method runs.
+        The callable this method runs when it is called or selected.
     signature
-        The signature dispatch compares candidates by. When omitted, it
-        is read from `function` with [`Signature.from_callable`][].
+        The signature dispatch reads the parameter types from to decide
+        whether this method matches a call, and how specific it is
+        compared to another. When omitted, it is obtained from
+        `function` with [`Signature.from_callable`][].
     priority
-        A tie-break applied before the type-based one: between two
-        methods that are otherwise equally specific, the one with the
-        higher priority wins. Defaults to `0`.
+        A tie-break considered ahead of specificity: given two methods
+        that a call matches equally well by type, the one with the
+        higher priority is chosen. Defaults to `0`.
 
     Attributes
     ----------
@@ -55,12 +60,13 @@ class Method:
     function : Callable
         The wrapped callable.
     priority : int
-        The tie-break priority.
+        The tie-break priority given at construction.
     filename : str
-        The file the function was defined in, or `"<module>"` when it
-        has no source file.
+        The file the wrapped callable was defined in, or `"<module>"`
+        when no source file could be found for it.
     lineno : int or None
-        The line the function's `#!python def` starts on, if known.
+        The line where the callable's `#!python def` begins, when that
+        could be determined.
     """
 
     __slots__ = (
@@ -87,17 +93,19 @@ class Method:
         self.filename, self.lineno = _source_location(function)
 
     def __call__(self, *args: tx.Any, **kwargs: tx.Any) -> tx.Any:
-        """Call the wrapped function with the given arguments."""
+        """Run the wrapped function, forwarding every argument to it."""
         return self.function(*args, **kwargs)
 
     @property
     def name(self) -> str:
-        """The name of the wrapped function."""
+        """The wrapped function's `__name__`, or a placeholder if it has
+        none.
+        """
         return getattr(self.function, "__name__", "<function>")
 
     @property
     def location(self) -> str:
-        """A short `file:line` string for where the function was defined."""
+        """A short `file:line` string pointing at the function's definition."""
         base = os.path.basename(self.filename)
         if self.lineno is None:
             return base
@@ -106,14 +114,14 @@ class Method:
     def describe(
         self, highlight: tx.Optional[tx.Collection[tx.Any]] = None
     ) -> str:
-        """Render the named signature and its definition site for an error.
+        """Render the method's name, signature and definition site.
 
-        The rendering matches [`repr`][], except that each slot named
-        in `highlight` has its hint marked with a leading `#!python !`,
-        pointing out the offending argument in a dispatch error. A slot
-        is named by its parameter name, or by `Parameter.VAR_POSITIONAL`
-        or `Parameter.VAR_KEYWORD` for the `#!python *args` and
-        `#!python **kwargs` catch-alls.
+        This is the same rendering [`repr`][] produces, except that the
+        hint of each parameter named in `highlight` is prefixed with a
+        `#!python !`, marking it as the argument responsible for the
+        method not matching in a dispatch error. A parameter is named
+        either by its own name or, for the catch-all parameters, by
+        `Parameter.VAR_POSITIONAL` or `Parameter.VAR_KEYWORD`.
         """
         body = _render_parameters(self.signature, highlight)
         return f"{self.name}({body}) @ {self.location}"
@@ -136,7 +144,13 @@ class Method:
 def _source_location(
     function: tx.Callable[..., tx.Any],
 ) -> tx.Tuple[str, tx.Optional[int]]:
-    """Return the file and line a callable was defined at, best effort."""
+    """Find the file and line a callable was defined at, where possible.
+
+    A callable with no accessible source, such as a builtin or one
+    defined interactively, has no meaningful location; `filename` falls
+    back to `"<module>"` and `lineno` to `None` in that case, rather than
+    letting the lookup raise.
+    """
     try:
         filename = inspect.getsourcefile(function) or "<module>"
     except (TypeError, OSError):
