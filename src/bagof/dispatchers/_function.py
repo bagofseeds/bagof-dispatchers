@@ -64,7 +64,11 @@ from .core import (
 )
 from .core._compat import is_plausible_hint
 from .core._exact import exact_target, is_exact
-from .core._relation import _present_data_members
+from .core._introspect import _PEP585_ALIAS
+from .core._relation import (
+    _may_record_parametrisation,
+    _present_data_members,
+)
 
 __all__ = ["Function"]
 
@@ -1363,13 +1367,15 @@ def _declared_key(value: tx.Any) -> tx.Any:
     recorded none -- never the instance itself, so every instance built from
     one parametrisation shares a cache entry.
 
-    Only an instance of a `Generic` subclass is asked, the same gate the value
-    check applies before reading the record, so the two stay in step. Any
-    other value -- a plain `#!python list` at a `#!python List[int]` argument,
-    a `str` at a `#!python Union[Box[int], str]` one, a lazy proxy whose
-    `__getattr__` does work -- is never probed.
+    Only an instance of a `Generic` subclass, or of a class written against a
+    PEP 585 alias (`#!python class GL(list[T])`), is asked: the same gate,
+    `_may_record_parametrisation`, the value check applies before reading the
+    record, so the two stay in step. Any other value -- a plain
+    `#!python list` at a `#!python List[int]` argument, a `str` at a
+    `#!python Union[Box[int], str]` one, a lazy proxy whose `__getattr__` does
+    work -- is never probed.
     """
-    if not isinstance(value, tx.Generic):
+    if not _may_record_parametrisation(type(value)):
         return None
     try:
         recorded = value.__orig_class__
@@ -1377,6 +1383,46 @@ def _declared_key(value: tx.Any) -> tx.Any:
         # Absent (`AttributeError`), or a `__getattr__` that raises: the value
         # check reads nothing either (`_orig_class`).
         return None
+    if type(recorded) is not _PEP585_ALIAS:
+        # A typing record (`Box[int]`) is keyed by identity: `_record_key`'s
+        # last case, without the call.
+        return _SameObject(recorded)
+    return _record_key(recorded)
+
+
+# Whether a PEP 585 alias can be unpacked (`*tuple[int]`, Python 3.11+),
+# which gives it the origin and arguments of the packed one. Before that,
+# reading `__unpacked__` off an alias is forwarded to its origin and raises.
+_UNPACKABLE = hasattr(_PEP585_ALIAS, "__unpacked__")
+
+
+def _record_key(recorded: tx.Any) -> tx.Any:
+    """A recorded parametrisation, or a part of one, as the call cache keys it.
+
+    A PEP 585 alias (`#!python GL[int]`) is not cached by its subscription:
+    each `#!python GL[int]()` records a new alias object. It is keyed by its
+    parts instead -- its origin and each argument, keyed the same way, and
+    whether it is unpacked (`#!python *tuple[int]`) -- so every
+    `#!python GL[int]()` shares one entry. A plain class (one whose metaclass
+    is `#!python type`) already compares and hashes by identity, and is its
+    own key. Anything else is keyed by identity ([`_SameObject`][]).
+    """
+    kind = type(recorded)
+    if kind is type:
+        return recorded
+    if kind is _PEP585_ALIAS:
+        origin = recorded.__origin__
+        args = recorded.__args__
+        for arg in args:
+            if type(arg) is not type:
+                # Only plain classes are their own keys: key them all.
+                args = tuple(map(_record_key, args))
+                break
+        return (
+            origin if type(origin) is type else _SameObject(origin),
+            args,
+            recorded.__unpacked__ if _UNPACKABLE else False,
+        )
     return _SameObject(recorded)
 
 

@@ -15,6 +15,7 @@ import math
 import numbers
 import re
 import sys
+import types
 from collections import abc
 
 # dependencies
@@ -797,6 +798,58 @@ _STDLIB_VARIANCE = {
 }  # type: tx.Dict[tx.Any, tx.Tuple[str, ...]]
 
 
+# The runtime type of a PEP 585 alias (`#!python list[T]`, `#!python
+# dict[str, T]`, `#!python collections.abc.Mapping[K, V]`, and a
+# subscripted subclass of one, `#!python GL[int]`); `None` on Python 3.8,
+# which has none.
+_PEP585_ALIAS = getattr(types, "GenericAlias", None)
+
+
+def _own_orig_bases(cls: type) -> tx.Tuple[tx.Any, ...]:
+    """The parametrised bases `cls` itself was written with, else `()`.
+
+    Read off the class's own namespace: an attribute read would find a
+    parent's `__orig_bases__`, which describe the parent's bases.
+    """
+    written = vars(cls).get("__orig_bases__")
+    return written if isinstance(written, tuple) else ()
+
+
+def _is_pep585_alias(hint: tx.Any) -> bool:
+    """Whether `hint` is a PEP 585 alias (`#!python list[T]`), not `List[T]`.
+
+    A subclass of the runtime alias type counts too
+    (`#!python collections.abc.Callable[[T], int]`).
+    """
+    return _PEP585_ALIAS is not None and isinstance(hint, _PEP585_ALIAS)
+
+
+def _class_parameters(cls: type) -> tx.Tuple[tx.Any, ...]:
+    """The type variables the class `cls` takes, in order.
+
+    A [`Generic`][typing.Generic] subclass lists them itself, as
+    `#!python __parameters__`. A class whose only generic bases are PEP 585
+    aliases -- `#!python class GL(list[T])`, `#!python class GD(dict[str,
+    T])` -- has no `Generic` in its MRO and lists none, though
+    `#!python GL[int]` is still what an instance built from it records. Its
+    parameters are collected the way `Generic` would collect them: the type
+    variables its own PEP 585 bases mention, in order of first appearance.
+    `#!python class Sub(GL[int])` mentions none and takes none; a class
+    written without a parametrised base takes none either.
+    """
+    params = getattr(cls, "__parameters__", None)
+    if isinstance(params, tuple):
+        return params
+    collected = []  # type: tx.List[tx.Any]
+    for base in _own_orig_bases(cls):
+        if not _is_pep585_alias(base):
+            continue
+        for param in base.__parameters__:
+            if not any(param is seen for seen in collected):
+                collected.append(param)
+    return tuple(collected)
+
+
 @functools.lru_cache(maxsize=None)
 def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
     """The per-position variance of a generic's origin, or `#!python None`.
@@ -809,6 +862,15 @@ def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
     * a user-defined generic is read live off its `#!python __parameters__`,
       each declared [`TypeVar`][typing.TypeVar] giving its own position's
       variance;
+    * a class whose generic bases are PEP 585 aliases (`#!python class
+      GL(list[T])`, which has no `#!python __parameters__`) is read the same
+      way, off the type variables those bases mention
+      ([`_class_parameters`][]). Each gives the variance it declares, not
+      the one of the slot it fills: an unflagged `T` is invariant wherever
+      it goes, as for `#!python class GL(List[T])`, and a `T_co` written
+      into `#!python list`'s invariant slot -- which a type checker reports
+      as an error in the class -- is taken at its word, as covariant, as a
+      checker still takes it once the error is reported;
     * anything else -- an origin with a [`ParamSpec`][typing.ParamSpec] or
       [`TypeVarTuple`][typing.TypeVarTuple] in a parameter position, or one
       with no readable parameters -- returns `#!python None`, leaving the
@@ -829,13 +891,10 @@ def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
     """
     if origin in _STDLIB_VARIANCE:
         return _STDLIB_VARIANCE[origin]
-    params = getattr(origin, "__parameters__", None)
-    if (
-        isinstance(origin, type)
-        and isinstance(params, tuple)
-        and params
-        and all(_is_plain_typevar(param) for param in params)
-    ):
+    if not isinstance(origin, type):
+        return None
+    params = _class_parameters(origin)
+    if params and all(_is_plain_typevar(param) for param in params):
         return tuple(_typevar_variance(param) for param in params)
     return None
 

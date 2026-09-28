@@ -28,9 +28,12 @@ from ._introspect import (
     _COVARIANT,
     _NON_TYPE_PARAMS,
     _all_orig_bases,
+    _class_parameters,
     _generic_variances,
+    _is_pep585_alias,
     _is_plain_typevar,
     _looks_like_class,
+    _own_orig_bases,
     _reads_declared_arguments,
     eq_safenan,
     get_args_uw,
@@ -1478,15 +1481,20 @@ def _own_bases(cls: type) -> tx.Tuple[tx.Any, ...]:
     A class written without a parametrised base has none of its own, and its
     plain `__bases__` are the answer.
     """
-    written = vars(cls).get("__orig_bases__")
-    if isinstance(written, tuple):
-        return written
-    return cls.__bases__
+    return _own_orig_bases(cls) or cls.__bases__
 
 
-def _free_parameters(cls: type) -> tx.Tuple[tx.Any, ...]:
-    """The type variables a generic class takes (`()` for any other class)."""
-    params = getattr(cls, "__parameters__", ())
+def _free_parameters(node: tx.Any) -> tx.Tuple[tx.Any, ...]:
+    """The type variables a generic class or alias takes (else `()`).
+
+    A class is read through [`_class_parameters`][], so one written against
+    a PEP 585 base (`#!python class GL(list[T])`) takes the variables that
+    base mentions; an alias (`#!python Box[T]`, `#!python list[T]`) lists
+    its own.
+    """
+    if _looks_like_class(node):
+        return _class_parameters(node)
+    params = getattr(node, "__parameters__", ())
     return params if isinstance(params, tuple) else ()
 
 
@@ -1637,18 +1645,73 @@ def _is_fully_declared(args: tx.Optional[tx.Sequence[tx.Any]]) -> bool:
     return True
 
 
+# `_may_record_parametrisation`'s memo: the answer for each class, keyed by
+# the class's `id`. It is read on every call at a declaration-dependent
+# argument, and a plain `dict` read is the cheapest there is; keying by `id`
+# holds no reference to the class, so a class made and dropped at runtime is
+# not kept alive, as `_LOOKUPS` does not keep one alive either. The weak
+# reference kept beside each answer drops the entry when its class is
+# collected -- before that `id` can be given to another object.
+_RECORDERS = {}  # type: tx.Dict[int, bool]
+_RECORDER_REFS = {}  # type: tx.Dict[int, weakref.ref]
+
+
+def _may_record_parametrisation(cls: type) -> bool:
+    """Whether an instance of `cls` is asked for `__orig_class__`, memoised.
+
+    Calling a subscripted generic class records the subscription on the
+    instance it builds, and two classes can be subscripted that way: a
+    [`Generic`][typing.Generic] subclass (`#!python Box[int]()`), and a
+    class written against a PEP 585 alias (`#!python class GL(list[T])`,
+    whose `#!python GL[int]()` is recorded by the runtime alias type), which
+    has no `Generic` in its MRO. An instance of any other class -- a builtin
+    container, a lazy proxy whose `__getattr__` does work -- is never probed.
+
+    The value check ([`_declared_parametrisation`][]) and the call cache's
+    key (`_declared_key`) both ask this, so the key always covers what the
+    check reads.
+    """
+    try:
+        return _RECORDERS[id(cls)]
+    except KeyError:
+        pass
+    answer = _records_parametrisation(cls)
+    key = id(cls)
+    _RECORDER_REFS[key] = weakref.ref(cls, functools.partial(_forget, key))
+    _RECORDERS[key] = answer
+    return answer
+
+
+def _forget(key: int, _ref: tx.Any) -> None:
+    """Drop `_may_record_parametrisation`'s answer for a collected class."""
+    _RECORDERS.pop(key, None)
+    _RECORDER_REFS.pop(key, None)
+
+
+def _records_parametrisation(cls: type) -> bool:
+    """[`_may_record_parametrisation`][], worked out."""
+    if issubclass(cls, tx.Generic):
+        return True
+    return any(
+        _is_pep585_alias(base)
+        for each in cls.__mro__
+        for base in _own_orig_bases(each)
+    )
+
+
 def _orig_class(obj: tx.Any) -> tx.Any:
     """The parametrisation `obj` was built from, or `#!python None`.
 
-    Calling a subscripted user generic -- `Box[int]()` -- records `Box[int]`
-    on the new instance as `__orig_class__`. It is absent from a builtin
-    container, from any instance built by calling the bare class, and from
-    one typing cannot write it onto: a class built with `__slots__` and no
-    `__dict__`, and a frozen dataclass (typing swallows the
-    `FrozenInstanceError`). It is also written only *after* `__init__`
-    returns, so a dispatch on `self` from inside `__init__` sees an instance
-    that declares nothing yet. Whatever the attribute holds is only trusted
-    when it is a parametrisation of a class `obj` is an instance of.
+    Calling a subscripted user generic -- `Box[int]()`, or `GL[int]()` for
+    `class GL(list[T])` -- records the subscription on the new instance as
+    `__orig_class__`. It is absent from a builtin container, from any
+    instance built by calling the bare class, and from one typing cannot
+    write it onto: a class built with `__slots__` and no `__dict__`, and a
+    frozen dataclass (typing swallows the `FrozenInstanceError`). It is also
+    written only *after* `__init__` returns, so a dispatch on `self` from
+    inside `__init__` sees an instance that declares nothing yet. Whatever
+    the attribute holds is only trusted when it is a parametrisation of a
+    class `obj` is an instance of.
     """
     try:
         declared = obj.__orig_class__
@@ -1670,7 +1733,9 @@ def _declared_parametrisation(obj: tx.Any, origin: type) -> tx.Any:
     to compare with `G[args]` through the relation. Returns, in order:
 
     1. the instance's `__orig_class__` (`Box[int]` for `Box[int]()`), when
-       `obj` is an instance of a `Generic` subclass and the record declares
+       `obj` is an instance of a `Generic` subclass or of a class written
+       against a PEP 585 alias (`GL[int]()` for `class GL(list[T])`,
+       [`_may_record_parametrisation`][]) and the record declares
        every argument of `origin` -- against a user generic or a
        standard-library one alike (`Row[int]()` for `class Row(Sequence[T])`
        is a `Sequence[int]`);
@@ -1686,8 +1751,8 @@ def _declared_parametrisation(obj: tx.Any, origin: type) -> tx.Any:
     """
     if not _reads_declared_arguments(origin):
         return None
-    if isinstance(obj, tx.Generic):
-        # Only a `Generic` instance can carry `__orig_class__`, and only one
+    if _may_record_parametrisation(type(obj)):
+        # Only an instance of a class that can be subscripted into a record
         # is asked -- the same gate the call cache applies before reading it
         # (`_declared_key`), so the key always covers what the check reads.
         declared = _orig_class(obj)
