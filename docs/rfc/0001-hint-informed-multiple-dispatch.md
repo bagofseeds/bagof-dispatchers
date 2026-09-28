@@ -256,7 +256,10 @@ under `⊑_C`. Then, in order, drop members strictly dominated under:
      `index(hint_A(a)) ≤ index(hint_B(a))`,
      strictly `<` for some `a` (resolves the diamond `D(B, C)` to `B`, as
      `singledispatch` does; protocols/ABCs not in the MRO, unions, literals and
-     parametrised generics give no refinement);
+     parametrised generics give no refinement — so a diamond over two
+     parametrisations of one generic, `Both(Ints, Strs)` over `Ints(Box[int])`
+     and `Strs(Box[str])`, stays ambiguous between `Box[int]` and `Box[str]`
+     overloads; see V5 in §2.3);
   3. **tightness** (restates the old arity rule): fewer arguments absorbed by
      catch-alls (`*args`/`**kwargs`), then fewer default-filled parameters, then
      no `**kwargs`, then no `*args`.
@@ -340,7 +343,15 @@ multiply.
   `class Two(List[T], Container[U])` makes `Two[int, str]` both a
   `Container[int]` and a `Container[str]`. A type checker rejects such a
   class; accepting either keeps the order transitive through the bases a
-  class names. Each base is filled in with the sub-hint's
+  class names. So such a value is **ambiguous** between overloads for two of
+  them, where the first listed base used to win silently: `Both()` for
+  `class Both(Ints, Strs)` against `Box[int]` and `Box[str]`, and
+  `Two[int, str]()` against `Container[int]` and `Container[str]`, both raise
+  `AmbiguousMethodError`. An `Ints` overload beside `Box[int]` and `Box[str]`
+  does not settle `Both()` either: `Ints` is below `Box[int]` but not below
+  `Box[str]`, and the MRO refinement gives a parametrised generic no index,
+  so `Ints` and `Box[str]` stay incomparable. A `priority` chooses. Each base
+  is filled in with the sub-hint's
   own arguments by typing's own subscription (`Box[T][bool]` is `Box[bool]`),
   pairing arguments to variables by identity, not position — so `class
   Flip(Pair[B, A], Generic[A, B])` makes `Flip[int, str]` a `Pair[str, int]`. A
@@ -372,7 +383,14 @@ multiply.
   `Sequence[str]`), and used when it re-expresses as a parametrisation of `G`;
   then (2) the class's written bases, when `type(v)` re-expresses as a
   parametrisation of `G` (`class Child(List[int])`). Either decides by
-  `issubhint(declared, G[args])`. Otherwise the check stays shallow: a builtin
+  `issubhint(declared, G[args])`. A declaration re-expresses only when *every*
+  parametrisation of `G` its bases reach is fully declared (#64): `Two[Any,
+  str]()` for `class Two(List[T], Container[U])` reaches `Container[Any]`
+  through `List` and `Container[str]` through its own base, and stays shallow.
+  Reading it by `Container[str]` alone would reject it as a `Container[bytes]`
+  while accepting it as a `Collection[bytes]` (shallowly, through `List[Any]`),
+  which is below that — a value in a sub-hint and not in its super-hint.
+  Otherwise the check stays shallow: a builtin
   instance (and `list[int]([1])`, which is a plain list), an instance built
   from the bare class, a `__slots__` class with no `__dict__` (nowhere to
   record it) or a frozen dataclass (typing swallows the `FrozenInstanceError`),

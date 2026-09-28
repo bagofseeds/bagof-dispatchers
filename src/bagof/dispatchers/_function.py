@@ -66,7 +66,6 @@ from .core._compat import is_plausible_hint
 from .core._exact import exact_target, is_exact
 from .core._introspect import _PEP585_ALIAS
 from .core._relation import (
-    _RECORDERS,
     _may_record_parametrisation,
     _present_data_members,
 )
@@ -1376,14 +1375,7 @@ def _declared_key(value: tx.Any) -> tx.Any:
     `#!python Union[Box[int], str]` one, a lazy proxy whose `__getattr__` does
     work -- is never probed.
     """
-    cls = type(value)
-    try:
-        # The gate's memo, read inline: the gate itself runs only on a miss.
-        # A subscript is cheaper than `dict.get`, a method call.
-        records = _RECORDERS[id(cls)]
-    except KeyError:
-        records = _may_record_parametrisation(cls)
-    if not records:
+    if not _may_record_parametrisation(type(value)):
         return None
     try:
         recorded = value.__orig_class__

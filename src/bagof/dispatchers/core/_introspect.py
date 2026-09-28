@@ -890,16 +890,17 @@ def _generic_variances(origin: tx.Any) -> tx.Optional[tx.Tuple[str, ...]]:
 
     Memoised per origin. A class whose metaclass defines `#!python __eq__`
     without `#!python __hash__` cannot key the memo, and is read afresh on
-    each call instead.
+    each call instead. The call cache cannot key such a class either, so a
+    dispatch on one is resolved again on every call.
     """
     try:
-        return _memoised_variances(origin)
+        hash(origin)
     except TypeError:
         # An unhashable class -- its metaclass defines `__eq__` alone -- can
         # key neither the memo nor the standard-library table, which holds
-        # only hashable origins. A `TypeError` raised while reading a hashable
-        # origin is raised again by this second read.
+        # only hashable origins.
         return _declared_variances(origin)
+    return _memoised_variances(origin)
 
 
 @functools.lru_cache(maxsize=None)

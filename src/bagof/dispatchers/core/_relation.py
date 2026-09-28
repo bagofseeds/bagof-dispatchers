@@ -454,12 +454,14 @@ def _data_protocol_members(cls: tx.Any) -> tx.Optional[_ProtocolMembers]:
         # `isinstance` reads: a sub-protocol inherits it.
         return None
     try:
-        return _read_protocol_members(cls)
+        hash(cls)
     except TypeError:
         # A class whose metaclass defines `__eq__` alone is unhashable and
-        # cannot key the memo: read it afresh. A `TypeError` raised while
-        # reading a hashable class is raised again by this second read.
+        # cannot key the memo: it is read afresh on each call. The call
+        # cache cannot key such a class either, so a dispatch on one is
+        # resolved again on every call anyway.
         return _read_protocol_members.__wrapped__(cls)
+    return _read_protocol_members(cls)
 
 
 @functools.lru_cache(maxsize=None)
@@ -1625,20 +1627,24 @@ def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
         # An unparametrised superhint constrains nothing further.
         return True
 
-    candidates = (safe_get_args(hint_uw),)
+    variances = _generic_variances(origin)
     if get_origin_uw(hint_uw) is not origin:
         # Differing origins: read the sub-hint as the parametrisations of the
         # super-hint's origin it declares through its bases (#50, V5), so
         # `class IntBox(Box[int])` is compared as `Box[int]` and `Flip[int,
         # str]` for `class Flip(Pair[B, A], Generic[A, B])` as `Pair[str,
         # int]`. A class reaching the origin through several bases is below
-        # the super-hint when any of them is. When no base maps onto the
-        # origin the arguments are compared positionally, as before.
-        candidates = _as_base_args(hint_uw, origin) or candidates
-    variances = _generic_variances(origin)
-    return any(
-        _issubclassargs(args, superargs, variances) for args in candidates
-    )
+        # the super-hint when any of them is, and the walk stops at the
+        # first that is. When no base maps onto the origin the arguments are
+        # compared positionally, as before.
+        mapped = False
+        for args in _as_base_args(hint_uw, origin):
+            if _issubclassargs(args, superargs, variances):
+                return True
+            mapped = True
+        if mapped:
+            return False
+    return _issubclassargs(safe_get_args(hint_uw), superargs, variances)
 
 
 def _issubclassargs(
@@ -1858,7 +1864,7 @@ def _filled_bases(
 
 def _as_base_args(
     hint: tx.Any, target: type
-) -> tx.Tuple[tx.Tuple[tx.Any, ...], ...]:
+) -> tx.Iterator[tx.Tuple[tx.Any, ...]]:
     """`hint` re-expressed as parametrisations of `target`: their arguments.
 
     `hint` is a class or a parametrised generic whose origin is a subclass of
@@ -1866,47 +1872,56 @@ def _as_base_args(
     read through the bases each class was written with (`__orig_bases__`),
     filling in each class's own arguments as it goes:
 
-    * `class IntBox(Box[int])` is `Box[int]`, so `IntBox` gives `((int,),)`;
+    * `class IntBox(Box[int])` is `Box[int]`, so `IntBox` gives `(int,)`;
     * `class Sub(Box[T])` passes its argument on, so `Sub[bool]` gives
-      `((bool,),)`, and a subclass written without a parametrised base
-      (`class Leaf(IntBox)`) is followed through its plain bases;
+      `(bool,)`, and a subclass written without a parametrised base (`class
+      Leaf(IntBox)`) is followed through its plain bases;
     * every base is followed, so a class that reaches `target` along two
       paths gives both: in a diamond `class D(A, B)` with `class A(Box[int])`
-      and `class B(Box[str])`, `D` gives `((int,), (str,))`, and so does
-      `class Two(List[T], Container[U])`, whose `Two[int, str]` is a
+      and `class B(Box[str])`, `D` gives `(int,)` and then `(str,)`, and so
+      does `class Two(List[T], Container[U])`, whose `Two[int, str]` is a
       `Container[int]` through `List` and a `Container[str]` through its own
       base. A type checker rejects such a class, and the relation accepts a
-      hint that any of them satisfies. They come nearest first, and between
-      bases at the same depth the one listed first;
+      hint that any of them satisfies;
     * a standard-library class reached on the way (`class Child(List[int])`
       reaches `List[int]`) is read positionally against a standard-library
       `target` it subclasses (`Sequence`), as two such origins always are.
 
     `hint`'s own arguments are the answer when its origin *is* `target` and
-    it has any. The answer is empty when nothing maps -- no base reaches
+    it has any. Nothing is yielded when nothing maps -- no base reaches
     `target` with arguments, as for a `collections.Counter` (a runtime
     subclass of `dict` that records no parametrised base), or a generic class
     written without arguments -- and the caller then keeps its positional
     comparison.
+
+    A generator, walking depth first with each class's bases in the order
+    they are listed, so a caller that needs one answer stops the walk there
+    and a class whose first base maps gives it after as many steps as it is
+    deep. Each node -- a class with the arguments it was reached with -- is
+    walked once, and each answer given once ([`_first_time`][]); a hierarchy
+    that reaches `target` along many paths with other arguments on each (a
+    diamond at every level) still has as many answers as paths, and a caller
+    that needs all of them walks them all.
     """
-    found = []  # type: tx.List[tx.Tuple[tx.Any, ...]]
-    queue = [hint]
-    seen = []  # type: tx.List[tx.Tuple[tx.Any, tx.Tuple[tx.Any, ...]]]
-    while queue:
-        node = queue.pop(0)
+    pending = [hint]
+    walked = {}  # type: tx.Dict[tx.Tuple[int, ...], tx.Any]
+    given = {}  # type: tx.Dict[tx.Tuple[int, ...], tx.Any]
+    while pending:
+        node = pending.pop()
         cls = safe_get_origin(node)
         args = tx.get_args(node)
         if cls is target:
-            if args and not _already_listed(args, found):
-                found.append(args)
+            if args and _first_time(args, args, given):
+                yield args
             continue
-        if not _looks_like_class(cls) or _already_walked(cls, args, seen):
+        if not _looks_like_class(cls) or not _first_time(
+            (cls,) + args, node, walked
+        ):
             # A class reached again with the same arguments has already
             # given what it maps to. One reached with other arguments -- in
             # a diamond, `class A(Mid[int])` and `class B(Mid[str])` -- is
             # walked again, so each of its parametrisations maps.
             continue
-        seen.append((cls, args))
         if args and "__orig_bases__" not in vars(cls):
             # A parametrised standard-library class (`List[int]`, `Dict[K,
             # V]`), which records no parametrised base: its arguments line up
@@ -1920,43 +1935,35 @@ def _as_base_args(
                 variances is not None
                 and len(variances) == len(args)
                 and safe_issubclass(cls, target)
-                and not _already_listed(args, found)
+                and _first_time(args, args, given)
             ):
-                found.append(args)
+                yield args
             continue
         bases = _filled_bases(node, cls)
         if bases is not None:
-            queue.extend(bases)
-    return tuple(found)
+            # Depth first, the first-listed base on top.
+            pending.extend(reversed(bases))
 
 
-def _same_args(a: tx.Tuple[tx.Any, ...], b: tx.Tuple[tx.Any, ...]) -> bool:
-    """Whether two argument lists hold the very same objects.
+def _first_time(
+    parts: tx.Tuple[tx.Any, ...],
+    holder: tx.Any,
+    met: tx.Dict[tx.Tuple[int, ...], tx.Any],
+) -> bool:
+    """Record `parts` in `met` by identity; whether they were new there.
 
-    Compared by identity, so no argument's own `__eq__` runs. Two equal
-    arguments built apart are told apart, which costs the walk at most a
-    second read of that node.
+    The key is the `id` of each part, so no argument's own `__eq__` or
+    `__hash__` runs, and two equal objects built apart (`list[int]` twice)
+    count as different: the node is then read a second time, which gives
+    the same answers again. `holder` -- the node, or the answer -- is stored
+    as the entry's value, so every object whose `id` is in a key stays alive,
+    and keeps its `id`, for as long as the walk runs.
     """
-    return len(a) == len(b) and all(x is y for x, y in zip(a, b))
-
-
-def _already_listed(
-    args: tx.Tuple[tx.Any, ...], found: tx.Sequence[tx.Tuple[tx.Any, ...]]
-) -> bool:
-    """Whether `args` is among the argument lists already `found`."""
-    return any(_same_args(args, each) for each in found)
-
-
-def _already_walked(
-    cls: tx.Any,
-    args: tx.Tuple[tx.Any, ...],
-    seen: tx.Sequence[tx.Tuple[tx.Any, tx.Tuple[tx.Any, ...]]],
-) -> bool:
-    """Whether the base walk has already followed `cls` with `args`."""
-    return any(
-        cls is walked and _same_args(args, walked_args)
-        for walked, walked_args in seen
-    )
+    key = tuple(map(id, parts))
+    if key in met:
+        return False
+    met[key] = holder
+    return True
 
 
 def _is_fully_declared(args: tx.Optional[tx.Sequence[tx.Any]]) -> bool:
@@ -2086,9 +2093,10 @@ def _declared_parametrisation(obj: tx.Any, origin: type) -> tx.Any:
        [`_may_record_parametrisation`][]) and the record declares
        every argument of `origin` -- against a user generic or a
        standard-library one alike (`Row[int]()` for `class Row(Sequence[T])`
-       is a `Sequence[int]`);
+       is a `Sequence[int]`) -- along every base that reaches it
+       ([`_declares_arguments`][]);
     2. else `type(obj)`, when the class declares every argument of `origin`
-       through its bases (`class Child(List[int])`);
+       along every base that reaches it (`class Child(List[int])`);
     3. else `#!python None`: the value declares nothing, and only its origin
        can be checked.
 
@@ -2100,13 +2108,7 @@ def _declared_parametrisation(obj: tx.Any, origin: type) -> tx.Any:
     if not _reads_declared_arguments(origin):
         return None
     cls = type(obj)
-    try:
-        # The gate's memo, read inline: the gate itself runs only on a miss.
-        # A subscript is cheaper than `dict.get`, a method call.
-        records = _RECORDERS[id(cls)]
-    except KeyError:
-        records = _may_record_parametrisation(cls)
-    if records:
+    if _may_record_parametrisation(cls):
         # Only an instance of a class that can be subscripted into a record
         # is asked -- the same gate the call cache applies before reading it
         # (`_declared_key`), so the key always covers what the check reads.
@@ -2119,15 +2121,23 @@ def _declared_parametrisation(obj: tx.Any, origin: type) -> tx.Any:
 
 
 def _declares_arguments(hint: tx.Any, origin: type) -> bool:
-    """Whether `hint` says what `origin`'s parameters hold, through a base.
+    """Whether `hint` says what `origin`'s parameters hold, through its bases.
 
-    One fully declared parametrisation is enough: the hint is then compared
-    with the super-hint through the relation, which accepts it when any of
-    them fits ([`_as_base_args`][]).
+    Every parametrisation of `origin` the bases reach ([`_as_base_args`][])
+    has to be fully declared. The hint is then compared with the super-hint
+    through the relation, which accepts it when any of them fits. One that
+    leaves an argument open (`class Two(List[T], Container[U])` built as
+    `Two[Any, str]()` reaches `Container[Any]` through `List`) makes the whole
+    value undeclared, so only its origin is checked: reading it by its other
+    base alone would reject it as a `Container[bytes]` while it is accepted as
+    a `Collection[bytes]`, which is below that.
     """
-    return any(
-        _is_fully_declared(args) for args in _as_base_args(hint, origin)
-    )
+    declared = False
+    for args in _as_base_args(hint, origin):
+        if not _is_fully_declared(args):
+            return False
+        declared = True
+    return declared
 
 
 def _is_subscripted_tuple(hint: tx.Any) -> bool:

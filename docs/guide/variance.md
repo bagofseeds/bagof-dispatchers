@@ -105,6 +105,31 @@ handle(GL[int]())     # 'ints'
 handle(GL[bool]())    # 'bools'
 ```
 
+A class that declares two different arguments for one generic is a type
+error, and dispatch reads it as both. A diamond over `Box[int]` and
+`Box[str]` matches either overload, so the call is ambiguous rather than
+taking the first base:
+
+```pycon
+>>> class Ints(Box[int]):
+...     pass
+>>> class Strs(Box[str]):
+...     pass
+>>> class Both(Ints, Strs):
+...     pass
+>>> try:
+...     unbox(Both())
+... except AmbiguousMethodError:
+...     print("ambiguous")
+ambiguous
+```
+
+The same holds for `class Two(List[T], Container[U])`: `Two[int, str]()` is
+both a `Container[int]` and a `Container[str]`. An `Ints` overload does not
+settle `Both()` either. It is more specific than `Box[int]`, but not than
+`Box[str]`, and the MRO tie-break that resolves a diamond of plain classes
+does not order parametrised generics. Give one overload a `priority`.
+
 Dispatch never looks inside a container, so a value that declares nothing —
 a plain `[1, 2]`, or a `Box()` built without arguments — still matches every
 parameterisation, as the ambiguous `handle([True, False])` above shows. A
