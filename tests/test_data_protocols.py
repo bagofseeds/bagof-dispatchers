@@ -372,6 +372,44 @@ def test_an_instance_of_an_unhashable_class_is_read(
     assert isinstance(Odd, p.HasName) is False
 
 
+@pytest.mark.parametrize("module", [typing, tx], ids=["typing", "tx"])
+def test_a_protocol_with_an_unhashable_metaclass_is_read(
+    module: tx.Any,
+) -> None:
+    """A protocol that cannot key the members memo is read afresh (#64).
+
+    The generic protocol reaches the variance memo too.
+    """
+    T = module.TypeVar("T")
+
+    class Meta(type(module.Protocol)):  # type: ignore[misc]
+        def __eq__(cls, other: tx.Any) -> bool:
+            return cls is other
+
+    @module.runtime_checkable
+    class Odd(module.Protocol, metaclass=Meta):
+        name: str
+
+    @module.runtime_checkable
+    class OddBox(module.Protocol[T], metaclass=Meta):
+        item: T
+
+    class Named:
+        name = "x"
+
+    for protocol in (Odd, OddBox):
+        with pytest.raises(TypeError):
+            hash(protocol)
+    assert _relation._data_protocol_members(Odd) is not None
+    assert ishintstance(Named(), Odd) is True
+    assert ishintstance(object(), Odd) is False
+    assert issubhint(Named, Odd) is True
+    assert issubhint(int, Odd) is False
+    assert issubhint(OddBox[int], OddBox[int]) is True
+    assert issubhint(OddBox[int], OddBox[str]) is False
+    assert issubhint(Named, OddBox[int]) is False
+
+
 def test_an_unhashable_class_that_redefines_its_dict_is_read(
     p: types.SimpleNamespace,
 ) -> None:

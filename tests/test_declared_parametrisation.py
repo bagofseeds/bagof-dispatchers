@@ -56,6 +56,7 @@ from bagof.dispatchers.core._introspect import (
     _class_parameters,
     _generic_variances,
     _is_pep585_alias,
+    _memoised_variances,
 )
 from bagof.dispatchers.core._relation import (
     _RECORDER_REFS,
@@ -64,6 +65,12 @@ from bagof.dispatchers.core._relation import (
     _is_fully_declared,
     _may_record_parametrisation,
 )
+
+
+def _mapped(hint: tx.Any, target: type) -> tx.Tuple[tx.Any, ...]:
+    """Every parametrisation of `target` that `hint` reaches, in order."""
+    return tuple(_as_base_args(hint, target))
+
 
 # --- the families, in both spellings -----------------------------------
 
@@ -195,27 +202,27 @@ def test_base_substitution_truth_table(f: types.SimpleNamespace) -> None:
 def test_as_base_args_reads_what_a_class_declares(
     f: types.SimpleNamespace,
 ) -> None:
-    assert _as_base_args(f.IntBox, f.Box) == (int,)
-    assert _as_base_args(f.Flip[int, str], f.Pair) == (str, int)
-    assert _as_base_args(f.Child, list) == (int,)
-    assert _as_base_args(f.Child, collections.abc.Sequence) == (int,)
+    assert _mapped(f.IntBox, f.Box) == ((int,),)
+    assert _mapped(f.Flip[int, str], f.Pair) == ((str, int),)
+    assert _mapped(f.Child, list) == ((int,),)
+    assert _mapped(f.Child, collections.abc.Sequence) == ((int,),)
     # The origin itself: its own arguments, or nothing when it has none.
-    assert _as_base_args(f.Box[int], f.Box) == (int,)
-    assert _as_base_args(f.Box, f.Box) is None
-    assert _as_base_args(list, list) is None
+    assert _mapped(f.Box[int], f.Box) == ((int,),)
+    assert _mapped(f.Box, f.Box) == ()
+    assert _mapped(list, list) == ()
     # A generic class written without arguments leaves its bases open.
-    assert _as_base_args(f.Sub, f.Box) is None
+    assert _mapped(f.Sub, f.Box) == ()
 
 
 def test_runtime_stdlib_subclass_falls_back_positionally() -> None:
     """A `Counter` records no parametrised base: nothing maps onto `dict`."""
-    assert _as_base_args(collections.Counter, dict) is None
+    assert _mapped(collections.Counter, dict) == ()
     assert issubhint(collections.Counter, tx.Dict[str, int]) is False
     # A parametrised stdlib origin is read positionally, as it always was,
     # and only against a target taking as many arguments.
-    assert _as_base_args(tx.DefaultDict[str, int], dict) == (str, int)
-    assert _as_base_args(tx.Dict[str, int], collections.abc.Iterable) is None
-    assert _as_base_args(tx.Tuple[int, int], collections.abc.Sequence) is None
+    assert _mapped(tx.DefaultDict[str, int], dict) == ((str, int),)
+    assert _mapped(tx.Dict[str, int], collections.abc.Iterable) == ()
+    assert _mapped(tx.Tuple[int, int], collections.abc.Sequence) == ()
     assert issubhint(tx.DefaultDict[str, int], tx.Dict[str, int]) is True
     assert issubhint(tx.List[int], tx.Sequence[int]) is True
 
@@ -237,7 +244,7 @@ def test_a_base_that_refuses_its_arguments_never_raises() -> None:
         pass
 
     Sub.__orig_bases__ = (Refusing(Box, (T,)),)
-    assert _as_base_args(Sub[int], Box) is None
+    assert _mapped(Sub[int], Box) == ()
     # Nothing maps, so the arguments are compared positionally, as before.
     assert issubhint(Sub[int], Box[int]) is True
     assert issubhint(Sub[int], Box[str]) is False
@@ -256,7 +263,7 @@ def test_a_paramspec_generic_is_not_substituted() -> None:
     # Before 3.10 the backport refuses a parameter list here; one type is
     # the spelling it accepts.
     params = [int] if sys.version_info >= (3, 10) else int
-    assert _as_base_args(SubHook[params], Hook) is None
+    assert _mapped(SubHook[params], Hook) == ()
 
 
 def test_same_origin_tuple_callable_type_are_unchanged() -> None:
@@ -786,7 +793,8 @@ def test_invariant_positions_tighten_declared_values() -> None:
     assert ishintstance(Strs(), tx.Sequence[object]) is True
 
 
-def test_a_diamond_takes_the_first_listed_base() -> None:
+def test_a_diamond_is_every_base_it_reaches() -> None:
+    """An ill-typed diamond is below each parametrisation it declares."""
     T = tx.TypeVar("T")
 
     class Box(tx.Generic[T]):
@@ -801,8 +809,39 @@ def test_a_diamond_takes_the_first_listed_base() -> None:
     class Both(Ints, Strs):
         pass
 
+    assert _mapped(Both, Box) == ((int,), (str,))
     assert issubhint(Both, Box[int]) is True
-    assert issubhint(Both, Box[str]) is False
+    assert issubhint(Both, Box[str]) is True
+    assert issubhint(Both, Box[bytes]) is False
+    assert ishintstance(Both(), Box[str]) is True
+    assert ishintstance(Both(), Box[bytes]) is False
+
+
+def test_a_diamond_through_a_generic_is_walked_per_parametrisation() -> None:
+    """A class reached twice with other arguments is walked each time, so
+    `Both <= Strs <= Mid[str] <= Box[str]` gives `Both <= Box[str]`."""
+    T = tx.TypeVar("T")
+
+    class Box(tx.Generic[T]):
+        pass
+
+    class Mid(Box[T]):
+        pass
+
+    class Ints(Mid[int]):
+        pass
+
+    class Strs(Mid[str]):
+        pass
+
+    class Both(Ints, Strs):
+        pass
+
+    assert _mapped(Both, Box) == ((int,), (str,))
+    assert issubhint(Both, Mid[str]) is True
+    assert issubhint(Mid[str], Box[str]) is True
+    assert issubhint(Both, Box[str]) is True
+    assert issubhint(Both, Box[bytes]) is False
 
 
 # --- owner round 2: solved TypeVar slots, stdlib hints read the record -
@@ -1002,6 +1041,10 @@ def _pep585_hint_rows(
         (pep.Leaf, pep.GL[int], False),
         (pep.Two[int, str], list[int], True),
         (pep.Two[int, str], list[str], False),
+        # Below `Container[X]` through either base (#64).
+        (pep.Two[int, str], tx.Container[int], True),
+        (pep.Two[int, str], tx.Container[str], True),
+        (pep.Two[int, str], tx.Container[bytes], False),
         (pep.Mixed[bool], pep.Mixed[int], False),
         (pep.Mixed[int], list[int], True),
         # The reverse direction is untouched: a base is not a subclass.
@@ -1209,14 +1252,15 @@ def test_pep585_declaration_dependence(pep: types.SimpleNamespace) -> None:
 
 @_PEP585
 def test_pep585_class_with_an_unhashable_metaclass() -> None:
-    """The memo keys a class by `id`, so an unhashable one is kept too."""
+    """An unhashable PEP 585 subclass is gated, read and dispatched on.
+
+    The gate's memo keys a class by `id`, and the variance memo reads an
+    unhashable class afresh (#64), so `Odd[int]` is compared with `Odd[str]`
+    as well as with the `list[...]` it is written against.
+    """
     T = tx.TypeVar("T")
 
-    class Meta(type):
-        def __eq__(cls, other: tx.Any) -> bool:
-            return cls is other
-
-    class Odd(list[T], metaclass=Meta):  # type: ignore[misc]
+    class Odd(list[T], metaclass=_unhashable_meta()):  # type: ignore[misc]
         pass
 
     with pytest.raises(TypeError):
@@ -1225,6 +1269,7 @@ def test_pep585_class_with_an_unhashable_metaclass() -> None:
     assert _RECORDERS[id(Odd)] is True
     assert ishintstance(Odd[int](), list[int]) is True
     assert ishintstance(Odd[int](), list[str]) is False
+    _check_an_unhashable_generic(Odd)
 
 
 def test_the_gate_memo_does_not_keep_a_class_alive() -> None:
@@ -1247,3 +1292,328 @@ def test_the_gate_memo_does_not_keep_a_class_alive() -> None:
     assert [ref() for ref in watch] == [None, None]
     assert not any(key in _RECORDERS for key in keys)
     assert not any(key in _RECORDER_REFS for key in keys)
+
+
+# --- a class whose metaclass makes it unhashable (#64) -----------------
+
+
+def _unhashable_meta() -> type:
+    """A metaclass defining `__eq__` alone, so its classes are unhashable."""
+
+    class Meta(type):
+        def __eq__(cls, other: tx.Any) -> bool:
+            return cls is other
+
+    assert Meta.__hash__ is None
+    return Meta
+
+
+def _check_an_unhashable_generic(odd: tx.Any) -> None:
+    """`odd` takes one unflagged `T`, and cannot be hashed."""
+    with pytest.raises(TypeError):
+        hash(odd)
+    assert _generic_variances(odd) == ("invariant",)
+    assert issubhint(odd[int], odd[int]) is True
+    assert issubhint(odd[int], odd[str]) is False
+    assert issubhint(odd[bool], odd[int]) is False
+    assert ishintstance(odd[int](), odd[int]) is True
+    assert ishintstance(odd[int](), odd[str]) is False
+    f = Function("f")
+    f.register((odd[int],))(lambda x: "int")
+    f.register((odd[str],))(lambda x: "str")
+    f.register((object,))(lambda x: "any")
+    assert [f(odd[int]()), f(odd[str]()), f(odd[int]()), f(1)] == [
+        "int",
+        "str",
+        "int",
+        "any",
+    ]
+
+
+@pytest.mark.parametrize("module", [typing, tx], ids=["typing", "tx"])
+def test_generic_class_with_an_unhashable_metaclass(module: tx.Any) -> None:
+    """A `Generic` subclass that cannot key a memo is read afresh."""
+    T = module.TypeVar("T")
+
+    class Odd(module.Generic[T], metaclass=_unhashable_meta()):
+        pass
+
+    _check_an_unhashable_generic(Odd)
+
+
+def test_the_variance_memo_keeps_a_hashable_origin() -> None:
+    """Only an origin that cannot be hashed skips the memo."""
+    T = tx.TypeVar("T")
+
+    class Box(tx.Generic[T]):
+        pass
+
+    before = _memoised_variances.cache_info().misses
+    assert _generic_variances(Box) == ("invariant",)
+    assert _generic_variances(Box) == ("invariant",)
+    assert _memoised_variances.cache_info().misses == before + 1
+
+
+# --- a class reaching the origin through several bases (#64) -----------
+
+
+@pytest.mark.parametrize("module", [typing, tx], ids=["typing", "tx"])
+def test_a_class_is_below_each_parametrisation_its_bases_reach(
+    module: tx.Any,
+) -> None:
+    """`Two[int, str]` is a `Container[int]` through `List[T]` and a
+    `Container[str]` through its own base; either is enough."""
+    T = module.TypeVar("T")
+    U = module.TypeVar("U")
+
+    class Two(module.List[T], module.Container[U]):
+        pass
+
+    _check_two(Two)
+
+
+@_PEP585
+def test_a_pep585_class_is_below_each_parametrisation_its_bases_reach() -> (
+    None
+):
+    """`Two` again, with its `list` base spelled as a PEP 585 alias."""
+    T = tx.TypeVar("T")
+    U = tx.TypeVar("U")
+
+    class Two(list[T], collections.abc.Container[U]):  # type: ignore[misc]
+        pass
+
+    _check_two(Two)
+
+
+def _check_two(two: tx.Any) -> None:
+    """The hint, value and cache levels of a `Two[T, U]` class."""
+    container = tx.Container
+    assert _mapped(two[int, str], collections.abc.Container) == (
+        (int,),
+        (str,),
+    )
+    # Hint level: either base's parametrisation satisfies the super-hint.
+    assert issubhint(two[int, str], container[int]) is True
+    assert issubhint(two[int, str], container[str]) is True
+    # `Container` is covariant.
+    assert issubhint(two[bool, str], container[int]) is True
+    assert issubhint(two[int, str], container[object]) is True
+    assert issubhint(two[int, str], container[bytes]) is False
+    assert issubhint(two[int, str], container[bool]) is False
+    # Value level: an instance reads the parametrisation it recorded.
+    assert ishintstance(two[int, str](), container[int]) is True
+    assert ishintstance(two[int, str](), container[str]) is True
+    assert ishintstance(two[int, str](), container[bytes]) is False
+    # Cache: keyed by the recorded parametrisation, so a second one with
+    # the same type does not reuse the first one's answer.
+    f = Function("f")
+    f.register((container[str],))(lambda x: "str")
+    f.register((object,))(lambda x: "any")
+    calls = [two[int, str](), two[int, bytes](), two[str, int]()]
+    assert [f(each) for each in calls * 2] == ["str", "any", "str"] * 2
+
+
+def test_a_value_is_read_by_its_declaration_only_if_every_base_declares() -> (
+    None
+):
+    """A base that leaves an argument open makes the whole value undeclared.
+
+    Reading `Other()` by its `Container[str]` alone would reject it as a
+    `Container[bytes]`, while it is a `Collection[bytes]` -- shallowly,
+    through `List[Any]` -- which is below that.
+    """
+    T = tx.TypeVar("T")
+    U = tx.TypeVar("U")
+
+    class Two(tx.List[T], tx.Container[U]):
+        pass
+
+    class Half(Two[int, tx.Any]):
+        pass
+
+    class Other(Two[tx.Any, str]):
+        pass
+
+    # Through `List[int]` the class declares `Container[int]`; through its
+    # own `Container[Any]` it declares nothing, so neither is read.
+    assert _mapped(Half, collections.abc.Container) == (
+        (int,),
+        (tx.Any,),
+    )
+    for value in (Half(), Other(), Two[tx.Any, str](), Two[int, tx.Any]()):
+        assert ishintstance(value, tx.Container[bytes]) is True
+    # `Collection` is reached through `List` alone, which `Half` declares.
+    assert ishintstance(Other(), tx.Collection[bytes]) is True
+    assert ishintstance(Half(), tx.Collection[bytes]) is False
+    assert ishintstance(Half(), tx.Collection[int]) is True
+    # The hint level still reads each base: `Half` is not a
+    # `Container[bytes]` by either.
+    assert issubhint(Half, tx.Container[bytes]) is False
+    assert issubhint(Half, tx.Container[int]) is True
+    # Every base declared: read by the declaration.
+    assert ishintstance(Two[int, str](), tx.Container[bytes]) is False
+
+
+# --- soundness: a value in a sub-hint is in its super-hint (#64) --------
+
+
+def _sweep_family() -> types.SimpleNamespace:
+    """Classes reaching one generic through several bases, and values."""
+    T = tx.TypeVar("T")
+    U = tx.TypeVar("U")
+
+    class Two(tx.List[T], tx.Container[U]):
+        pass
+
+    class TwoR(tx.Container[U], tx.List[T]):
+        """`Two` with its bases the other way round."""
+
+        def __contains__(self, item: object) -> bool:
+            return False
+
+    class Other(Two[tx.Any, str]):
+        pass
+
+    class Half(Two[int, tx.Any]):
+        pass
+
+    class Box(tx.Generic[T]):
+        pass
+
+    class Ints(Box[int]):
+        pass
+
+    class Strs(Box[str]):
+        pass
+
+    class Both(Ints, Strs):
+        pass
+
+    return types.SimpleNamespace(**locals())
+
+
+def _sweep_hints(f: types.SimpleNamespace) -> tx.List[tx.Any]:
+    hints = [object, list, f.Box, f.Ints, f.Strs, f.Both, f.Other, f.Half]
+    for arg in (int, bool, str, bytes, object, tx.Any):
+        hints += [
+            tx.Container[arg],
+            tx.Collection[arg],
+            tx.Sequence[arg],
+            tx.List[arg],
+            f.Box[arg],
+        ]
+    hints += [f.Two[int, str], f.Two[tx.Any, str], f.TwoR[str, int]]
+    return hints
+
+
+def _sweep_values(f: types.SimpleNamespace) -> tx.List[tx.Any]:
+    return [
+        [],
+        f.Two[int, str](),
+        f.Two[bool, str](),
+        f.Two[tx.Any, str](),
+        f.Two[int, tx.Any](),
+        f.Two(),
+        f.TwoR[str, int](),
+        f.TwoR[tx.Any, int](),
+        f.Other(),
+        f.Half(),
+        f.Both(),
+        f.Ints(),
+        f.Box[int](),
+        f.Box(),
+    ]
+
+
+def test_a_value_in_a_sub_hint_is_in_its_super_hint() -> None:
+    """`ishintstance(v, S)` and `issubhint(S, B)` give `ishintstance(v, B)`,
+    over classes that reach a generic through several bases."""
+    f = _sweep_family()
+    hints = _sweep_hints(f)
+    values = _sweep_values(f)
+    below = [[issubhint(s, b) for b in hints] for s in hints]
+    member = [[ishintstance(v, h) for h in hints] for v in values]
+    violations = [
+        (values[i], hints[j], hints[k])
+        for i in range(len(values))
+        for j in range(len(hints))
+        if member[i][j]
+        for k in range(len(hints))
+        if below[j][k] and not member[i][k]
+    ]
+    assert violations == []
+    # Not vacuous: the multi-base rows relate.
+    assert issubhint(f.Two[int, str], tx.Container[str]) is True
+    assert issubhint(f.TwoR[str, int], tx.Container[str]) is True
+    assert ishintstance(f.Both(), f.Box[str]) is True
+
+
+# --- the walk's size (#64) ----------------------------------------------
+
+
+def _ladder(depth: int, left: tx.Any, right: tx.Any) -> tx.List[type]:
+    """`G_i(A_i[T], B_i[T])`, with `A_i(G_{i-1}[left[T]])` and
+    `B_i(G_{i-1}[right[T]])`: a diamond at every level."""
+    T = tx.TypeVar("T")
+
+    class G0(tx.Generic[T]):
+        pass
+
+    ladder = [G0]  # type: tx.List[type]
+    for i in range(1, depth + 1):
+        below = ladder[-1]
+        a = types.new_class(f"A{i}", (below[left(T)],))
+        b = types.new_class(f"B{i}", (below[right(T)],))
+        ladder.append(types.new_class(f"G{i}", (a[T], b[T])))
+    return ladder
+
+
+def _count_walked(monkeypatch: pytest.MonkeyPatch) -> tx.List[int]:
+    """Count the nodes the base walk expands."""
+    from bagof.dispatchers.core import _relation
+
+    walked = [0]
+    filled_bases = _relation._filled_bases
+
+    def counting(node: tx.Any, cls: type) -> tx.Any:
+        walked[0] += 1
+        return filled_bases(node, cls)
+
+    monkeypatch.setattr(_relation, "_filled_bases", counting)
+    return walked
+
+
+def test_a_diamond_ladder_walks_each_node_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both sides of every level pass `T` on unchanged: the ladder has one
+    parametrisation of `G0`, and the walk reads each class once."""
+    depth = 20
+    ladder = _ladder(depth, lambda t: t, lambda t: t)
+    walked = _count_walked(monkeypatch)
+    assert _mapped(ladder[-1][int], ladder[0]) == ((int,),)
+    assert walked[0] <= 3 * depth + 1
+    assert issubhint(ladder[-1][int], ladder[0][str]) is False
+
+
+def test_a_ladder_of_distinct_arguments_stops_at_the_first_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each side of every level wraps `T` differently, so the ladder reaches
+    `G0` with `2 ** depth` arguments. A hint the first of them satisfies is
+    answered after one path; one none satisfies reads each node once."""
+    depth = 10
+    ladder = _ladder(
+        depth, lambda t: tx.Tuple[t, int], lambda t: tx.Tuple[t, str]
+    )
+    first = int  # type: tx.Any
+    for _ in range(depth):
+        first = tx.Tuple[first, int]
+    walked = _count_walked(monkeypatch)
+    assert issubhint(ladder[-1][int], ladder[0][first]) is True
+    assert walked[0] <= 3 * depth + 1
+    walked[0] = 0
+    assert issubhint(ladder[-1][int], ladder[0][bytes]) is False
+    # Every node once: `2 ** i` of each `G_i`, `A_i` and `B_i`.
+    assert walked[0] <= 3 * 2**depth
