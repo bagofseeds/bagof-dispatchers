@@ -310,7 +310,13 @@ def normalise_hint(hint: tx.Any) -> tx.Any:
     transparent qualifiers [`Required`][typing.Required],
     [`NotRequired`][typing.NotRequired], [`ReadOnly`][typing.ReadOnly],
     [`Final`][typing.Final], and [`ClassVar`][typing.ClassVar] are
-    unwrapped down to the hint each one wraps.
+    unwrapped down to the hint each one wraps. A bare, unsubscripted
+    [`Optional`][typing.Optional] is read as a bare
+    [`Union`][typing.Union], since both stand for "some union", and an
+    [`Exact`][bagof.dispatchers.Exact] wrapping a whole
+    [`Type`][typing.Type] or [`Hint`][bagof.dispatchers.Hint] is rewritten
+    to carry the `Exact` on the inner type instead, so that
+    `#!python Exact[Type[int]]` becomes `#!python Type[Exact[int]]`.
 
     These steps repeat until the hint stops changing, so an alias that
     expands into a qualified `NewType` is resolved all the way through

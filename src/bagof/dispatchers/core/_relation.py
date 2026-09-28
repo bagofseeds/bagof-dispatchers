@@ -291,10 +291,18 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
     type hints rather than only classes, so its second argument can be
     a union, a literal, a generic, a protocol, or any other construct
     this package understands. What counts as membership then depends on
-    the specific kind of hint given.
+    the specific kind of hint given. The value `obj` may be anything at
+    all, but `hint` has to be a genuine type hint: like [`isinstance`][]
+    against a second argument that is not a class, `ishintstance` raises a
+    [`TypeError`][] when `hint` is not one.
 
     A [`type`][] or [`Type[...]`][tx.Type] hint requires `obj` to be a
-    class itself, and a valid subclass of whatever the hint names. A
+    class itself, and a valid subclass of whatever the hint names. When
+    the hint is `#!python Type[Exact[C]]`, `obj` must be exactly the class
+    `C`, not a subclass of it. A [`Hint`][bagof.dispatchers.Hint]`[X]`
+    hint requires `obj` to itself be a type hint that is a sub-hint of `X`,
+    so that a hint passed as a value can be dispatched on;
+    `#!python Hint[Exact[X]]` narrows that to the exact hint `X`. A
     [`Literal`][tx.Literal] hint requires `obj` to equal one of its
     listed values, with the type checked alongside the value, so
     `#!python True` does not satisfy `#!python Literal[1]` even though
@@ -1651,6 +1659,17 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
         read-only member, such as a property with no setter or one
         typed `#!python Final`, still counts as satisfying an ordinary
         member here.
+
+    A bare, unsubscripted [`Annotated`][typing.Annotated] super-hint is
+    read structurally: only an `#!python Annotated` form is a sub-hint of
+    it, so `#!python issubhint(int, Annotated)` is `#!python False`. A
+    [`Hint`][bagof.dispatchers.Hint] form is ordered only against another
+    `#!python Hint` form, never against an ordinary type, since its values
+    are hints rather than values of a type. Inside a
+    [`Type`][typing.Type] or `#!python Hint` argument,
+    [`Exact`][bagof.dispatchers.Exact] behaves as the same leaf it is on
+    its own, so `#!python Type[Exact[int]]` sits below
+    `#!python Type[int]` and nothing ordinary sits below it.
 
     !!! example
         ```pycon

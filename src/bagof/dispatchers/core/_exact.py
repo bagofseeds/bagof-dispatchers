@@ -59,6 +59,17 @@ else:
         as `#!python Annotated[C, EXACT]` and a checker looks straight
         through `Annotated` metadata to the wrapped type.
 
+        `Exact` composes with [`Type`][typing.Type] and
+        [`Hint`][bagof.dispatchers.Hint]. Placing `Exact` inside the
+        bracket flips that position's match from "a subtype of" to "this
+        type itself", so `#!python Type[Exact[int]]` matches the class
+        `#!python int` but not `#!python bool`, and
+        `#!python Hint[Exact[int]]` matches the hint `#!python int` but
+        not `#!python bool`. Writing `Exact` around the whole form instead,
+        as `#!python Exact[Type[int]]`, means the same thing and is
+        normalised to the inner spelling `#!python Type[Exact[int]]`, which
+        is the form to prefer.
+
         !!! example
             ```pycon
             >>> from bagof.dispatchers import Exact

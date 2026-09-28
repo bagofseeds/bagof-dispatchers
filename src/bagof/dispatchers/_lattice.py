@@ -435,6 +435,11 @@ def is_value_dependent(hint: tx.Any) -> bool:
     types, rather than on the type of the mapping object itself; two
     dicts of the same Python type can therefore match different methods.
 
+    A [`Hint`][bagof.dispatchers.Hint]`[X]` is value-dependent for the
+    same reason: it dispatches on the hint passed as a value rather than
+    on that value's Python type, so `#!python int` and `#!python str`,
+    both of type `#!python type`, must key the cache separately.
+
     A parametrised user-defined generic such as `#!python Box[int]` is
     not treated as value-dependent, even though two instances of the
     same class can match differently depending on how each was

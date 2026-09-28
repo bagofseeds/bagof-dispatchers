@@ -54,6 +54,8 @@ class Hint(tx.Generic[_T_co]):
         True
         >>> ishintstance(str, Hint[int])
         False
+        >>> ishintstance(tx.Union[int, str], Hint[tx.Union])
+        True
         ```
     """
 
