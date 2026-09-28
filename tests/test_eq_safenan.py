@@ -21,6 +21,11 @@ def test_the_marker_is_recognisable() -> None:
     assert repr(eq_safenan(float("nan"))) == "<NaN>"
 
 
+def test_the_complex_marker_is_recognisable() -> None:
+    tag = eq_safenan(complex(float("nan"), 0.0))[0]
+    assert repr(tag) == "<complexNaN>"
+
+
 @pytest.mark.parametrize("value", [1, 1.0, 0, -3.5, "x", None, Fraction(1, 2)])
 def test_non_nan_values_are_unchanged(value: object) -> None:
     assert eq_safenan(value) is value
