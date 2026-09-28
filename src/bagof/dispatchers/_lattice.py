@@ -52,6 +52,7 @@ from .core import (
 )
 from .core._compat import UNION_TYPES, is_typeddict_marker
 from .core._exact import is_exact
+from .core._hint import is_hint_form
 from .core._introspect import _reads_declared_arguments, is_typeddict
 from .core._relation import (
     _callable_param_shape,
@@ -476,6 +477,11 @@ def is_value_dependent(hint: tx.Any) -> bool:
         return False
     hint = unwrap(hint, tx.Annotated)
     origin = get_origin_uw(hint)
+    if is_hint_form(origin):
+        # A `Hint[X]` matches on the hint passed as a value, not on that
+        # value's type, so two hints of the same Python type can match
+        # differently. The cache must therefore key on the value itself.
+        return True
     if _is_literal(origin):
         return True
     if origin is type and get_args_uw(hint):

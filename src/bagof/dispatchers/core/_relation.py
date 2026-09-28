@@ -29,12 +29,13 @@ from ._compat import (
     _UNPACK_FORMS,
     UNION_TYPES,
     UnknownHintWarning,
-    is_plausible_hint,
     is_special_form,
     is_typeddict_marker,
+    ishint,
     spellings,
 )
 from ._exact import exact_target, is_exact
+from ._hint import Hint, hint_arg, is_hint_form
 from ._introspect import (
     _CONTRAVARIANT,
     _COVARIANT,
@@ -47,6 +48,7 @@ from ._introspect import (
     _looks_like_class,
     _own_orig_bases,
     _reads_declared_arguments,
+    _typing_spelling,
     eq_safenan,
     get_args_uw,
     get_origin_uw,
@@ -79,6 +81,8 @@ _CONCATENATE_FORMS = spellings("Concatenate")
 # `typing`'s, so a single-object `is` check silently misses the other.
 _ANY_FORMS = spellings("Any")
 _LITERAL_FORMS = spellings("Literal")
+_ANNOTATED_FORMS = spellings("Annotated")
+_UNION_FORMS = spellings("Union")
 
 # Bare, unparametrised tuple spellings: the plain `tuple` class and every
 # `Tuple` special-form object. Used to tell a bare tuple (which accepts any
@@ -163,6 +167,59 @@ def _typevar_upper(tv: tx.Any) -> tx.Any:
 def _equivalent(a: tx.Any, b: tx.Any) -> bool:
     """Report whether two hints accept exactly the same values."""
     return issubhint(a, b) and issubhint(b, a)
+
+
+# The forms `_same_hint` collapses onto a single spelling each, so that a hint
+# written either way canonicalises to the same object. Each entry pairs the
+# distinct spellings of one form with the representative kept for it.
+_SAME_HINT_SPECIAL = (
+    (_ANY_FORMS, tx.Any),
+    (_UNION_FORMS, tx.Union),
+    (_LITERAL_FORMS, tx.Literal),
+    (_ANNOTATED_FORMS, tx.Annotated),
+    (_UNPACK_FORMS, tx.Unpack),
+)
+
+
+def _canon(hint: tx.Any) -> tx.Any:
+    """Rewrite a hint into a canonical form for a structural comparison.
+
+    The hint is first normalised and put into its `typing` spelling, so
+    that `#!python list[int]` and `#!python List[int]` already meet. A
+    bare, unparametrised alias is then reduced to its origin class, so
+    that `#!python List` and `#!python list` also meet, and each known
+    special form is mapped onto one representative spelling, so that the
+    `typing` and `typing_extensions` copies of `#!python Any`,
+    `#!python Union`, `#!python Literal`, `#!python Annotated`, and
+    `#!python Unpack` compare as one.
+    """
+    hint = _typing_spelling(normalise_hint(hint))
+    for forms, canonical in _SAME_HINT_SPECIAL:
+        if any(hint is form for form in forms):
+            return canonical
+    if not tx.get_args(hint):
+        origin = getattr(hint, "__origin__", None)
+        if isinstance(origin, type):
+            return origin
+    return hint
+
+
+def _same_hint(a: tx.Any, b: tx.Any) -> bool:
+    """Report whether two hints are structurally the same hint.
+
+    This is a stricter test than [`_equivalent`][], which asks only
+    whether two hints accept the same values. `_same_hint` asks whether
+    they are the very same hint once spelling differences are set aside,
+    so that a free [`TypeVar`][typing.TypeVar] and an opaque form are not
+    treated as equal to [`Any`][typing.Any], and the two spellings of a
+    `#!python Union` are not treated as equal to each other's arguments.
+    It is what [`Hint`][]`[Exact[X]]` needs, since that hint matches only
+    the exact hint `X` and nothing merely equivalent to it. Both hints are
+    canonicalised through [`_canon`][] and then compared by identity, and
+    by equality when identity does not settle it, never by hashing.
+    """
+    ca, cb = _canon(a), _canon(b)
+    return ca is cb or ca == cb
 
 
 _WARNED_UNKNOWN = set()  # type: set
@@ -316,6 +373,10 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
         True
         ```
     """
+    # `ishintstance` mimics `isinstance`: the value on the left may be
+    # anything, but the hint on the right has to be a genuine type hint.
+    if not ishint(hint):
+        raise TypeError(_not_a_hint_message(hint))
     hint = normalise_hint(hint)
     # `Exact[C]` first, before the `Annotated` metadata is unwrapped: the
     # value's type must be exactly `C`.
@@ -341,6 +402,8 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
     if _is_any(hint):
         return True
     origin_uw = get_origin_uw(hint)
+    if origin_uw is Hint:
+        return _ishintstance_hint(obj, hint)
     if origin_uw is type:
         return _ishintstance_type(obj, hint)
     if _is_literal(origin_uw):
@@ -419,8 +482,31 @@ def _ishintstance_type(obj: tx.Any, hint: tx.Any) -> bool:
     if not args_uw:
         # hint is `type` (or `tx.Type`), so any type is valid
         return isinstance(obj, type)
-    # hint is `type[T]` (or `tx.Type[T]`), so check obj is a subclass of T
-    return isinstance(obj, type) and _issubclass_origin(obj, args_uw[0])
+    arg = args_uw[0]
+    if is_exact(arg):
+        # `type[Exact[C]]`: `obj` must be exactly `C`, not a subclass of it.
+        return isinstance(obj, type) and obj is normalise_hint(
+            exact_target(arg)
+        )
+    # `type[T]`: `obj` must be a class matching `T`, read through the full
+    # relation so `type[Any]`, `type[Union[...]]` and `type[TypeVar]` are
+    # each honoured rather than reduced to a plain subclass check.
+    return isinstance(obj, type) and issubhint(obj, arg)
+
+
+def _ishintstance_hint(obj: tx.Any, hint: tx.Any) -> bool:
+    """Report whether the value `obj` is a hint matched by a `Hint[X]` hint.
+
+    A value belongs to `#!python Hint[X]` when it is itself a type hint
+    and stands below `X`. When `X` is [`Exact`][]`[C]`, the value must be
+    the exact hint `C`; otherwise it need only be a sub-hint of `X`.
+    """
+    if not ishint(obj):
+        return False
+    arg = hint_arg(hint)
+    if is_exact(arg):
+        return _same_hint(obj, exact_target(arg))
+    return issubhint(obj, arg)
 
 
 # --- runtime-checkable protocols with data members (#56) ---------------
@@ -1531,12 +1617,40 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
         False
         ```
     """
+    # `issubhint` mimics `issubclass`: a non-hint on either side is a caller
+    # error, reported for whichever side is at fault, the left one first.
+    if not ishint(hint):
+        raise TypeError(_not_a_hint_message(hint))
+    if isinstance(superhint, str) or not ishint(superhint):
+        # A bare `str` super-hint is an unresolvable forward reference, so it
+        # keeps raising even though a string counts as a hint on the left.
+        raise TypeError(_not_a_hint_message(superhint))
+    return _issubhint(hint, superhint)
+
+
+def _issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
+    """Decide the sub-hint relation, once both sides are known to be hints.
+
+    This is the body of [`issubhint`][], which guards its arguments and
+    caches the answer before calling here. Every recursive step goes back
+    through the public [`issubhint`][], so the guard and the cache apply
+    at every level.
+    """
     hint, superhint = normalise_hint(hint), normalise_hint(superhint)
 
     # A bottom (`Never`/`NoReturn`) holds no values, so it is a sub-hint of
     # every hint -- `Exact[C]` included, which is why this comes first.
     if _is_never(hint):
         return True
+
+    # A bare, unsubscripted `Annotated` super-hint is structural: only an
+    # `Annotated` form is a sub-hint of it, so `issubhint(int, Annotated)` is
+    # False. A subscripted `Annotated` unwraps to its inner type elsewhere, so
+    # only the bare form reaches this identity check.
+    if any(superhint is form for form in _ANNOTATED_FORMS):
+        return any(
+            tx.get_origin(hint) is form for form in _ANNOTATED_FORMS
+        ) or any(hint is form for form in _ANNOTATED_FORMS)
 
     # `Exact` first, before any `Annotated` metadata is unwrapped. `Exact[C]`
     # is a *leaf* subtype of `C`: an exactly-`C` value is a `C`, so
@@ -1654,6 +1768,31 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     if _is_literal(origin_uw):
         return _issubliteral(hint, superhint)
 
+    if is_hint_form(origin_uw):
+        # A `Hint[...]` super-hint: only another `Hint` form is below it, and
+        # the two are ordered by their arguments. An `Exact` inside the
+        # argument narrows the match from "a sub-hint of X" to "the hint X
+        # itself", so it must be matched on both sides rather than reduced.
+        if not is_hint_form(get_origin_uw(hint)):
+            return False
+        sub_arg = hint_arg(hint)
+        super_arg = hint_arg(superhint)
+        if is_exact(super_arg):
+            return is_exact(sub_arg) and _same_hint(
+                exact_target(sub_arg), exact_target(super_arg)
+            )
+        if is_exact(sub_arg):
+            return issubhint(exact_target(sub_arg), super_arg)
+        return issubhint(sub_arg, super_arg)
+
+    if is_hint_form(get_origin_uw(hint)):
+        # A `Hint` form sub-hint under a non-`Hint` super-hint. Every top a
+        # `Hint` form is below -- `Any`, a free `TypeVar`, a union with a
+        # `Hint` member -- has already been handled above, so nothing ordinary
+        # is a super-hint of a `Hint` form: `issubhint(Hint[int], object)` is
+        # False.
+        return False
+
     if origin_uw is type(None):
         return _issubnone(hint, superhint)
 
@@ -1699,12 +1838,10 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
 
     # A recognised typing construct with no branch of its own -- or a future
     # form -- is opaque: treated as `Any` so a method annotated with it stays
-    # reachable, and reported once. An object that is plainly *not* a hint (a
-    # value, a plain function) is a caller error, so it raises instead.
-    if is_plausible_hint(superhint):
-        _warn_unknown(superhint)
-        return True
-    raise TypeError(_not_a_hint_message(superhint))
+    # reachable, and reported once. A non-hint super-hint cannot reach here,
+    # since the public `issubhint` guard has already refused it.
+    _warn_unknown(superhint)
+    return True
 
 
 def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
@@ -1763,6 +1900,12 @@ def _issubclassargs(
     `variances` belongs to the super-hint's origin, obtained from
     [`_generic_variances`][].
     """
+    if args == ((),):
+        # The 3.8-3.10 `Tuple[()]` phantom, reached when an empty-tuple
+        # sub-hint is compared positionally against a variance-bearing generic
+        # super such as `Sequence[int]`. It means "no elements", the same empty
+        # arguments 3.11+ reports, not a one-element tuple holding `()`.
+        args = ()
     if not args:
         # `list` cannot stand in for `List[int]`: it may hold anything.
         return False
@@ -2498,10 +2641,12 @@ def _issubtype(hint: tx.Any, superhint: tx.Any) -> bool:
     if not tx.get_args(hint_uw):
         # tx.Type is not a subhint of tx.Type[...]
         return False
-    # Check that the hint's arg is a subclass of the superhint's arg
+    # Check the hint's argument against the superhint's through the full
+    # relation, so `type[Exact[C]]`, `type[Any]`, `type[Union[...]]` and
+    # `type[TypeVar]` each compose from their own leaf rules.
     args = safe_get_args(hint_uw)
     superargs = safe_get_args(superhint_uw)
-    return _issubclass_origin(args[0], superargs[0])
+    return issubhint(args[0], superargs[0])
 
 
 def _issubcallable(hint: tx.Any, superhint: tx.Any) -> bool:

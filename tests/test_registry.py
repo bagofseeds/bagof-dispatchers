@@ -94,6 +94,18 @@ def test_unhashable_query_hint() -> None:
     assert resolve_hint([1, 2], {int: "n"}, default="fallback") == "fallback"
 
 
+def test_non_hint_query_no_longer_reaches_any() -> None:
+    """A non-hint query no longer matches an `Any` key (0.2.0).
+
+    `issubhint` now refuses a non-hint, so a non-hint query no longer
+    slips through to an `Any` catch-all as it did while `issubhint(1, Any)`
+    was wrongly True. With nothing accepting it and no default, the lookup
+    raises, and `NoMethodError` is a `TypeError`.
+    """
+    with pytest.raises(TypeError):
+        resolve_hint(1, {tx.Any: "anything"})
+
+
 def test_none_is_read_as_nonetype() -> None:
     """A bare `None` query is matched as `NoneType`."""
     registry = {type(None): "none"}
@@ -431,14 +443,20 @@ def test_parity_exact_pass_is_purely_additive() -> None:
 
 
 def test_parity_annotated_key_delta() -> None:
-    # #19 (Annotated-key ordering): with a bare `Annotated` key present, an
-    # `Annotated[int, ...]` query used to reach that key. The relation reads a
-    # bare `Annotated` as an opaque `Any`-like catch-all, so the strictly
-    # more specific `int` key now wins -- the metadata-handling key is no
-    # longer preferred over the inner type. Documented delta; behaviour to be
-    # revisited in #19.
+    # A bare `Annotated` super-hint is now structural (0.2.0): every
+    # `Annotated[...]` form is a sub-hint of it, and an ordinary type is not.
+    # An `Annotated[int, ...]` query therefore matches both the bare
+    # `Annotated` key (as an `Annotated` form) and the `int` key (its inner
+    # type), and the two are incomparable, so neither is strictly more
+    # specific. Under the default the query is ambiguous; in warn mode the
+    # first-registered of the tied keys is taken.
     registry = {tx.Annotated: "annotated", int: "number", object: "any"}
-    assert _get(tx.Annotated[int, "meta"], registry) == "number"
+    with pytest.raises(AmbiguousMethodError):
+        resolve_hint(tx.Annotated[int, "meta"], registry)
+    assert _get(tx.Annotated[int, "meta"], registry) == "annotated"
+    # A plain `int` query is not an `Annotated` form, so the bare key does not
+    # catch it: `issubhint(int, Annotated)` is now False.
+    assert _get(int, registry) == "number"
 
 
 @pytest.mark.skipif(
