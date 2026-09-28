@@ -17,6 +17,28 @@ about the other systems reflect their current, published behaviour, checked
 the same way wherever that was possible, and stated narrowly where it was
 not.
 
+## At a glance
+
+|  | `functools.singledispatch` | `multipledispatch` | `plum` | Julia | bagof.dispatchers |
+| --- | --- | --- | --- | --- | --- |
+| **Dispatch** | | | | | |
+| Arguments dispatched on | first only | all positional | all | all | **all** |
+| Reads the wider hint vocabulary (`Union`, generics, `Literal`, `TypedDict`) | `Union` only | no | most, not `TypedDict` | n/a, own type system | **yes** |
+| Registration style | decorator, reads the `def` | decorator, types given as arguments | decorator, reads the `def` | `function f(x::Int)` | **decorator, reads the `def`, or explicit hints** |
+| | | | | | |
+| **Ambiguity** | | | | | |
+| An ambiguous call | n/a; rare ABC conflicts raise `RuntimeError` | silent pick | error | error | **error** |
+| Deliberate tie-break keyword | n/a | none | `precedence` | — | **`priority`** |
+| | | | | | |
+| **Generics and values** | | | | | |
+| Reads a container's contents at the call | n/a | n/a | yes | no | **no** |
+| Parametric types invariant | n/a | n/a | no, covariant by content | yes | **yes** |
+| An `Exact`-style "exclude subclasses" overload | no | no | no | no | **yes** |
+| | | | | | |
+| **Around the edges** | | | | | |
+| Function namespacing across modules | n/a, no shared registry | shared global by default | shared global by default | n/a, module system | **per module by default; shared via `Dispatcher`** |
+| Runtime dependency | none | none | `beartype`, `rich` | n/a | **none beyond `typing_extensions`** |
+
 ## Julia
 
 Julia dispatches every function call on the runtime types of all of its
