@@ -61,6 +61,27 @@ def test_value_dependent_cache_keys_on_value() -> None:
     assert f(2) == "int"  # same type (int), different value, different method
 
 
+def test_hint_argument_keys_the_cache_on_the_hint_value() -> None:
+    """A `Hint[X]` argument keys the cache on the hint, not its Python type."""
+    from bagof.dispatchers import Hint
+
+    f = Function("f")
+
+    @f.register((Hint[int],))
+    def _ints(h: object) -> str:
+        return "int"
+
+    @f.register((Hint[str],))
+    def _strs(h: object) -> str:
+        return "str"
+
+    # `int` and `str` are both plain classes, of Python type `type`, so a
+    # type-only key would collide; the value-dependent key keeps them apart.
+    assert f(int) == "int"
+    assert f(str) == "str"
+    assert f(int) == "int"
+
+
 def test_unhashable_value_dependent_argument_is_uncached() -> None:
     """An unhashable value at a value-dependent argument still dispatches."""
     f = Function("f")

@@ -33,6 +33,9 @@ walks through registering overloads in more detail.
 - `Exact[C]` matches a value only when its type is exactly `C`, for the cases
   where a subclass should not quietly take over another overload's place;
   `bool` is otherwise also an `int`. See [Exact types][exact-types].
+- `Hint[X]` dispatches on a type hint passed as a value, matching the hints
+  that are sub-hints of `X`, so a function handed a hint can branch on what
+  the hint is. See [Dispatching on hints][hints-as-values].
 - A call that matches no overload, or that matches two equally specific
   overloads, is always a clear error rather than a silent guess.
   `NoMethodError` is a `TypeError` carrying the closest candidates, and
@@ -71,6 +74,7 @@ Julia's own multiple dispatch, see the [comparison page][comparison].
 [ambiguous]: https://bagofseeds.github.io/bagof-dispatchers/guide/ambiguous-overloads/
 [no-match]: https://bagofseeds.github.io/bagof-dispatchers/guide/no-match/
 [exact-types]: https://bagofseeds.github.io/bagof-dispatchers/guide/exact-types/
+[hints-as-values]: https://bagofseeds.github.io/bagof-dispatchers/guide/hints-as-values/
 [variance]: https://bagofseeds.github.io/bagof-dispatchers/guide/variance/
 [registries]: https://bagofseeds.github.io/bagof-dispatchers/guide/registries/
 [part-of-bagof]: https://bagofseeds.github.io/bagof-dispatchers/guide/part-of-bagof/

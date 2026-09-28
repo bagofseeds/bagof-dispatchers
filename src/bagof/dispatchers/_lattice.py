@@ -52,6 +52,7 @@ from .core import (
 )
 from .core._compat import UNION_TYPES, is_typeddict_marker
 from .core._exact import is_exact
+from .core._hint import is_hint_form
 from .core._introspect import _reads_declared_arguments, is_typeddict
 from .core._relation import (
     _callable_param_shape,
@@ -434,6 +435,11 @@ def is_value_dependent(hint: tx.Any) -> bool:
     types, rather than on the type of the mapping object itself; two
     dicts of the same Python type can therefore match different methods.
 
+    A [`Hint`][bagof.dispatchers.Hint]`[X]` is value-dependent for the
+    same reason: it dispatches on the hint passed as a value rather than
+    on that value's Python type, so `#!python int` and `#!python str`,
+    both of type `#!python type`, must key the cache separately.
+
     A parametrised user-defined generic such as `#!python Box[int]` is
     not treated as value-dependent, even though two instances of the
     same class can match differently depending on how each was
@@ -476,6 +482,11 @@ def is_value_dependent(hint: tx.Any) -> bool:
         return False
     hint = unwrap(hint, tx.Annotated)
     origin = get_origin_uw(hint)
+    if is_hint_form(origin):
+        # A `Hint[X]` matches on the hint passed as a value, not on that
+        # value's type, so two hints of the same Python type can match
+        # differently. The cache must therefore key on the value itself.
+        return True
     if _is_literal(origin):
         return True
     if origin is type and get_args_uw(hint):

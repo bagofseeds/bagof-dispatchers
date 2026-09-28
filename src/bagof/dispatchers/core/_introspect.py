@@ -27,14 +27,18 @@ import typing_extensions as tx
 from ._compat import (
     _ANY_FORMS,
     _LITERAL_FORMS,
+    _OPTIONAL_FORMS,
     UNION_TYPES,
     NoneType,
+    _is_newtype,
+    _is_type_alias_type,
     canonical_typeddict,
     is_special_form,
     is_typeddict_marker,
     spellings,
 )
-from ._exact import exact_target, is_exact
+from ._exact import Exact, exact_target, is_exact
+from ._hint import Hint
 from ._sentinels import UNSET
 
 
@@ -178,8 +182,6 @@ _QUALIFIER_FORMS = (
     + spellings("ClassVar")
 )
 
-_TYPE_ALIAS_TYPES = spellings("TypeAliasType")
-
 # The bare, unparametrised tuple spellings. Used to tell a bare `Tuple` /
 # `tuple` from a subscripted alias whose arguments happen to be empty -- the
 # empty-tuple type `Tuple[()]` (mirrors `_relation._is_subscripted_tuple`,
@@ -189,24 +191,6 @@ _BARE_TUPLE_FORMS = spellings("Tuple") + (tuple,)
 # A generous cap: each pass either resolves one wrapper (strictly reducing
 # the hint) or leaves it untouched, so a handful of passes always settles.
 _MAX_NORMALISE_STEPS = 100
-
-
-def _is_type_alias_type(x: tx.Any) -> bool:
-    """Report whether `x` is a PEP 695 `type X = ...` alias, in either
-    spelling.
-
-    Both an instance check and a duck-typed fallback are tried, because a
-    native 3.12 `type X = ...` alias is not an instance of
-    `typing_extensions.TypeAliasType`, even though every alias, whichever
-    way it was spelled, carries `__value__` and `__type_params__`.
-    """
-    for alias_type in _TYPE_ALIAS_TYPES:
-        try:
-            if isinstance(x, alias_type):
-                return True
-        except TypeError:  # pragma: no cover  -- not a class on this version
-            pass
-    return hasattr(x, "__value__") and hasattr(x, "__type_params__")
 
 
 def resolve_alias(hint: tx.Any) -> tx.Any:
@@ -255,11 +239,6 @@ def _resolve_alias(hint: tx.Any, seen: tx.Tuple[tx.Any, ...]) -> tx.Any:
     return _resolve_alias(value, seen + (alias,))
 
 
-def _is_newtype(x: tx.Any) -> bool:
-    """Report whether `x` is a `NewType`, under any of its runtime forms."""
-    return callable(x) and hasattr(x, "__supertype__")
-
-
 def resolve_newtype(hint: tx.Any) -> tx.Any:
     """Resolve a [`NewType`][typing.NewType] to its supertype, recursively.
 
@@ -289,6 +268,38 @@ def _strip_qualifier(hint: tx.Any) -> tx.Any:
     return hint
 
 
+# Every bare `Type` spelling, used to recognise `Exact[Type]` before it is
+# subscripted.
+_TYPE_FORMS = spellings("Type")
+
+
+def _lower_exact(hint: tx.Any) -> tx.Any:
+    """Rewrite an outer `Exact` around `Type` or `Hint` as an inner one.
+
+    `Exact[C]` marks the type `C` as the exact match for a value, but the
+    same intent can be written the other way round, wrapping the whole of
+    a `Type` or `Hint` form. This rewrites the outer spelling to the
+    inner one, so that the relation only ever meets the inner form.
+    `#!python Exact[Type[int]]` becomes `#!python Type[Exact[int]]`,
+    `#!python Exact[Hint[int]]` becomes `#!python Hint[Exact[int]]`, and a
+    bare `#!python Exact[Type]` becomes `#!python Exact[type]`. Any other
+    `Exact` hint, including a plain `#!python Exact[int]`, is already in
+    its canonical form and comes back unchanged.
+    """
+    target = exact_target(hint)
+    origin = tx.get_origin(target)
+    args = tx.get_args(target)
+    if origin is type and args:
+        return tx.Type[Exact[args[0]]]
+    if origin is Hint and args:
+        return Hint[Exact[args[0]]]
+    if any(target is form for form in _TYPE_FORMS):
+        # A bare `Exact[Type]`: an exact match for any class, which is just
+        # an exact match for `type` itself.
+        return Exact[type]
+    return hint
+
+
 def normalise_hint(hint: tx.Any) -> tx.Any:
     """Put a hint into its canonical form.
 
@@ -299,7 +310,13 @@ def normalise_hint(hint: tx.Any) -> tx.Any:
     transparent qualifiers [`Required`][typing.Required],
     [`NotRequired`][typing.NotRequired], [`ReadOnly`][typing.ReadOnly],
     [`Final`][typing.Final], and [`ClassVar`][typing.ClassVar] are
-    unwrapped down to the hint each one wraps.
+    unwrapped down to the hint each one wraps. A bare, unsubscripted
+    [`Optional`][typing.Optional] is read as a bare
+    [`Union`][typing.Union], since both stand for "some union", and an
+    [`Exact`][bagof.dispatchers.Exact] wrapping a whole
+    [`Type`][typing.Type] or [`Hint`][bagof.dispatchers.Hint] is rewritten
+    to carry the `Exact` on the inner type instead, so that
+    `#!python Exact[Type[int]]` becomes `#!python Type[Exact[int]]`.
 
     These steps repeat until the hint stops changing, so an alias that
     expands into a qualified `NewType` is resolved all the way through
@@ -324,6 +341,12 @@ def normalise_hint(hint: tx.Any) -> tx.Any:
     for _ in range(_MAX_NORMALISE_STEPS):
         if hint is None:
             hint = NoneType
+        if is_exact(hint):
+            hint = _lower_exact(hint)
+        elif any(hint is form for form in _OPTIONAL_FORMS):
+            # A bare `Optional`, with no argument, means the same as a bare
+            # `Union`: both stand for "some union".
+            hint = tx.Union
         resolved = _strip_qualifier(resolve_newtype(resolve_alias(hint)))
         if resolved is hint:
             return hint
@@ -973,6 +996,7 @@ def _reads_declared_arguments(origin: tx.Any) -> bool:
     return (
         _looks_like_class(origin)
         and origin is not type
+        and origin is not Hint
         and not is_typeddict(origin)
         and _generic_variances(origin) is not None
     )

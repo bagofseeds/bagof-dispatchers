@@ -3,6 +3,9 @@
 # dependencies
 import typing_extensions as tx
 
+# local
+from ._compat import ishint
+
 
 class _ExactMarker:
     """The piece of `Annotated` metadata that tags a hint as [`Exact`][]."""
@@ -18,6 +21,14 @@ class _ExactMarker:
 
 EXACT = _ExactMarker()
 """The sentinel that an [`Exact`][] hint attaches as `Annotated` metadata."""
+
+
+# The runtime type of an `Annotated` alias. Building one of these directly
+# sidesteps `typing._type_check`, which refuses a bare special form such as
+# `Union` or `Literal` as an argument on every version -- so `Exact[Union]`
+# has an alias to fall back to when `tx.Annotated[Union, EXACT]` will not
+# construct.
+_ANNOTATED_ALIAS = type(tx.Annotated[int, EXACT])
 
 
 if tx.TYPE_CHECKING:
@@ -48,6 +59,17 @@ else:
         as `#!python Annotated[C, EXACT]` and a checker looks straight
         through `Annotated` metadata to the wrapped type.
 
+        `Exact` composes with [`Type`][typing.Type] and
+        [`Hint`][bagof.dispatchers.Hint]. Placing `Exact` inside the
+        bracket narrows that position from matching a subtype to matching
+        the type itself, so `#!python Type[Exact[int]]` matches the class
+        `#!python int` but not `#!python bool`, and
+        `#!python Hint[Exact[int]]` matches the hint `#!python int` but
+        not `#!python bool`. Writing `Exact` around the whole form instead,
+        as `#!python Exact[Type[int]]`, means the same thing and is
+        normalised to the inner spelling `#!python Type[Exact[int]]`, which
+        is the form to prefer.
+
         !!! example
             ```pycon
             >>> from bagof.dispatchers import Exact
@@ -57,7 +79,16 @@ else:
         """
 
         def __class_getitem__(cls, item: tx.Any) -> tx.Any:
-            return tx.Annotated[item, EXACT]
+            if not ishint(item):
+                raise TypeError(
+                    f"Exact[...] takes a type hint, got {item!r}."
+                )
+            try:
+                return tx.Annotated[item, EXACT]
+            except TypeError:
+                # A bare special form (`Exact[Union]`, `Exact[Literal]`),
+                # which `typing._type_check` refuses: build the alias directly.
+                return _ANNOTATED_ALIAS(item, (EXACT,))
 
 
 def is_exact(hint: tx.Any) -> bool:

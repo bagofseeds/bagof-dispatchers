@@ -6,7 +6,7 @@ import typing_extensions as tx
 
 # local
 from bagof.dispatchers import Exact
-from bagof.dispatchers.core import ishintstance, issubhint
+from bagof.dispatchers.core import ishintstance, issubhint, normalise_hint
 from bagof.dispatchers.core._exact import EXACT, exact_target, is_exact
 
 
@@ -185,3 +185,49 @@ def test_exact_marker_repr() -> None:
     assert repr(EXACT) == "EXACT"
     # The metadata object is a singleton.
     assert EXACT is type(EXACT)()
+
+
+# --- Exact inside Type and Hint (0.2.0) --------------------------------
+#
+# `Exact` composes: put inside a `Type` or `Hint` bracket it flips that
+# position's match from subtype to identity, and the outer spelling
+# (`Exact[Type[C]]`) normalises to the inner one (`Type[Exact[C]]`).
+
+
+def test_exact_of_bare_special_form_constructs() -> None:
+    # A bare special form must build even where `typing._type_check` refuses it
+    # as an `Annotated` argument; the alias fallback handles it. `Literal` and
+    # `Annotated` still trip that check on 3.14, so they exercise the fallback
+    # there too, while `Union` no longer does.
+    for form in (tx.Union, tx.Literal, tx.Annotated):
+        hint = Exact[form]
+        assert is_exact(hint) is True
+        assert exact_target(hint) is form
+
+
+def test_exact_takes_only_a_hint() -> None:
+    with pytest.raises(TypeError):
+        Exact[1]
+
+
+def test_outer_exact_normalises_to_inner() -> None:
+    assert normalise_hint(Exact[tx.Type[int]]) == tx.Type[Exact[int]]
+    assert normalise_hint(Exact[tx.Type]) == Exact[type]
+    from bagof.dispatchers import Hint
+
+    assert normalise_hint(Exact[Hint[int]]) == Hint[Exact[int]]
+    # A plain `Exact[int]` is already canonical.
+    assert normalise_hint(Exact[int]) == Exact[int]
+
+
+def test_type_exact_is_identity_at_the_value_level() -> None:
+    assert ishintstance(int, tx.Type[Exact[int]]) is True
+    assert ishintstance(bool, tx.Type[Exact[int]]) is False
+
+
+def test_type_exact_composes_at_the_hint_level() -> None:
+    # `Type[Exact[C]]` is a proper leaf under `Type[C]`, mirroring `Exact`.
+    assert issubhint(tx.Type[Exact[int]], tx.Type[int]) is True
+    assert issubhint(tx.Type[int], tx.Type[Exact[int]]) is False
+    assert issubhint(tx.Type[Exact[int]], tx.Type[Exact[int]]) is True
+    assert issubhint(tx.Type[Exact[bool]], tx.Type[Exact[int]]) is False

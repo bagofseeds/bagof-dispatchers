@@ -198,6 +198,10 @@ entry marks a result worth double-checking against intuition.
 | `Named ≤ HasName`, `Record ≤ HasName`, `Ann ≤ HasName`, `CV ≤ HasName`, `Sub ≤ HasName`, `Other ≤ HasName` (`HasName` a runtime protocol declaring the data member `name: str`; `Named` sets `name = …` on the class; `Record` is a dataclass with a `name` field; `Ann` only annotates it; `CV` declares it `ClassVar[str] = …`; `Sub(HasName, Protocol)`; `Other` an unrelated protocol with the same member) | **True** / **True** / **True** / False / **True** / False | Python's own `issubclass` refuses to answer here; the relation instead asks whether the class declares the member as the *kind* the protocol declares it — an instance variable or a class variable — the way mypy and pyright both read it, and the value level counts a declared member on every instance, so the order stays sound (§2.3) |
 | `dict ≤ TD`, `TD ≤ dict`, `TD ≤ Mapping` | False / True / True | a `TypedDict` orders correctly at the hint level |
 | `int ≤ Union` (bare) | False | a bare `Union`, `Literal`, or `Type`, with no arguments, means only "is one of these" in the abstract, and never actually applies to a value |
+| `Annotated[int,'x'] ≤ Annotated` (bare), `int ≤ Annotated` (bare) | True / **False** | *(0.2.0)* a bare `Annotated` super-hint is now structural: only an `Annotated` form is below it, where before it was opaque and accepted everything |
+| `type[Exact[C]] ≤ type[C]`, `type[C] ≤ type[Exact[C]]`, `type[Any]` accepts every class | True / **False** / — | `Exact` inside a `type[...]` position is the same identity leaf it is on its own, and `type[...]` now reads its argument through the full relation, so `type[Any]`, `type[Union[…]]` and `type[T]` all behave (§4) |
+| `Hint[bool] ≤ Hint[int]`, `int ≤ Hint[int]`, `Hint[int] ≤ object`, `Hint[Exact[int]] ≤ Hint[int]` | True / **False** / **False** / True | *(0.2.0)* `Hint[X]` describes type hints, not values: only another `Hint` form is ordered against it, covariantly by its argument, so no ordinary hint sits below it. Above it sit `Any`, a free `TypeVar`, a union that has a `Hint` member, and a wider `Hint` form (up to `Hint ≡ Hint[Any]`), but no ordinary class such as `object`; `Exact` inside narrows to the exact hint (§4) |
+| `issubhint(1, int)`, `issubhint(1, 1)`, `issubhint(int, 1)` | `TypeError` | *(0.2.0)* a non-hint on either side is a caller error, reported for the left argument first, the way `issubclass` rejects a non-class; a non-hint no longer reads as `Any` |
 
 The value-level check, `ishintstance`, never inspects a container's actual
 contents. `{'a': 1} in TD` is False, since a plain `dict` is not a
@@ -216,6 +220,14 @@ is never inspected, and a `ParamSpec` is never solved from a value.
 False (for `TB` bound by `int`). `v in HasName` is True exactly when `v` has
 a `name`, set on the instance or declared by its class, and False
 otherwise, so two instances of the same class can genuinely differ.
+
+A `Hint[X]` is checked at the value level against the hint passed as a
+value: `int in Hint[int]` and `bool in Hint[int]` are True, `str in
+Hint[int]` is False, and `1 in Hint[int]` is False because `1` is not a
+hint at all. `Union[int, str] in Hint[Union]` is True, and `Union in
+Hint[Exact[Union]]` is True while `Union[int, str] in Hint[Exact[Union]]`
+is False. Because a `Hint` matches on the value rather than on its Python
+type, the call cache keys such an argument on the hint itself.
 
 ### 2.2 Binding and selection (name-aware, normative)
 
@@ -1115,6 +1127,32 @@ their own dedicated method. It lives in `bagof.dispatchers.core._exact`, and
 is a candidate for promotion to `bagof-hints` if a package that does not
 otherwise depend on `bagof.dispatchers` ever needs it.
 
+### 4.1 Composing `Exact` inside `Type` and `Hint`
+
+*(0.2.0)* `Exact` composes with `Type[…]` and with `Hint[…]` (§6) under one
+rule: placing `Exact` **inside** the bracket flips that position's match
+from subtype to identity, while `Exact` around the **whole** form means the
+same thing and is normalised to the inner spelling. `Exact[Type[int]]`
+normalises to `Type[Exact[int]]`, `Exact[Hint[int]]` to `Hint[Exact[int]]`,
+and a bare `Exact[Type]` to `Exact[type]`.
+
+The leaf rules then compose automatically, because both `type[…]` and
+`Hint[…]` compare their argument through `issubhint`. So `type[Exact[C]]` is
+a leaf below `type[C]` exactly as `Exact[C]` is a leaf below `C`:
+`issub(type[Exact[C]], type[C])` is true, `issub(type[C], type[Exact[C]])`
+is false, and `issub(type[Exact[C1]], type[Exact[C2]])` holds only when
+`C1` and `C2` are the same class. `Hint[Exact[X]]` behaves the same way
+within the `Hint` order. At the value level, `type[Exact[C]]` matches a
+class `v` only when `v is C`, and `Hint[Exact[X]]` matches a hint only when
+it is structurally `X` itself, judged by identity of spelling rather than
+by equivalence, so a free `TypeVar` — equivalent to `Any` but not the hint
+`Any` — does not match `Hint[Exact[Any]]`.
+
+Reading `type[…]`'s argument through the full relation also fixes the forms
+that were degenerate before: `type[Any]` now accepts every class,
+`type[Union[…]]` accepts a class in the union, and `type[T]` for a free
+TypeVar accepts every class.
+
 ---
 
 ## 5. Ambiguity and no-match errors
@@ -1278,17 +1316,21 @@ area(Circle(1))                      # sees shapes.py's method
 The package exposes two namespaces with disjoint object sets.
 `bagof.dispatchers` (its `__all__`, and the intended public API) holds
 `dispatch`, `Dispatcher`, `Function`, `Method`, `Signature`, `Parameter`,
-`Exact`, `DispatchError`, `NoMethodError`, and `AmbiguousMethodError`.
-`bagof.dispatchers.core` (also its own `__all__`) holds the relation and
-introspection helpers that the rest of the family reuses: `issubhint`,
-`ishintstance`, `resolve_hint`, `safe_get_origin`, `safe_get_args`,
-`get_origin_uw`, `get_args_uw`, `unwrap`, `normalise_hint`, `is_typeddict`,
-`typeddict_required_keys`, `safe_issubclass`, `safe_isinstance`,
-`issubclassable`, `issubscriptable`, `get_concrete_type`, `type2hint`,
-`eq_safenan`, `Unset`, `UNSET`, `NoneType`, `UnionType`, and `UNION_TYPES`.
-`Exact` is documented once, under the top-level API, since it is the one
-object both namespaces need. `issubhint` and `ishintstance` understand it
-directly, but it belongs conceptually to the dispatch surface.
+`Exact`, `Hint`, `DispatchError`, `NoMethodError`, and
+`AmbiguousMethodError`. `bagof.dispatchers.core` (also its own `__all__`)
+holds the relation and introspection helpers that the rest of the family
+reuses: `issubhint`, `ishintstance`, `ishint`, `resolve_hint`,
+`safe_get_origin`, `safe_get_args`, `get_origin_uw`, `get_args_uw`,
+`unwrap`, `normalise_hint`, `is_typeddict`, `typeddict_required_keys`,
+`safe_issubclass`, `safe_isinstance`, `issubclassable`, `issubscriptable`,
+`get_concrete_type`, `type2hint`, `eq_safenan`, `Unset`, `UNSET`,
+`NoneType`, `UnionType`, and `UNION_TYPES`. `Exact` and `Hint` are
+documented once each, under the top-level API, since they are the objects
+both namespaces need. `issubhint` and `ishintstance` understand them
+directly, but they belong conceptually to the dispatch surface. `ishint`,
+which reports whether an object is a type hint at all, is a `.core` helper
+only, since it is a building block rather than part of the dispatch API.
+*(0.2.0)* `Hint` and `ishint` are new in this release.
 
 Key objects:
 
@@ -1353,10 +1395,11 @@ shape. Alongside these, it records, for each argument position, whether it
 is *value-dependent*, *declaration-dependent*, or *member-dependent*.
 
 - A position is *value-dependent* when any method's hint there is a
-  `Literal` or a `type[...]`, or a `Union` or `TypeVar` whose members or
-  upper bound include one, or a concrete `TypedDict`. Its value-level check
-  reads the mapping's own keys and value types rather than the argument's
-  type alone.
+  `Literal` or a `type[...]`, a `Hint[...]`, or a `Union` or `TypeVar`
+  whose members or upper bound include one, or a concrete `TypedDict`. Its
+  value-level check reads the argument value itself rather than its type
+  alone; for a `Hint[...]`, that value is the hint passed in, so `int` and
+  `str`, both of type `type`, key the cache separately.
 - A position is *declaration-dependent* when any method's hint there is a
   parametrised class generic, user-defined or standard-library, directly
   or through a `Union`, `TypeVar`, or `Annotated` (but never through
@@ -1436,6 +1479,31 @@ is rebuilt and published in a single assignment following the same pattern
 watches. Registration takes a `threading.Lock`; reads are lock-free, which
 matters on the free-threaded Python 3.13 build.
 
+*(0.2.0)* Beneath the two dispatch-level caches sits a third, in
+`core._relation`: `issubhint` memoises its own result by `(hint,
+superhint)`. Selection asks the same sub-hint question repeatedly, and the
+same pair recurs across a shape plan's pairwise comparisons, so the memo
+saves the recursive relation from recomputing it. Because internal
+recursion goes back through the public `issubhint`, a nested comparison is
+cached at every level, not only at the top. The cache is a bounded,
+insertion-ordered working set (`RELATION_CACHE_SIZE`, read at store time),
+evicting oldest-first exactly as the call cache does; reads are lock-free,
+and a lock guards only eviction, insertion, and the clear. It is emptied
+whenever `abc.get_cache_token()` changes, so a late `ABC.register` never
+leaves a stale answer; a result computed while such a change lands is
+dropped rather than stored, checked once more under the lock. Only ABC
+registration is watched, though, exactly as the standard library's own ABC
+caches watch it: mutating a class in a way the token does not track, such
+as adding a data member to a `Protocol` or editing a `TypedDict` after it
+has been compared, is not invalidated, and callers who do that must clear
+the cache themselves. An unhashable pair is simply answered without
+caching. On an interpreter whose `typing.Literal` equality merges distinct
+literals (Python 3.8 and 3.9.0), the cache is keyed by object identity so
+that two hints that compare equal but must dispatch differently are never
+collapsed onto one entry. `ishintstance` is not cached, since it reads a
+value whose identity is not a stable key. The relation cache only ever
+changes how fast an answer is reached, never the answer itself.
+
 Every rendered error names the full signature involved, such as
 `area(shape: !Circle, scale: float = 1.0) @ shapes.py:12`, with `/` and `*`
 markers where relevant, and `*args: H` or `**kwargs: H` spelled out. The
@@ -1450,7 +1518,7 @@ positional-only`.
 
 The top-level package is dispatch-only. `__init__.py` re-exports exactly
 `dispatch`, `Dispatcher`, `Function`, `Method`, `Signature`, `Parameter`,
-`Exact`, and the three error types. `_lattice.py` holds `equivalent()`,
+`Exact`, `Hint`, and the three error types. `_lattice.py` holds `equivalent()`,
 TypeVar solving, and the value-dependence classifier described in §6. This
 is dispatch-internal code that builds on `core._relation`, while the actual
 value check (`ishintstance`) is always called directly from `core`, never
@@ -1616,9 +1684,29 @@ Each case below is covered by a dedicated test.
   holds (§11.1); a repeated `ParamSpec` is solved by greatest element at
   the hint level, and shallowly at the value level.
 - `type[X]` is value-dependent; `type[bool] < type[int] < type`.
+  *(0.2.0)* `type[X]` reads its argument through the full relation, so
+  `type[Any]` accepts every class, `type[Union[…]]` accepts a class in the
+  union, and `type[Exact[C]]` is an identity leaf below `type[C]`.
 - `Annotated` metadata other than `Exact` is invisible
   (`Annotated[X, ...] ≡ X`); applying `Exact` to a non-class raises
-  `TypeError`.
+  `TypeError`. *(0.2.0)* A bare, unsubscripted `Annotated` super-hint is
+  structural instead of opaque: `Annotated[X, …] ≤ Annotated` holds and
+  `int ≤ Annotated` does not.
+- *(0.2.0)* `Hint[X]` dispatches on a hint passed as a value: a `Hint`
+  form is ordered only against another `Hint` form, covariantly by its
+  argument, so no ordinary hint sits below it, and above it sit only the
+  tops (`Any`, a free `TypeVar`, a union with a `Hint` member) and a wider
+  `Hint` form up to `Hint ≡ Hint[Any]` -- never an ordinary class such as
+  `object`. `Hint[Exact[X]]` matches the exact hint `X` structurally, not
+  merely something equivalent to it, so a free `TypeVar` does not match
+  `Hint[Exact[Any]]`. `Hint[X]` is value-dependent, and the outer form
+  `Exact[Hint[X]]` normalises to `Hint[Exact[X]]`.
+- *(0.2.0)* `issubhint` and `ishintstance` reject a non-hint the way
+  `issubclass` and `isinstance` do: a non-hint on either side of
+  `issubhint`, or as the hint argument of `ishintstance`, raises
+  `TypeError` rather than being read as `Any`; `issubhint` reports the
+  left argument first when both are at fault. `ishint` reports whether an
+  object is a hint at all.
 - A `TypedDict` orders correctly at the hint level; its value-level check
   inspects the mapping's own shape.
 - A runtime `Protocol` is structural; two protocols a value structurally

@@ -89,9 +89,37 @@ def test_unhashable_key_does_not_raise() -> None:
 
 
 def test_unhashable_query_hint() -> None:
-    """An unhashable query hint is not an exact key and falls through."""
-    # A list is unhashable; it cannot be an exact key, and nothing accepts it.
-    assert resolve_hint([1, 2], {int: "n"}, default="fallback") == "fallback"
+    """A non-hint query falls through to the default, with no warning."""
+    # A list is not a hint (and is unhashable). The lookup stays lenient and
+    # returns the default, and it does not warn about any key: the query, not a
+    # key, is at fault.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert (
+            resolve_hint([1, 2], {int: "n"}, default="fallback") == "fallback"
+        )
+
+
+def test_non_hint_query_no_longer_reaches_any() -> None:
+    """A non-hint query no longer matches an `Any` key (0.2.0).
+
+    A non-hint query used to slip through to an `Any` catch-all while
+    `issubhint(1, Any)` was wrongly True. It no longer does, but the lookup
+    stays lenient rather than raising a bare `TypeError`: with nothing
+    accepting the query and no default, it raises `NoMethodError`, and it
+    warns about no key, since the query rather than a key is at fault.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(NoMethodError):
+            resolve_hint(1, {tx.Any: "anything"})
+
+
+def test_non_hint_query_with_default_returns_it_without_warning() -> None:
+    """A non-hint query with a default returns the default, silently."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert resolve_hint(1, {tx.Any: "x"}, default="d") == "d"
 
 
 def test_none_is_read_as_nonetype() -> None:
@@ -431,14 +459,20 @@ def test_parity_exact_pass_is_purely_additive() -> None:
 
 
 def test_parity_annotated_key_delta() -> None:
-    # #19 (Annotated-key ordering): with a bare `Annotated` key present, an
-    # `Annotated[int, ...]` query used to reach that key. The relation reads a
-    # bare `Annotated` as an opaque `Any`-like catch-all, so the strictly
-    # more specific `int` key now wins -- the metadata-handling key is no
-    # longer preferred over the inner type. Documented delta; behaviour to be
-    # revisited in #19.
+    # A bare `Annotated` super-hint is now structural (0.2.0): every
+    # `Annotated[...]` form is a sub-hint of it, and an ordinary type is not.
+    # An `Annotated[int, ...]` query therefore matches both the bare
+    # `Annotated` key (as an `Annotated` form) and the `int` key (its inner
+    # type), and the two are incomparable, so neither is strictly more
+    # specific. Under the default the query is ambiguous; in warn mode the
+    # first-registered of the tied keys is taken.
     registry = {tx.Annotated: "annotated", int: "number", object: "any"}
-    assert _get(tx.Annotated[int, "meta"], registry) == "number"
+    with pytest.raises(AmbiguousMethodError):
+        resolve_hint(tx.Annotated[int, "meta"], registry)
+    assert _get(tx.Annotated[int, "meta"], registry) == "annotated"
+    # A plain `int` query is not an `Annotated` form, so the bare key does not
+    # catch it: `issubhint(int, Annotated)` is now False.
+    assert _get(int, registry) == "number"
 
 
 @pytest.mark.skipif(

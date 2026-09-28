@@ -14,7 +14,13 @@ is the only one.
 """
 
 # local
-from ._compat import UNION_TYPES, NoneType, UnionType, UnknownHintWarning
+from ._compat import (
+    UNION_TYPES,
+    NoneType,
+    UnionType,
+    UnknownHintWarning,
+    ishint,
+)
 from ._introspect import (
     eq_safenan,
     get_args_uw,
@@ -43,6 +49,7 @@ from ._sentinels import UNSET, Unset
 __all__ = [
     "issubhint",
     "ishintstance",
+    "ishint",
     "resolve_hint",
     "safe_get_origin",
     "safe_get_args",

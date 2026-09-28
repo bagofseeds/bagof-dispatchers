@@ -37,6 +37,8 @@ from ._lattice import (
     typevartuple_consistent,
 )
 from .core import (
+    get_args_uw,
+    get_origin_uw,
     is_typeddict,
     ishintstance,
     issubhint,
@@ -46,6 +48,7 @@ from .core import (
 )
 from .core._compat import _UNPACK_FORMS, UNION_TYPES, spellings
 from .core._exact import exact_target, is_exact
+from .core._hint import Hint
 from .core._introspect import _typing_spelling
 from .core._relation import (
     _is_subscripted_tuple,
@@ -1602,6 +1605,14 @@ def _render_hint(hint: tx.Any) -> str:
     # An `Exact[C]` reads back as `Exact[C]`, not its `Annotated` spelling.
     if is_exact(hint):
         return f"Exact[{_render_hint(exact_target(hint))}]"
+    # `Type[Exact[C]]` and `Hint[Exact[C]]` render their argument recursively,
+    # so a nested `Exact` reads as `Exact[C]`, not `Annotated[C, EXACT]`.
+    origin = get_origin_uw(hint)
+    args = get_args_uw(hint)
+    if origin is type and args:
+        return f"Type[{_render_hint(args[0])}]"
+    if origin is Hint and args:
+        return f"Hint[{_render_hint(args[0])}]"
     if isinstance(hint, type):
         return hint.__name__
     text = str(hint)

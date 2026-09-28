@@ -12,7 +12,7 @@ import pytest
 import typing_extensions as tx
 
 # locals
-from bagof.dispatchers import Exact
+from bagof.dispatchers import Exact, Hint
 from bagof.dispatchers._lattice import (
     equivalent,
     is_value_dependent,
@@ -337,6 +337,15 @@ CORPUS = [
     Exact[int],
     Exact[bool],
     Exact[str],
+    # Type with an Exact argument, an identity leaf within the Type position.
+    tx.Type[Exact[int]],
+    # Hint forms, whose values are hints: ordered only among themselves, and a
+    # `Hint[Exact[C]]` is a leaf under `Hint[C]` just as `Exact[C]` is under
+    # `C`. Below only `Any`, above nothing ordinary.
+    Hint[int],
+    Hint[bool],
+    Hint[tx.Any],
+    Hint[Exact[int]],
     # Any / None, and the bottom on its own -- below every hint above,
     # `Exact[C]` included (#54)
     tx.Any,

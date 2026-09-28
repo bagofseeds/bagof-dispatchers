@@ -179,30 +179,137 @@ _TYPEVAR_FAMILY = tuple(
 )
 
 
+# Every spelling of `TypeAliasType`, the runtime object behind a PEP 695
+# `type X = ...` alias, from both typing modules.
+_TYPE_ALIAS_TYPES = spellings("TypeAliasType")
+
+
+def _is_newtype(x: tx.Any) -> bool:
+    """Report whether `x` is a `NewType`, under any of its runtime forms."""
+    return callable(x) and hasattr(x, "__supertype__")
+
+
+def _is_type_alias_type(x: tx.Any) -> bool:
+    """Report whether `x` is a PEP 695 `type X = ...` alias, in either
+    spelling.
+
+    Both an instance check and a duck-typed fallback are tried, because a
+    native 3.12 `type X = ...` alias is not an instance of
+    `typing_extensions.TypeAliasType`, even though every alias, whichever
+    way it was spelled, carries `__value__` and `__type_params__`.
+    """
+    for alias_type in _TYPE_ALIAS_TYPES:
+        try:
+            if isinstance(x, alias_type):
+                return True
+        except TypeError:  # pragma: no cover  -- not a class on this version
+            pass
+    return hasattr(x, "__value__") and hasattr(x, "__type_params__")
+
+
+def ishint(x: tx.Any) -> bool:
+    """Report whether `x` is a type hint, rather than an ordinary value.
+
+    A type hint is anything that can legitimately stand as an annotation
+    or as an argument to the subtype relation, which includes far more
+    than a class alone. A bare [`None`][] counts, standing for
+    [`NoneType`][types.NoneType], as does a string or a
+    [`ForwardRef`][typing.ForwardRef] naming a type not yet resolved. A
+    class counts, and so does a parametrised generic such as
+    `#!python List[int]`, which carries a typing origin. A recognised
+    special form such as [`Union`][typing.Union] or
+    [`Literal`][typing.Literal] counts too, and indeed any object defined
+    in [`typing`][] or `typing_extensions`, which leaves room for a
+    construct those modules add in a future release. Finally, the
+    [`TypedDict`][tx.TypedDict] marker, a [`NewType`][typing.NewType], and
+    a PEP 695 `#!python type X = ...` alias each count.
+
+    An everyday value that was never meant to be a hint, such as a
+    number, a container instance, an ordinary function, or a sentinel
+    object, fails this check. A bare string is the one deliberate
+    exception: it counts as a hint here, since it may be a forward
+    reference, even though most callers that reject non-hints reject a
+    bare string too.
+
+    !!! example
+        ```pycon
+        >>> ishint(int)
+        True
+        >>> ishint(tx.Union)
+        True
+        >>> ishint("Foo")
+        True
+        >>> ishint(1)
+        False
+        ```
+    """
+    if x is None:
+        return True
+    if isinstance(x, (str, tx.ForwardRef)):
+        return True
+    if isinstance(x, type):
+        return True
+    if tx.get_origin(x) is not None:
+        return True
+    if is_special_form(x) or type(x).__module__ in (
+        "typing",
+        "typing_extensions",
+    ):
+        return True
+    return (
+        is_typeddict_marker(x)
+        or _is_newtype(x)
+        or _is_type_alias_type(x)
+    )
+
+
 def is_plausible_hint(obj: tx.Any) -> bool:
     """Report whether `obj` is shaped like something that could be a hint.
 
-    `obj` counts as plausible when it is a class, a recognised typing
-    special form, a member of the [`TypeVar`][typing.TypeVar] family, a
-    [`ForwardRef`][typing.ForwardRef], or simply an object defined
-    somewhere in `typing` or `typing_extensions`, which leaves room for a
-    construct those modules add in a future release. An everyday value
-    that was never meant to be a hint, such as a number, a string, a
-    container instance, or an ordinary function, fails this check, so
-    that the subtype relation can raise a clear error for it instead of
-    quietly treating it as equivalent to [`Any`][typing.Any].
+    This is [`ishint`][] with the one bare-string case excluded, since a
+    caller that rejects an implausible hint outright, such as a method
+    registration, has no namespace in which to resolve a forward
+    reference and so cannot accept a bare string name either. Every other
+    hint [`ishint`][] recognises counts as plausible here too. An everyday
+    value that was never meant to be a hint fails this check, so that the
+    caller can raise a clear error for it rather than register a method
+    that silently never matches.
     """
-    if isinstance(obj, type):
-        return True
-    if is_special_form(obj):
-        return True
-    if _TYPEVAR_FAMILY and isinstance(obj, _TYPEVAR_FAMILY):
-        return True
-    forward_ref = getattr(tx, "ForwardRef", None)
-    if isinstance(forward_ref, type) and isinstance(obj, forward_ref):
-        return True
-    module = getattr(obj, "__module__", None)
-    return module in ("typing", "typing_extensions")
+    return ishint(obj) and not isinstance(obj, str)
+
+
+class SameObject:
+    """A wrapper around an object that makes a dict key it by identity.
+
+    `typing`'s own equality merges some hints that dispatch needs to tell
+    apart. On Python 3.8, `#!python Literal[1] == Literal[True]` holds with
+    equal hashes, and so does `#!python Box[Literal[1]] == Box[Literal[True]]`,
+    so a plain `#!python ==`-keyed cache can collapse two distinct hints onto
+    one entry and hand back the wrong answer once `typing`'s own subscription
+    cache has evicted the earlier object. Wrapping an object in `SameObject`
+    keys it by [`id`][] instead, which never merges two distinct objects and
+    is always hashable. The wrapper holds onto the object itself, so its
+    identity cannot be reassigned to something else while a cache entry that
+    depends on it is alive.
+
+    Because the key is identity, two equal but separately built objects, such
+    as `#!python Literal[1]` created twice, count as different keys. The only
+    consequence is a missed cache hit and a fresh computation, never a wrong
+    result.
+    """
+
+    __slots__ = ("obj",)
+
+    def __init__(self, obj: tx.Any) -> None:
+        self.obj = obj
+
+    def __hash__(self) -> int:
+        return id(self.obj)
+
+    def __eq__(self, other: tx.Any) -> bool:
+        if not isinstance(other, SameObject):
+            return NotImplemented
+        return self.obj is other.obj
 
 
 # `typing.TypedDict` and `typing_extensions.TypedDict` are distinct objects

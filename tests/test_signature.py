@@ -1007,6 +1007,20 @@ def test_render_forward_ref_param() -> None:
     assert repr(sig) == "Signature(x: Later)"
 
 
+def test_render_nested_exact_in_type_and_hint() -> None:
+    """`Exact` nested in `Type`/`Hint` renders as `Exact[C]`."""
+    from bagof.dispatchers import Hint
+
+    kind = Parameter.POSITIONAL_OR_KEYWORD
+    sig = Signature(
+        {
+            "a": Parameter("a", tx.Type[Exact[int]], kind),
+            "b": Parameter("b", Hint[Exact[int]], kind),
+        }
+    )
+    assert repr(sig) == "Signature(a: Type[Exact[int]], b: Hint[Exact[int]])"
+
+
 def test_from_callable_forward_ref_still_defers() -> None:
     """A genuine forward reference still defers and resolves on first use."""
     fn, namespace = _make_deferred_function()

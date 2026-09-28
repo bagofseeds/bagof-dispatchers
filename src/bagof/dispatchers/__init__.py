@@ -31,6 +31,7 @@ from ._function import Function
 from ._method import Method
 from ._signature import Parameter, Signature
 from .core._exact import Exact
+from .core._hint import Hint
 
 __all__ = [
     "dispatch",
@@ -43,4 +44,5 @@ __all__ = [
     "NoMethodError",
     "AmbiguousMethodError",
     "Exact",
+    "Hint",
 ]

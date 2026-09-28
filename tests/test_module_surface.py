@@ -24,6 +24,7 @@ _TOP_LEVEL = [
     "NoMethodError",
     "AmbiguousMethodError",
     "Exact",
+    "Hint",
 ]
 
 
