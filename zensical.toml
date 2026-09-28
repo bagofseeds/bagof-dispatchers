@@ -19,7 +19,7 @@ nav = [
     {"Gotchas" = "guide/gotchas.md"},
     {"Part of bagof" = "guide/part-of-bagof.md"},
   ]},
-  {"Design" = "rfc/0001-hint-informed-multiple-dispatch.md"},
+  {"design" = "rfc/0001-hint-informed-multiple-dispatch.md"},
   {"API" = [
     "api/index.md",
     {"core" = "api/core.md"},
