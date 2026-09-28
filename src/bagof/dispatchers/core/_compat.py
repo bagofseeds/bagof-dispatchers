@@ -212,17 +212,17 @@ def ishint(x: tx.Any) -> bool:
 
     A type hint is anything that can legitimately stand as an annotation
     or as an argument to the subtype relation, which includes far more
-    than a class alone. `x` counts as a hint when it is any of the
-    following: a bare [`None`][], which stands for
-    [`NoneType`][types.NoneType]; a string or
-    [`ForwardRef`][typing.ForwardRef] naming a type not yet resolved; a
-    class; a parametrised generic such as `#!python List[int]`, which has
-    a typing origin; a recognised special form such as
-    [`Union`][typing.Union] or [`Literal`][typing.Literal], or any other
-    object defined in [`typing`][] or `typing_extensions`, which leaves
-    room for a construct those modules add in a future release; and the
-    [`TypedDict`][tx.TypedDict] marker, a [`NewType`][typing.NewType], or
-    a PEP 695 `#!python type X = ...` alias.
+    than a class alone. A bare [`None`][] counts, standing for
+    [`NoneType`][types.NoneType], as does a string or a
+    [`ForwardRef`][typing.ForwardRef] naming a type not yet resolved. A
+    class counts, and so does a parametrised generic such as
+    `#!python List[int]`, which carries a typing origin. A recognised
+    special form such as [`Union`][typing.Union] or
+    [`Literal`][typing.Literal] counts too, and indeed any object defined
+    in [`typing`][] or `typing_extensions`, which leaves room for a
+    construct those modules add in a future release. Finally, the
+    [`TypedDict`][tx.TypedDict] marker, a [`NewType`][typing.NewType], and
+    a PEP 695 `#!python type X = ...` alias each count.
 
     An everyday value that was never meant to be a hint, such as a
     number, a container instance, an ordinary function, or a sentinel
@@ -276,6 +276,40 @@ def is_plausible_hint(obj: tx.Any) -> bool:
     that silently never matches.
     """
     return ishint(obj) and not isinstance(obj, str)
+
+
+class SameObject:
+    """A wrapper around an object that makes a dict key it by identity.
+
+    `typing`'s own equality merges some hints that dispatch needs to tell
+    apart. On Python 3.8, `#!python Literal[1] == Literal[True]` holds with
+    equal hashes, and so does `#!python Box[Literal[1]] == Box[Literal[True]]`,
+    so a plain `#!python ==`-keyed cache can collapse two distinct hints onto
+    one entry and hand back the wrong answer once `typing`'s own subscription
+    cache has evicted the earlier object. Wrapping an object in `SameObject`
+    keys it by [`id`][] instead, which never merges two distinct objects and
+    is always hashable. The wrapper holds onto the object itself, so its
+    identity cannot be reassigned to something else while a cache entry that
+    depends on it is alive.
+
+    Because the key is identity, two equal but separately built objects, such
+    as `#!python Literal[1]` created twice, count as different keys. The only
+    consequence is a missed cache hit and a fresh computation, never a wrong
+    result.
+    """
+
+    __slots__ = ("obj",)
+
+    def __init__(self, obj: tx.Any) -> None:
+        self.obj = obj
+
+    def __hash__(self) -> int:
+        return id(self.obj)
+
+    def __eq__(self, other: tx.Any) -> bool:
+        if not isinstance(other, SameObject):
+            return NotImplemented
+        return self.obj is other.obj
 
 
 # `typing.TypedDict` and `typing_extensions.TypedDict` are distinct objects

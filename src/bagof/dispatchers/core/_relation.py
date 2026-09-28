@@ -18,6 +18,7 @@ import re
 import sys
 import threading
 import types
+import typing
 import warnings
 import weakref
 from abc import get_cache_token
@@ -30,6 +31,7 @@ import typing_extensions as tx
 from ._compat import (
     _UNPACK_FORMS,
     UNION_TYPES,
+    SameObject,
     UnknownHintWarning,
     is_special_form,
     is_typeddict_marker,
@@ -180,6 +182,7 @@ _SAME_HINT_SPECIAL = (
     (_LITERAL_FORMS, tx.Literal),
     (_ANNOTATED_FORMS, tx.Annotated),
     (_UNPACK_FORMS, tx.Unpack),
+    (_NEVER_FORMS, tx.Never),
 )
 
 
@@ -192,8 +195,9 @@ def _canon(hint: tx.Any) -> tx.Any:
     that `#!python List` and `#!python list` also meet, and each known
     special form is mapped onto one representative spelling, so that the
     `typing` and `typing_extensions` copies of `#!python Any`,
-    `#!python Union`, `#!python Literal`, `#!python Annotated`, and
-    `#!python Unpack` compare as one.
+    `#!python Union`, `#!python Literal`, `#!python Annotated`,
+    `#!python Unpack`, and the bottom (`#!python Never` and
+    `#!python NoReturn`) each compare as one.
     """
     hint = _typing_spelling(normalise_hint(hint))
     for forms, canonical in _SAME_HINT_SPECIAL:
@@ -494,10 +498,11 @@ def _ishintstance_type(obj: tx.Any, hint: tx.Any) -> bool:
         return isinstance(obj, type)
     arg = args_uw[0]
     if is_exact(arg):
-        # `type[Exact[C]]`: `obj` must be exactly `C`, not a subclass of it.
-        return isinstance(obj, type) and obj is normalise_hint(
-            exact_target(arg)
-        )
+        # `type[Exact[C]]`: `obj` must be exactly the class `C`, not a
+        # subclass. `_same_hint` compares structurally, so it reads `obj` and
+        # `C` through the same spelling and `type[Exact[List]]` matches `list`,
+        # the same way `Hint[Exact[...]]` compares its argument.
+        return isinstance(obj, type) and _same_hint(obj, exact_target(arg))
     # `type[T]`: `obj` must be a class matching `T`, read through the full
     # relation so `type[Any]`, `type[Union[...]]` and `type[TypeVar]` are
     # each honoured rather than reduced to a plain subclass check.
@@ -1582,6 +1587,28 @@ _RELATION_TOKEN = None  # type: tx.Any
 _RELATION_LOCK = threading.Lock()
 _MISS = object()
 
+# On Python 3.8 and 3.9.0, `typing.Literal[1] == typing.Literal[True]` holds
+# with equal hashes, so two hints that dispatch must tell apart -- one is a
+# sub-hint of `Exact[int]`, the other is not -- would land on one `==`-keyed
+# cache entry and the second would read back the first's answer. Where that
+# merge happens, the cache is keyed by object identity through `SameObject`,
+# which never merges two distinct hints. `typing` caches its own
+# subscriptions, so a repeated `Literal[1]` is usually the same object and
+# still hits; only a distinct object built after eviction gets its own entry.
+_LITERAL_EQ_MERGES = typing.Literal[1] == typing.Literal[True]
+
+
+def _relation_key(hint: tx.Any, superhint: tx.Any) -> tx.Any:
+    """Build the cache key for a `(hint, superhint)` pair.
+
+    The key is the pair itself, except on an interpreter whose
+    `typing.Literal` equality merges distinct literals, where each side is
+    wrapped so the pair is keyed by identity instead.
+    """
+    if _LITERAL_EQ_MERGES:  # pragma: no cover  -- only merges before 3.9.1
+        return (SameObject(hint), SameObject(superhint))
+    return (hint, superhint)
+
 
 def clear_relation_cache() -> None:
     """Empty the `issubhint` result cache.
@@ -1607,9 +1634,10 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     [`issubclass`][], so a value that is not a hint raises a
     [`TypeError`][] rather than being read as a catch-all, and the error
     names the offending argument, the left one first when both are at
-    fault. A bare string is accepted on the left, where it is a forward
-    reference this relation reports as unknown, but rejected on the right,
-    where it cannot be resolved against any namespace.
+    fault. A bare string is accepted on the left, where, being an
+    unresolved forward reference rather than a class, it is a sub-hint of
+    nothing and simply compares [`False`][]. On the right it is rejected,
+    since it cannot be resolved against any namespace to compare against.
 
     Where a hint is generic, each of its argument positions is compared
     according to the variance that generic declares for it, following
@@ -1706,7 +1734,7 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
             _RELATION_CACHE.clear()
             _RELATION_TOKEN = token
 
-    key = (hint, superhint)
+    key = _relation_key(hint, superhint)
     try:
         hit = _RELATION_CACHE.get(key, _MISS)
     except TypeError:
@@ -1717,6 +1745,11 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
 
     result = _issubhint(hint, superhint)
     with _RELATION_LOCK:
+        if get_cache_token() != token:
+            # An ABC `register` landed while the answer was being computed, so
+            # the answer may already be stale. Drop it rather than store it;
+            # the token change clears the cache on the next call.
+            return result
         if (
             key not in _RELATION_CACHE
             and len(_RELATION_CACHE) >= RELATION_CACHE_SIZE
@@ -1744,8 +1777,12 @@ def _issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     # A bare, unsubscripted `Annotated` super-hint is structural: only an
     # `Annotated` form is a sub-hint of it, so `issubhint(int, Annotated)` is
     # False. A subscripted `Annotated` unwraps to its inner type elsewhere, so
-    # only the bare form reaches this identity check.
+    # only the bare form reaches this identity check. `Exact[C]`, though built
+    # from `Annotated`, is a leaf of its own and is deliberately not caught
+    # here, so `issubhint(Exact[C], Annotated)` is False.
     if any(superhint is form for form in _ANNOTATED_FORMS):
+        if is_exact(hint):
+            return False
         return any(
             tx.get_origin(hint) is form for form in _ANNOTATED_FORMS
         ) or any(hint is form for form in _ANNOTATED_FORMS)

@@ -71,6 +71,7 @@ from .core import (
     normalise_hint,
     safe_get_origin,
 )
+from .core._compat import SameObject as _SameObject
 from .core._compat import is_plausible_hint
 from .core._exact import exact_target, is_exact
 from .core._introspect import _PEP585_ALIAS
@@ -1526,44 +1527,6 @@ def _record_key(recorded: tx.Any) -> tx.Any:
             recorded.__unpacked__ if _UNPACKABLE else False,
         )
     return _SameObject(recorded)
-
-
-class _SameObject:
-    """A wrapper around an object that makes the cache key it by identity.
-
-    A recorded parametrisation is deliberately keyed by identity rather
-    than by `==`, because `typing`'s own equality merges some
-    parametrisations that dispatch needs to tell apart. On Python 3.8,
-    `#!python Literal[1] == Literal[True]` holds, and so does
-    `#!python Box[Literal[1]] == Box[Literal[True]]`; keying by identity
-    instead avoids collapsing those together, and also sidesteps
-    parametrisations that would otherwise be unhashable and leave the
-    call uncached. Identity is always hashable and never merges two
-    distinct records, and this wrapper holds onto the object itself, so
-    its identity cannot be reassigned to something else while the cache
-    entry is alive.
-
-    `typing` caches its own subscriptions, so `#!python Box[int]()`
-    usually records the very same `#!python Box[int]` object each time
-    and hits the same cache entry. That cache is a bounded LRU, though,
-    holding only 128 entries per subscription site, so once enough other
-    subscriptions have evicted it, a later `#!python Box[int]` becomes a
-    new object with a new entry. The consequence is only a missed cache
-    hit and a fresh resolution, never selection of the wrong method.
-    """
-
-    __slots__ = ("obj",)
-
-    def __init__(self, obj: tx.Any) -> None:
-        self.obj = obj
-
-    def __hash__(self) -> int:
-        return id(self.obj)
-
-    def __eq__(self, other: tx.Any) -> bool:
-        if not isinstance(other, _SameObject):
-            return NotImplemented
-        return self.obj is other.obj
 
 
 class _KeyValue:
