@@ -1,13 +1,9 @@
----
-icon: fontawesome/solid/table
----
-
 # Without a `def`
 
 When the overloads already exist as a plain mapping from type to callable,
 [`Function.from_mapping`][bagof.dispatchers.Function.from_mapping] builds a
-dispatched function from that mapping directly, with no `def` needed for any
-of the overloads. A tuple key gives one positional hint per element:
+dispatched function from that mapping directly, with no `def` needed for
+any of the overloads. A tuple key gives one positional hint per element:
 
 ```pycon
 >>> from bagof.dispatchers import Function
@@ -18,8 +14,10 @@ of the overloads. A tuple key gives one positional hint per element:
 4
 ```
 
-A plain tuple of hints can only describe ordinary positional parameters. For
-a signature shape it cannot spell, such as positional-only parameters,
+## Signatures a plain tuple cannot spell
+
+A plain tuple of hints can only describe ordinary positional parameters.
+For a signature shape it cannot spell, such as positional-only parameters,
 `*args`, or keyword-only parameters, pass a
 [`Signature`][bagof.dispatchers.Signature] as the key instead:
 

@@ -1,18 +1,14 @@
----
-icon: fontawesome/solid/list-ul
----
-
 # Registering overloads
 
-`@dispatch` reads its signature from the `def` it decorates, which covers the
-common case of writing a fresh function for each overload. Registering
-directly on the underlying
-[`Function`][bagof.dispatchers.Function] covers the rest: an implementation
-that already exists elsewhere, a class whose constructor should be
-dispatched on, or a function whose own parameters carry no hints of their
-own. Each of the forms below adds one overload.
+`@dispatch` reads its signature from the `def` it decorates, which covers
+the common case of writing a fresh function for each overload. Registering
+directly on the underlying [`Function`][bagof.dispatchers.Function] it
+builds covers the rest: an implementation that already exists elsewhere, a
+class whose constructor should be dispatched on, or a function whose own
+parameters carry no hints of their own. Each of the forms below adds one
+overload.
 
-#### A `def`
+## A `def`
 
 ```pycon
 >>> from bagof.dispatchers import dispatch
@@ -23,11 +19,11 @@ own. Each of the forms below adds one overload.
 'an integer'
 ```
 
-#### An existing callable
+## An existing callable
 
-A [`Function`][bagof.dispatchers.Function] built directly, and registered on
-by calling [`register`][bagof.dispatchers.Function.register], reaches the
-same overloads that `@dispatch` would have built, without requiring the
+A [`Function`][bagof.dispatchers.Function] built directly, and registered
+on by calling [`register`][bagof.dispatchers.Function.register], reaches
+the same overloads that `@dispatch` would have built, without requiring the
 implementation to be defined as a fresh `def`:
 
 ```pycon
@@ -40,7 +36,7 @@ implementation to be defined as a fresh `def`:
 'a string'
 ```
 
-#### A class, on its constructor
+## A class, on its constructor
 
 Registering a class dispatches on its constructor's parameters, so calling
 the resulting function builds an instance:
@@ -58,12 +54,12 @@ the resulting function builds an instance:
 IntBox(5)
 ```
 
-#### Explicit hints
+## Explicit hints
 
-`register` also accepts hints directly, instead of an implementation. Passed
-a tuple, a dict, or both, it returns a decorator that lays those hints over
-the wrapped function's own parameters, keeping that function's names,
-argument kinds, and defaults:
+`register` also accepts hints directly, instead of an implementation.
+Passed a tuple, a dict, or both, it returns a decorator that lays those
+hints over the wrapped function's own parameters, keeping that function's
+names, argument kinds, and defaults:
 
 ```pycon
 >>> from bagof.dispatchers import Function
@@ -77,6 +73,6 @@ argument kinds, and defaults:
 
 Positional hints are always a tuple, even for a single hint (`(int,)`), and
 named hints are always a dict. A keyword argument to `register` is not a
-hint: the only one it recognizes is `priority`, which breaks a tie between
+hint. The only one it recognizes is `priority`, which breaks a tie between
 overloads that would otherwise be equally specific. Named hints belong in
 the dict; passing one as a keyword argument to `register` is an error.

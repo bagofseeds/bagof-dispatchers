@@ -62,7 +62,9 @@ may still move. Issues and ideas are welcome at
 
 `bagof.dispatchers` is the low-level root of the `bagof` family. It owns the
 hint subtype relation and the introspection helpers the other bags build on;
-see [Part of bagof][part-of-bagof] and the [project overview][bagof].
+see [Part of bagof][part-of-bagof] and the [project overview][bagof]. For how
+it compares with `plum`, `multipledispatch`, `functools.singledispatch`, and
+Julia's own multiple dispatch, see the [comparison page][comparison].
 
 [getting-started]: https://bagofseeds.github.io/bagof-dispatchers/guide/getting-started/
 [registering]: https://bagofseeds.github.io/bagof-dispatchers/guide/registering-overloads/
@@ -72,6 +74,7 @@ see [Part of bagof][part-of-bagof] and the [project overview][bagof].
 [variance]: https://bagofseeds.github.io/bagof-dispatchers/guide/variance/
 [registries]: https://bagofseeds.github.io/bagof-dispatchers/guide/registries/
 [part-of-bagof]: https://bagofseeds.github.io/bagof-dispatchers/guide/part-of-bagof/
+[comparison]: https://bagofseeds.github.io/bagof-dispatchers/comparison/
 [typing_extensions]: https://typing-extensions.readthedocs.io/
 [bagof]: https://bagofseeds.github.io/bagof/
 [issues]: https://github.com/bagofseeds/bagof-dispatchers/issues

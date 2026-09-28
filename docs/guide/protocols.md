@@ -1,12 +1,9 @@
----
-icon: fontawesome/solid/plug
----
-
 # Protocols
 
-A [`runtime_checkable`][typing.runtime_checkable] protocol describes a shape
-a value can have, rather than a class it must inherit from, and dispatch
-matches a value against it by checking whether the value has that shape. A
+A [`runtime_checkable`][typing.runtime_checkable] protocol, introduced by
+[PEP 544](https://peps.python.org/pep-0544/), describes a shape a value can
+have, rather than a class it must inherit from. Dispatch matches a value
+against a protocol by checking whether the value has that shape, and a
 protocol can require a data member as well as methods:
 
 ```pycon
@@ -43,9 +40,8 @@ matches it, the same as `isinstance` would find.
 
 When a class declares every member a protocol requires, an overload written
 for the class wins over one written for the protocol. A class declares a
-member the same way a type checker reads it: through an annotation
-(`name: str`), a class attribute, a property, a slot, or a dataclass
-field.
+member the same way a type checker reads it, through an annotation
+(`name: str`), a class attribute, a property, a slot, or a dataclass field:
 
 ```pycon
 >>> class User:
@@ -70,8 +66,8 @@ be present, while dispatch reads the declaration.
 
 A read-only member also counts as declared: a property without a setter, or
 an annotation such as `name: Final = "x"`. A type checker would reject
-either of these as satisfying `Named`, since `Named.name` can be assigned to,
-but dispatch only ever reads the member, so it accepts both.
+either of these as satisfying `Named`, since `Named.name` can be assigned
+to, but dispatch only ever reads the member, so it accepts both.
 
 A sub-protocol is more specific than the protocols it extends.
 
@@ -106,10 +102,12 @@ variable either:
 'something'
 ```
 
-The relationship holds in the other direction too: a `ClassVar` declaration
+The relationship holds in the other direction too. A `ClassVar` declaration
 never declares an ordinary instance member such as `name`, even when it
 carries a value, and neither does a dataclass `InitVar`. Both rules match
-how static type checkers read class variables and instance variables.
+how the [typing
+specification](https://typing.python.org/en/latest/spec/protocol.html)
+and static type checkers read class variables and instance variables.
 
 ## When a call matches both
 
@@ -119,13 +117,12 @@ is given the member some other way, it satisfies both the protocol and the
 class, and a call matching both overloads is ambiguous:
 
 ```pycon
->>> from bagof.dispatchers import Function, AmbiguousMethodError
->>> badge = Function("badge")
->>> @badge.register
-... def _named(x: Named) -> str:
+>>> from bagof.dispatchers import AmbiguousMethodError
+>>> @dispatch
+... def badge(x: Named) -> str:
 ...     return "named"
->>> @badge.register
-... def _guest(x: Guest) -> str:
+>>> @dispatch
+... def badge(x: Guest) -> str:
 ...     return "guest"
 >>> try:
 ...     badge(guest)
@@ -136,10 +133,10 @@ ambiguous
 
 Registering the two overloads produces no warning, and
 [`ambiguities()`][bagof.dispatchers.Function.ambiguities] does not list them
-as a pair, because the clash depends on what a particular instance happens
-to have and only shows up at the call. To resolve it, annotate the member on
-the class (`name: str`) so its overload becomes the more specific one, or
-give one overload a higher `priority`.
+as a pair. The clash depends on what a particular instance happens to have,
+and only shows up at the call. To resolve it, annotate the member on the
+class (`name: str`) so its overload becomes the more specific one, or give
+one overload a higher `priority`.
 
 !!! note
     A protocol without `@runtime_checkable` cannot be checked against a
