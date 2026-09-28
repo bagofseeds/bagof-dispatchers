@@ -2,6 +2,7 @@
 
 # stdlib
 import inspect
+from decimal import Decimal
 from fractions import Fraction
 
 # dependencies
@@ -26,7 +27,9 @@ def test_the_complex_marker_is_recognisable() -> None:
     assert repr(tag) == "<complexNaN>"
 
 
-@pytest.mark.parametrize("value", [1, 1.0, 0, -3.5, "x", None, Fraction(1, 2)])
+@pytest.mark.parametrize(
+    "value", [1, 1.0, 0, -3.5, "x", None, Fraction(1, 2), Decimal("1.5")]
+)
 def test_non_nan_values_are_unchanged(value: object) -> None:
     assert eq_safenan(value) is value
 
@@ -56,6 +59,37 @@ def test_a_non_nan_complex_is_unchanged() -> None:
 
 def test_a_mapped_real_nan_differs_from_a_mapped_complex_nan() -> None:
     assert eq_safenan(float("nan")) != eq_safenan(complex(float("nan"), 0.0))
+
+
+def test_a_decimal_nan_compares_equal_to_itself_after_mapping() -> None:
+    assert Decimal("nan") != Decimal("nan")
+    assert eq_safenan(Decimal("nan")) == eq_safenan(Decimal("nan"))
+
+
+def test_a_signaling_decimal_nan_compares_equal_after_mapping() -> None:
+    # Comparing Decimal("snan") with == raises InvalidOperation, so only the
+    # mapped values are compared. That the mapping succeeds proves the
+    # is_nan path does not raise on a signaling NaN.
+    snan = Decimal("snan")
+    assert eq_safenan(snan) == eq_safenan(snan)
+
+
+def test_a_quiet_and_a_signaling_decimal_nan_map_equal() -> None:
+    assert eq_safenan(Decimal("nan")) == eq_safenan(Decimal("snan"))
+
+
+def test_a_decimal_nan_maps_to_the_real_nan_marker() -> None:
+    assert repr(eq_safenan(Decimal("nan"))) == "<NaN>"
+
+
+def test_a_non_nan_decimal_is_unchanged() -> None:
+    value = Decimal("1.5")
+    assert eq_safenan(value) is value
+
+
+def test_a_decimal_infinity_is_unchanged() -> None:
+    value = Decimal("inf")
+    assert eq_safenan(value) is value
 
 
 def test_no_numpy_import_at_the_root() -> None:
