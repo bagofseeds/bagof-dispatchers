@@ -4,9 +4,10 @@ icon: fontawesome/solid/triangle-exclamation
 
 # When two overloads are equally specific
 
-Dispatch never guesses. If two overloads accept the call and neither is more
-specific, it raises `AmbiguousMethodError` and shows the overload to define to
-break the tie:
+When two registered overloads both accept a call and neither is more
+specific than the other, dispatch does not guess between them. It raises
+[`AmbiguousMethodError`][bagof.dispatchers.AmbiguousMethodError], whose
+message lists the overloads that tie:
 
 ```pycon
 >>> from bagof.dispatchers import Function, AmbiguousMethodError
@@ -25,5 +26,6 @@ break the tie:
 ['_', '_']
 ```
 
-Give one overload a higher `priority`, or register the more specific one
-(`(float, float)`), to resolve it.
+To resolve a tie like this one, give one overload a higher `priority`, or
+register a signature that is strictly more specific than both, such as
+`(float, float)`.

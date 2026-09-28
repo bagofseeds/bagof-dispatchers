@@ -4,11 +4,13 @@ icon: fontawesome/solid/hashtag
 
 # Dispatching on numbers
 
-Dispatch matches the **runtime type** of a value, so a `float` overload accepts
-only actual `float` values. An `int` is **not** a `float`: Python's numeric
-tower (`int` → `float` → `complex`) is a static type-checking convention, and
-dispatch does not apply it. Annotate a parameter `float` only when you mean an
-actual float and nothing else:
+Dispatch matches the runtime type of a value, so an overload annotated
+`float` accepts only actual `float` instances. An `int` is not a `float`
+under this rule. Python's numeric tower, where `int` is treated as a kind of
+`float`, which is in turn treated as a kind of `complex`, is a convention
+that static type checkers follow, and dispatch does not apply it. Annotate a
+parameter `float` only when the overload is meant for an actual float value
+and nothing else:
 
 ```pycon
 >>> from bagof.dispatchers import dispatch, NoMethodError
@@ -24,10 +26,10 @@ actual float and nothing else:
 no overload for int
 ```
 
-To accept **any real number**, annotate with `numbers.Real` instead of `float`.
-It matches `int`, `float`, `bool`, `fractions.Fraction`, and third-party reals
-such as NumPy scalars — every type registered under the `numbers` abstract base
-classes:
+To accept any real number, annotate the parameter with `numbers.Real`
+instead of `float`. `numbers.Real` matches `int`, `float`, `bool`,
+`fractions.Fraction`, and any third-party numeric type registered under the
+`numbers` abstract base classes, such as NumPy scalars:
 
 ```pycon
 >>> from bagof.dispatchers import dispatch
@@ -41,6 +43,6 @@ classes:
 'a real number'
 ```
 
-Use `numbers.Integral` for integers (`int`, `bool`, and NumPy ints),
-`numbers.Complex` to also accept `complex`, or spell the set out explicitly with
-`Union[int, float]`.
+Use `numbers.Integral` to accept integers (`int`, `bool`, and NumPy integer
+types), `numbers.Complex` to also accept `complex`, or spell the accepted
+set out explicitly with a union such as `Union[int, float]`.
