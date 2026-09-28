@@ -203,10 +203,14 @@ entry marks a result worth double-checking against intuition.
 | `Hint[bool] ≤ Hint[int]`, `int ≤ Hint[int]`, `Hint[int] ≤ object`, `Hint[Exact[int]] ≤ Hint[int]` | True / **False** / **False** / True | *(0.2.0)* `Hint[X]` describes type hints, not values: only another `Hint` form is ordered against it, covariantly by its argument, so no ordinary hint sits below it. Above it sit `Any`, a free `TypeVar`, a union that has a `Hint` member, and a wider `Hint` form (up to `Hint ≡ Hint[Any]`), but no ordinary class such as `object`; `Exact` inside narrows to the exact hint (§4) |
 | `issubhint(1, int)`, `issubhint(1, 1)`, `issubhint(int, 1)` | `TypeError` | *(0.2.0)* a non-hint on either side is a caller error, reported for the left argument first, the way `issubclass` rejects a non-class; a non-hint no longer reads as `Any` |
 
-The value-level check, `ishintstance`, never inspects a container's actual
-contents. `{'a': 1} in TD` is False, since a plain `dict` is not a
-`TypedDict`, while `[1] in List[str]` is True, since items are never
-inspected and a plain list declares no type argument at all.
+The value-level check, `ishintstance`, does not look at the values held
+inside a container. `[1] in List[str]` is True, because the items of the
+list are never examined and a plain list carries no type argument to check
+them against. A `TypedDict` is the one exception. Its value-level check
+reads the mapping's own shape, comparing the keys the mapping provides
+against the keys the `TypedDict` declares, so a mapping that supplies the
+declared keys is `in TD` even though a plain `dict` never orders below a
+`TypedDict` at the hint level (§2.3).
 
 When a value's own class *does* declare a parametrisation, that declaration
 is read and used (§2.3). `Box[int]()` records `Box[int]` and is not `in
@@ -1641,16 +1645,22 @@ its public name for a keyword-able one. It then binds one call to those
 names and checks each field's value against a `Literal`-shaped
 specification. Ties are broken by `(priority, number of specs, precision,
 MRO depth)`, a lexicographic stand-in for "priority, then specificity over
-names, then MRO depth." This is exactly this package's own bind-then-compare model,
-specialised to the parameter list of one generated `__init__`.
+names, then MRO depth." The way a call is bound to those names and each
+candidate judged applicable is this package's own model, applied to the
+parameter list of one generated `__init__`. Selection is where the two
+differ. `bagof.magic._polymorph` breaks ties with the fixed lexicographic
+tuple above, whereas this package ranks the applicable methods by the
+partial order of §3, taking the single most specific one and reporting
+ambiguity when two are incomparable.
 
 A field's `on={...}` clause corresponds to a `Method` whose `Signature` is
 the owning class's `__init__` signature, with the constrained names' hints
 replaced by the field's own value specifications and every other name read
-as `Any`. Selecting among them corresponds to
-`Function(dispatch_defaults=True).dispatch(*args, **kwargs)`, and
-`AmbiguousPolymorphError`/`NoPolymorphError` correspond to the dispatch
-errors of §5. No adapter from positions to names is needed to make this
+as `Any`. Reading a default-filled dispatched parameter as if its default
+had been written out is the behaviour a `Function` opts into with
+`dispatch_defaults=True`, so the binding matches, and
+`AmbiguousPolymorphError` and `NoPolymorphError` correspond to the dispatch
+errors of §5. No adapter from positions to names is needed to make the
 correspondence work, because both models are name-aware from the start.
 
 ---
