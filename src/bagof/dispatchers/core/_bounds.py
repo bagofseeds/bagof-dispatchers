@@ -522,12 +522,13 @@ def member_bound_message(bound: tx.Any) -> str:
 
 
 def endpoint_bound_message(bound: tx.Any) -> str:
-    """Compose the error for a bound found inside the bound of another."""
+    """Compose the error for a bound found inside an `Exact`, `Super` or
+    `Between` form.
+    """
     return (
-        f"{_render_target(bound)} cannot appear inside the bound of another "
-        "Super or Between, even through a union or a TypeVar: Exact, Super "
-        "and Between cannot be nested. Write the outer bound with plain "
-        "hints."
+        f"{_render_target(bound)} cannot appear inside an Exact, Super or "
+        "Between form, even through a union or a TypeVar, because those "
+        "forms cannot be nested. Write the outer form with plain hints."
     )
 
 

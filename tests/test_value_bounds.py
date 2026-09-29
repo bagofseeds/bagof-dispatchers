@@ -655,7 +655,7 @@ def test_a_bound_nested_in_a_type_argument_bound_is_refused() -> None:
     # What `Type[Between[Never, "Later"]]` becomes once `Later` resolves to a
     # hint holding a bound.
     nested = tx.Type[tx.Annotated[tx.Optional[S[Dog]], _Lower(tx.Never)]]
-    needle = "Super[Dog] cannot appear inside the bound of another"
+    needle = "Super[Dog] cannot appear inside an Exact, Super or Between form"
     for call in (
         lambda: issubhint(nested, tx.Type[Animal]),
         lambda: ishintstance(Dog, nested),

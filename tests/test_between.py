@@ -203,7 +203,7 @@ def test_a_bound_inside_a_bound_is_refused_when_written(
     with pytest.raises(TypeError) as info:
         build()
     assert str(info.value).startswith(
-        f"{needle} cannot appear inside the bound of another Super or Between"
+        f"{needle} cannot appear inside an Exact, Super or Between form"
     )
 
 
@@ -460,7 +460,7 @@ def _fn(annotation: tx.Any, kind: str = "x") -> tx.Any:
             # a hint holding a bound: the resolved hint is never built by
             # `Between`.
             tx.Type[tx.Annotated[tx.Optional[Super[int]], _Lower(tx.Never)]],
-            "Super[int] cannot appear inside the bound of another",
+            "Super[int] cannot appear inside an Exact, Super or Between form",
         ),
         (
             Between[tx.Never, tx.List[int]],
