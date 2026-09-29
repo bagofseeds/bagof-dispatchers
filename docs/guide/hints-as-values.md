@@ -124,11 +124,18 @@ unrelated `str`:
 'some other hint'
 ```
 
+A bound can also sit deeper inside the argument, as the type argument of a
+generic. `Hint[List[Super[int]]]` matches the hints `List[int]`,
+`List[numbers.Integral]` and `List[object]`, whose argument lies at or above
+`int`, and not `List[bool]` or `List[Any]`, following the rules the
+[variance](variance.md#bounding-a-type-argument) page sets out for a
+bounded type argument.
+
 A lower bound does not replace the catch-all. `Hint[Super[int]]` still
 leaves out every hint that is not above `int`, so the fallback for hint
 dispatch remains `Hint[Any]`, described next. The page on
 [exact types](exact-types.md) sets out how `Super` and `Between` behave
-inside `Type` as well.
+on values and inside `Type` as well.
 
 ## Writing a catch-all
 

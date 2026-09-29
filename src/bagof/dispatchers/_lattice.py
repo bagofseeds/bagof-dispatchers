@@ -39,6 +39,7 @@ shape wherever a `TypedDict`-typed parameter is involved.
 """
 
 # stdlib
+import itertools
 from collections import abc
 
 # dependencies
@@ -53,11 +54,15 @@ from .core import (
     normalise_hint,
     unwrap,
 )
-from .core._bounds import bounds_of, is_bound
-from .core._compat import UNION_TYPES, is_typeddict_marker
+from .core._bounds import bounds_of, is_bound, slot_bounds
+from .core._compat import UNION_TYPES, is_typeddict_marker, spellings
 from .core._exact import is_exact
 from .core._hint import hint_arg, is_hint_form
-from .core._introspect import _reads_declared_arguments, is_typeddict
+from .core._introspect import (
+    _reads_declared_arguments,
+    is_typeddict,
+    safe_issubclass,
+)
 from .core._relation import (
     _callable_param_shape,
     _data_protocol_members,
@@ -71,7 +76,11 @@ from .core._relation import (
     _tuple_shape,
     _TupleShape,
     _typevar_upper,
+    _with_arguments,
 )
+
+# Every spelling of `Any`.
+_ANY_FORMS = spellings("Any")
 
 # --- equivalence -------------------------------------------------------
 
@@ -101,32 +110,50 @@ def equivalent(a: tx.Any, b: tx.Any) -> bool:
 
 
 def overlaps(a: tx.Any, b: tx.Any) -> bool:
-    """Report whether two unordered `Type` or `Hint` hints share a value.
+    """Report whether two unordered hints, one of them bounded from
+    below, share a value.
 
     Two hints that are ordered against each other always share the
     values of the narrower one, which is what the registration-time
     ambiguity check relies on. A lower bound breaks that shortcut: the
-    hints `#!python Type[Animal]` and `#!python Type[Super[Dog]]` are not
-    ordered either way, yet the class `Dog` belongs to both, so a call
-    with it cannot choose between methods written with them, and
-    `#!python Type[Dog]` and `#!python Type[Between[Dog, Animal]]` share
-    `Dog` in the same way. This function recognises such a pair. Both
-    hints must be `Type` forms or both `Hint` forms, at least one argument
-    must be a [`Super`][bagof.dispatchers.Super] or a
-    [`Between`][bagof.dispatchers.Between] bound, and neither may be
-    [`Exact`][bagof.dispatchers.Exact], whose pairs the order already
-    decides. Each argument is then read as an interval by
-    [`bounds_of`][], and the two hints share a value when some candidate
-    lies in both intervals. The candidates are the ends of the two
-    intervals and, inside `Type`, every class on the MRO of a lower end
-    that is a class, since a class shared by both intervals lies above
-    both lower ends. Inside `Type`, a candidate must also be a class,
-    because only a class can be passed there. The test is therefore a
+    hints `Animal` and `#!python Super[Dog]` are not ordered either way,
+    yet a value of class `Dog` belongs to both, so a call with it cannot
+    choose between methods written with them. `Dog` and
+    `#!python Between[Dog, Animal]` share such a value in the same way,
+    and so do `#!python Type[Animal]` and `#!python Type[Super[Dog]]`,
+    which share the class `Dog`. This function recognises such a pair.
+    Either both hints stand on a value and at least one of them is a
+    [`Super`][bagof.dispatchers.Super] or a
+    [`Between`][bagof.dispatchers.Between] bound, or both are `Type`
+    forms or both `Hint` forms and at least one argument is such a bound.
+    Neither may be [`Exact`][bagof.dispatchers.Exact], whose pairs the
+    order already decides. Each hint or argument is then read as an
+    interval by [`bounds_of`][], and the two share a value when some
+    candidate lies in both intervals. The candidates are the ends of the
+    two intervals and, on a value or inside `Type`, every class on the
+    MRO of a lower end that is a class, since a class shared by both
+    intervals lies above both lower ends. There a candidate must also be
+    a class, because the interval holds classes. The test is therefore a
     sufficient condition: when it reports an overlap, a value in both
     really exists, which is the direction a warning needs. When the
     bounds involved are classes of a nominal hierarchy, in which no class
     is made a subclass through `register` or `__subclasshook__`, it also
-    finds every overlap there is.
+    finds every overlap there is. A `#!python Literal` names no class to
+    try, so `#!python Literal[1]` and `#!python Super[int]` are reported
+    as not overlapping, although the value `1` belongs to both.
+
+    Two parametrised generics, one of them with a bound among its type
+    arguments, overlap when some parametrisation lies below both. Such a
+    parametrisation is looked for on the more derived of the two
+    origins. Each of its type arguments is replaced by an end of the
+    range that the argument names or, when the two origins are the same,
+    by the argument that the other hint gives at that position. Each
+    candidate is then checked against both hints by the relation itself,
+    so `#!python List[Between[Never, numbers.Integral]]` and
+    `#!python List[Super[int]]` are reported as overlapping through
+    `#!python List[int]`. Hints with no bound among their arguments are
+    never reported, which keeps `#!python List[int]` and
+    `#!python List[str]` apart.
 
     A parametrised union on either side overlaps the other hint when one
     of its members does, which covers a parameter written as
@@ -139,35 +166,70 @@ def overlaps(a: tx.Any, b: tx.Any) -> bool:
         >>> from bagof.dispatchers import Super
         >>> class Animal: pass
         >>> class Dog(Animal): pass
+        >>> overlaps(Animal, Super[Dog])
+        True
         >>> overlaps(Type[Animal], Type[Super[Dog]])
         True
         >>> overlaps(Type[int], Type[Super[Dog]])
         False
         ```
     """
-    a = unwrap(normalise_hint(a), tx.Annotated)
-    b = unwrap(normalise_hint(b), tx.Annotated)
+    a, b = _read(a), _read(b)
     if isinstance(a, tx.TypeVar):
         return overlaps(_typevar_upper(a), b)
     if isinstance(b, tx.TypeVar):
         return overlaps(a, _typevar_upper(b))
-    if get_origin_uw(a) in UNION_TYPES and get_args_uw(a):
+    if _is_union(a):
         return any(overlaps(member, b) for member in get_args_uw(a))
-    if get_origin_uw(b) in UNION_TYPES and get_args_uw(b):
+    if _is_union(b):
         return any(overlaps(a, member) for member in get_args_uw(b))
+    if is_bound(a) or is_bound(b):
+        # Two hints on a value, at least one of them a bound: each is read as
+        # an interval of classes that a value's class must lie in.
+        return _share_a_value(a, b, object)
     if get_origin_uw(a) is type and get_origin_uw(b) is type:
-        top: tx.Any = object
-        arg_a, arg_b = _type_arg(a), _type_arg(b)
-    elif is_hint_form(a) and is_hint_form(b):
-        top = tx.Any
-        arg_a, arg_b = hint_arg(a), hint_arg(b)
-    else:
+        a, b = _type_arg(a), _type_arg(b)
+        return _share_a_value(a, b, object) or _share_an_argument(a, b)
+    if is_hint_form(a) and is_hint_form(b):
+        a, b = hint_arg(a), hint_arg(b)
+        return _share_a_value(a, b, tx.Any) or _share_an_argument(a, b)
+    return _share_an_argument(a, b)
+
+
+def _read(hint: tx.Any) -> tx.Any:
+    """Normalise a hint for [`overlaps`][], keeping the markers it carries.
+
+    A plain `Annotated` wrapper is removed, while an `Exact`, `Super` or
+    `Between` hint, which is built from `Annotated`, is kept whole.
+    """
+    hint = normalise_hint(hint)
+    if is_bound(hint) or is_exact(hint):
+        return hint
+    return unwrap(hint, tx.Annotated)
+
+
+def _is_union(hint: tx.Any) -> bool:
+    """Report whether `hint` is a parametrised union, and not a bound or an
+    `Exact` built on one.
+    """
+    if is_bound(hint) or is_exact(hint):
         return False
-    if not (is_bound(arg_a) or is_bound(arg_b)):
+    return get_origin_uw(hint) in UNION_TYPES and bool(get_args_uw(hint))
+
+
+def _share_a_value(a: tx.Any, b: tx.Any, top: tx.Any) -> bool:
+    """Report whether two intervals, one of them a bound, share a member.
+
+    `a` and `b` are read as intervals by [`bounds_of`][], with `top` as
+    the upper end of a `Super[C]`. `top` is `object` when the members are
+    classes, whether the classes of values or the classes passed to
+    `Type`, and `Any` when the members are hints.
+    """
+    if not (is_bound(a) or is_bound(b)):
         return False
-    if is_exact(arg_a) or is_exact(arg_b):
+    if is_exact(a) or is_exact(b):
         return False
-    first, second = bounds_of(arg_a, top), bounds_of(arg_b, top)
+    first, second = bounds_of(a, top), bounds_of(b, top)
     candidates = list(first + second)
     if top is object:
         # A class shared by both intervals lies above both lower ends, so
@@ -182,6 +244,115 @@ def overlaps(a: tx.Any, b: tx.Any) -> bool:
         if _within(end, first) and _within(end, second):
             return True
     return False
+
+
+# How many parametrisations `_share_an_argument` tries before it gives up.
+_MAX_WITNESSES = 64
+
+
+def _share_an_argument(a: tx.Any, b: tx.Any) -> bool:
+    """Report whether two parametrised generics, at least one of them with
+    a bound among its type arguments, share a parametrisation.
+
+    Two parametrisations of one generic that are not ordered can still
+    have a parametrisation below both, which a value can declare: a
+    `List[int]` is below both
+    `#!python List[Between[Never, numbers.Integral]]` and
+    `#!python List[Super[int]]`. The same holds when the origin of one
+    hint derives from the origin of the other, as `list` derives from
+    `MutableSequence`. The parametrisations tried are built on the more
+    derived origin, with each type argument replaced by one of the ends
+    of the range it names, or by an argument the other hint gives at the
+    same position when the origins are the same. Each one is then
+    checked against both hints by the relation itself, so an overlap
+    reported here is always real. Hints with no bound among their
+    arguments are never reported, which keeps `List[int]` and
+    `List[str]` apart, as the relation's own order does.
+    """
+    a, b = _read(a), _read(b)
+    if any(is_bound(each) or is_exact(each) for each in (a, b)):
+        # A bound or an `Exact` hint names a range of classes or hints, not a
+        # parametrisation, and has been read as such already.
+        return False
+    if not (_holds_argument_bound(a) or _holds_argument_bound(b)):
+        return False
+    origin_a, origin_b = get_origin_uw(a), get_origin_uw(b)
+    if origin_a is origin_b:
+        choices = [
+            _arguments_to_try(x) + _arguments_to_try(y)
+            for x, y in zip(get_args_uw(a), get_args_uw(b))
+        ]
+        base = a
+    elif safe_issubclass(origin_a, origin_b):
+        choices = [_arguments_to_try(x) for x in get_args_uw(a)]
+        base = a
+    elif safe_issubclass(origin_b, origin_a):
+        choices = [_arguments_to_try(x) for x in get_args_uw(b)]
+        base = b
+    else:
+        return False
+    if not choices:
+        # A class that fills in its bases' arguments itself, such as
+        # `class IntList(List[int])`, has no arguments of its own to vary.
+        return False
+    for args in itertools.islice(itertools.product(*choices), _MAX_WITNESSES):
+        witness = _with_arguments(base, args)
+        if issubhint(witness, a) and issubhint(witness, b):
+            return True
+    return False
+
+
+def _holds_argument_bound(hint: tx.Any) -> bool:
+    """Report whether a bound stands among the type arguments of the
+    parametrised generic `hint`, at any depth.
+    """
+    if is_bound(hint) or is_exact(hint):
+        return False
+    origin = get_origin_uw(hint)
+    if (
+        not isinstance(origin, type)
+        or origin is tuple
+        or origin is abc.Callable
+    ):
+        # `Tuple` and `Callable` hold no bound among their own arguments, and
+        # their arguments describe a shape rather than one argument per slot.
+        return False
+    return any(
+        is_bound(arg) or _holds_argument_bound(arg)
+        for arg in get_args_uw(hint)
+    )
+
+
+def _arguments_to_try(arg: tx.Any) -> tx.List[tx.Any]:
+    """List the type arguments to try in place of `arg` when looking for a
+    parametrisation that two hints share.
+
+    A bound, `Any` or a `TypeVar` gives the ends of the range it names, a
+    constrained `TypeVar` its constraints, a parametrised generic with a
+    bound among its own arguments the parametrisations built the same
+    way, and any other argument itself.
+    """
+    arg = normalise_hint(arg)
+    variable = unwrap(arg, tx.Annotated)
+    constraints = getattr(variable, "__constraints__", ())
+    if isinstance(variable, tx.TypeVar) and constraints:
+        return list(constraints)
+    if is_bound(arg) or _is_open(variable):
+        return list(slot_bounds(arg))
+    if _holds_argument_bound(arg):
+        choices = [_arguments_to_try(each) for each in get_args_uw(arg)]
+        return [
+            _with_arguments(arg, args)
+            for args in itertools.islice(itertools.product(*choices), 8)
+        ]
+    return [arg]
+
+
+def _is_open(arg: tx.Any) -> bool:
+    """Report whether a type argument is `Any` or a `TypeVar`."""
+    return isinstance(arg, tx.TypeVar) or any(
+        arg is form for form in _ANY_FORMS
+    )
 
 
 def _type_arg(hint: tx.Any) -> tx.Any:
@@ -540,6 +711,13 @@ def is_value_dependent(hint: tx.Any) -> bool:
     on that value's Python type, so `#!python int` and `#!python str`,
     both of type `#!python type`, must key the cache separately.
 
+    An [`Exact`][bagof.dispatchers.Exact],
+    [`Super`][bagof.dispatchers.Super] or
+    [`Between`][bagof.dispatchers.Between] hint on a value is not
+    value-dependent, because each of them compares only the value's
+    class against a range of classes, so a cache keyed on the type is
+    exact for it.
+
     A parametrised user-defined generic such as `#!python Box[int]` is
     not treated as value-dependent, even though two instances of the
     same class can match differently depending on how each was
@@ -637,7 +815,11 @@ def is_declaration_dependent(hint: tx.Any) -> bool:
     the instance itself, so every `#!python Box[int]()` shares a single
     cache entry. A value of any other class, such as a plain
     `#!python list`, never has this recorded parametrisation looked up,
-    and keys simply as its type paired with `#!python None`.
+    and keys simply as its type paired with `#!python None`. A generic
+    with a bound as a type argument, such as
+    `#!python List[Super[int]]`, is declaration-dependent like any other
+    parametrised generic, since the bound is compared against the
+    recorded argument.
 
     `#!python Type[C]`, a `TypedDict`, `#!python Tuple`, and
     `#!python Callable` each have their own matching logic and are not

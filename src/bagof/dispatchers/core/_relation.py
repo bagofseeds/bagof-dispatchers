@@ -14,6 +14,7 @@ import builtins
 import dataclasses
 import functools
 import inspect
+import itertools
 import re
 import sys
 import threading
@@ -28,7 +29,29 @@ from collections import abc
 import typing_extensions as tx
 
 # local
-from ._bounds import bare_bound_message, bounds_of, is_bare_bound, is_bound
+from ._bounds import (
+    _Lower,
+    bound_ends,
+    bounds_of,
+    callable_bound_message,
+    conflicting_bound_message,
+    constraint_bound_message,
+    endpoint_bound_message,
+    find_bound,
+    is_bound,
+    is_unbounded_form,
+    member_bound_message,
+    misplaced_bound_message,
+    slot_bounds,
+    slot_kind,
+    slot_member_bound_message,
+    spell_generic,
+    tuple_bound_message,
+    unbounded_form_message,
+    unsupported_variance_message,
+    value_bound_message,
+    written_ends,
+)
 from ._compat import (
     _UNPACK_FORMS,
     UNION_TYPES,
@@ -39,11 +62,12 @@ from ._compat import (
     ishint,
     spellings,
 )
-from ._exact import exact_target, is_exact
+from ._exact import _ANNOTATED_ALIAS, exact_target, is_exact
 from ._hint import Hint, hint_arg, is_hint_form
 from ._introspect import (
     _CONTRAVARIANT,
     _COVARIANT,
+    _INVARIANT,
     _NON_TYPE_PARAMS,
     _all_orig_bases,
     _class_parameters,
@@ -314,12 +338,34 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
     `#!python Hint[Exact[X]]` narrows that to the exact hint `X`, and
     `#!python Hint[Super[X]]` turns it around, accepting `X` and every
     hint that `X` is a sub-hint of, while `#!python Hint[Between[L, U]]`
-    accepts the hints from `L` up to `U`. A
+    accepts the hints between `L` and `U`, both included. A
     [`Literal`][tx.Literal] hint requires `obj` to equal one of its
     listed values, with the type checked alongside the value, so
     `#!python True` does not satisfy `#!python Literal[1]` even though
     `#!python True == 1` in Python. A [`Union`][tx.Union] hint is
     satisfied whenever `obj` satisfies any one of its members.
+
+    An [`Exact`][bagof.dispatchers.Exact],
+    [`Super`][bagof.dispatchers.Super] or
+    [`Between`][bagof.dispatchers.Between] hint standing on its own
+    compares the class of `obj` against a range of classes, the same way
+    `Type[...]` of that hint compares a class passed in.
+    `#!python Exact[C]` requires the class of `obj` to be `C` itself,
+    `#!python Super[C]` requires it to be `C` or a class that `C` derives
+    from, and `#!python Between[L, U]` requires it to lie between `L` and
+    `U`. Each bound must then be a hint that a class can be compared
+    against, and one that reads the value itself, such as a `Literal`,
+    raises a [`TypeError`][].
+
+    When `obj` is itself a hint passed as a value to a `#!python Hint[X]`
+    hint, only a bound at the top level of `obj` is checked in this way,
+    so `#!python ishintstance(Super[Literal[1]], Hint[Any])` raises the
+    same error. A misplaced bound nested inside `obj`, as in
+    `#!python Optional[Super[Literal[1]]]` or
+    `#!python Sequence[Super[int]]`, is reported only when the
+    comparison with `X` reaches it, and a comparison with
+    `#!python Any` never does, because every hint is a sub-hint of
+    `#!python Any`.
 
     A [`TypedDict`][tx.TypedDict] hint describes the shape of a mapping
     rather than its class: `obj` must be a [`dict`][] carrying every
@@ -364,7 +410,13 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
     `#!python Box[object]`, and `#!python IntList` does not satisfy
     `#!python List[object]`, even though it does satisfy
     `#!python List[Any]`, plain `#!python list`, and
-    `#!python Sequence[object]`.
+    `#!python Sequence[object]`. A bound written as a type argument is
+    compared with the declared argument in the same way, so an
+    `#!python IntList` satisfies `#!python List[Super[int]]`, whose
+    argument covers `#!python int` and every type above it. The two uses
+    of a bound ask different questions: `#!python Super[int]` on its own
+    asks about the class of `obj`, while `#!python List[Super[int]]` asks
+    about the argument that `obj` declares.
 
     Every other hint falls back to `#!python issubhint(type(obj), hint)`.
 
@@ -400,10 +452,12 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
     if not ishint(hint):
         raise TypeError(_not_a_hint_message(hint))
     hint = normalise_hint(hint)
-    # A bound means something only as the argument of `Type` or `Hint`,
-    # whose branches below read it before it could get here.
-    if is_bare_bound(hint):
-        raise TypeError(bare_bound_message(hint))
+    if is_unbounded_form(hint):
+        raise TypeError(unbounded_form_message(hint))
+    # A bound on a value constrains the value's class, before the `Annotated`
+    # metadata that carries it is unwrapped.
+    if is_bound(hint):
+        return _ishintstance_bound(obj, hint)
     # `Exact[C]` first, before the `Annotated` metadata is unwrapped: the
     # value's type must be exactly `C`.
     if is_exact(hint):
@@ -419,8 +473,10 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
     hint = unwrap(hint, tx.Annotated)
     while isinstance(hint, tx.TypeVar):
         upper = normalise_hint(_typevar_upper(hint))
-        if is_bare_bound(upper):
-            raise TypeError(bare_bound_message(upper))
+        if is_unbounded_form(upper):
+            raise TypeError(unbounded_form_message(upper))
+        if is_bound(upper):
+            return _ishintstance_bound(obj, upper)
         # Exactness can be reached through a bound (`TypeVar(bound=Exact[C])`),
         # so re-check before the `Annotated` wrapper is stripped.
         if is_exact(upper):
@@ -462,6 +518,7 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
         # instance of `class Child(List[int])` is one of `List[int]` by its
         # class. A plain `[1]` declares nothing: `type([1])` is `list`, never
         # `List[int]`, so any list matches every `List[...]`.
+        _check_argument_bounds(origin_uw, tx.get_args(hint))
         members = _data_protocol_members(origin_uw)
         if members is not None:
             # A runtime-checkable protocol with data members is decided by
@@ -476,6 +533,250 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
         declared = _declared_parametrisation(obj, origin_uw)
         return declared is None or issubhint(declared, hint)
     return issubhint(type(obj), hint)
+
+
+def _ishintstance_bound(obj: tx.Any, hint: tx.Any) -> bool:
+    """Report whether a value's class lies within a bound on a value.
+
+    `hint` is a `Super[C]` or a `Between[L, U]` met where a value is
+    checked, read by [`bounds_of`][] as an interval of classes with
+    `object` as the upper end of `Super[C]`. It accepts `obj` when the
+    class of `obj` lies in that interval. The upper end of `Super[C]` is
+    compared like any other, so that `Super[Never]` accepts exactly the
+    values `object` accepts, even for a value such as `typing.Any`, whose
+    class the relation does not place below `object`.
+    """
+    message = value_bound_message(hint)
+    if message is not None:
+        raise TypeError(message)
+    cls = type(obj)
+    lower, upper = bounds_of(hint, object)
+    return issubhint(lower, cls) and issubhint(cls, upper)
+
+
+def is_class_hint(hint: tx.Any) -> bool:
+    """Report whether a value's class can stand in for the value against
+    `hint`.
+
+    This is true when, for every class, the class is a sub-hint of `hint`
+    exactly when an instance of the class is a value of `hint`, which is
+    what a bound of a `Super` or a `Between` on a value needs, since the
+    bound is compared against the value's class. A class, an abstract
+    base class, a protocol with methods only, a bare generic alias such
+    as `List` or `Type`, `Never`, `Any`, a union of such hints, and a
+    `TypeVar` whose bound or constraints are such hints all qualify. A
+    hint that reads the value itself does not, which includes a protocol
+    with data members, a `TypedDict`, a `Literal`, a parametrised
+    generic, `Type[C]`, and `Hint` in any spelling.
+    """
+    hint = normalise_hint(hint)
+    if is_bound(hint) or is_exact(hint) or is_unbounded_form(hint):
+        return False
+    hint = unwrap(hint, tx.Annotated)
+    if _is_never(hint) or _is_any(hint):
+        return True
+    if isinstance(hint, tx.TypeVar):
+        return is_class_hint(_typevar_upper(hint))
+    origin = get_origin_uw(hint)
+    args = get_args_uw(hint)
+    if origin in UNION_TYPES:
+        return bool(args) and all(is_class_hint(arg) for arg in args)
+    if args or not isinstance(origin, type):
+        return False
+    return not (
+        is_hint_form(origin)
+        or is_typeddict_marker(origin)
+        or is_typeddict(origin)
+        or _data_protocol_members(origin) is not None
+    )
+
+
+def _check_argument_bounds(
+    origin: tx.Any, args: tx.Sequence[tx.Any], mapped: bool = False
+) -> None:
+    """Refuse a bound among the type arguments of `origin` that cannot be
+    read there.
+
+    A bound can be the whole type argument of an invariant slot, where it
+    names the range of arguments the slot accepts. At a covariant or a
+    contravariant slot it is accepted only when the variance already
+    says the same, as `Between[Never, U]` does at a covariant slot, and
+    it is refused when the variance would ignore one of its ends. A bound
+    reached through a union member or a `TypeVar` inside a slot is
+    refused, and so is any bound among the arguments of a generic whose
+    variance cannot be read, an element of a tuple, or the signature of
+    a `Callable`.
+
+    `mapped` is true for arguments that a class fills in for one of its
+    bases, such as those that `Row[Super[int]]` fills in for `Sequence`
+    when it is written as `class Row(Sequence[T])`. A bound there was
+    written for the class's own slot, which accepted it, so it is read
+    as the range of parametrisations it names rather than refused for
+    the variance of the base.
+    """
+    message = arguments_bound_message(origin, args, mapped)
+    if message is not None:
+        raise TypeError(message)
+
+
+def arguments_bound_message(
+    origin: tx.Any, args: tx.Sequence[tx.Any], mapped: bool = False
+) -> tx.Optional[str]:
+    """Compose the error [`_check_argument_bounds`][] raises, or return
+    `None`.
+
+    Registration asks the same question with this function, so that a
+    hint is refused when a method is registered with exactly the message
+    the relation would give when comparing it.
+    """
+    if origin is type or is_hint_form(origin) or origin in UNION_TYPES:
+        # `Type` and `Hint` read a bound as their whole argument, and a union
+        # holds its members rather than type arguments.
+        return None
+    try:
+        return _argument_bound_message(origin, tuple(args), mapped)
+    except TypeError:
+        # An unhashable argument, such as a `Callable`'s parameter list,
+        # cannot key the cache.
+        return _argument_bound_message.__wrapped__(
+            origin, tuple(args), mapped
+        )
+
+
+@functools.lru_cache(maxsize=4096)
+def _argument_bound_message(
+    origin: tx.Any, args: tx.Tuple[tx.Any, ...], mapped: bool
+) -> tx.Optional[str]:
+    """Compose the error for the first bound among the arguments of
+    `origin` that cannot be read there, or return `None`.
+
+    [`_check_argument_bounds`][] describes the rule. The answer depends
+    on nothing but the hints and on the variance `origin` declares, which
+    is fixed when the class is created, so it is remembered.
+    """
+    variances: tx.Optional[tx.Tuple[str, ...]] = None
+    for index, arg in enumerate(args):
+        items: tx.Sequence[tx.Any] = (arg,)
+        if isinstance(arg, (list, tuple)):
+            # A `Callable`'s parameter list, or a `ParamSpec` generic's.
+            items = arg
+        elif origin is abc.Callable and any(
+            safe_get_origin(arg) is form for form in _CONCATENATE_FORMS
+        ):
+            # A `Concatenate` prefix, which ends in a `ParamSpec`.
+            items = tx.get_args(arg)
+        for item in items:
+            found = find_bound(item)
+            if found is None:
+                continue
+            if is_unbounded_form(found):
+                return unbounded_form_message(found)
+            if origin is tuple:
+                return tuple_bound_message(found)
+            if origin is abc.Callable:
+                return callable_bound_message(found)
+            if variances is None:
+                variances = _generic_variances(origin) or ()
+            if item is not arg or len(variances) != len(args):
+                return unsupported_variance_message(found, origin)
+            if not is_bound(normalise_hint(arg)):
+                return _slot_member_message(arg, found, origin)
+            for end in written_ends(found):
+                inner = find_bound(end)
+                if inner is not None:
+                    return misplaced_bound_message(
+                        inner, endpoint_bound_message
+                    )
+            if not mapped and slot_kind(found, variances[index]) == (
+                "conflicting"
+            ):
+                return conflicting_bound_message(
+                    found, index, origin, args, variances[index]
+                )
+    return None
+
+
+def _slot_member_message(arg: tx.Any, found: tx.Any, origin: tx.Any) -> str:
+    """Compose the error for a bound that a type argument holds without
+    being one.
+
+    A `TypeVar` whose constraint holds the bound is refused the way it is
+    refused anywhere else, and a union member or a `TypeVar` bound is
+    refused because a bound has to be the whole argument of a slot.
+    """
+    variable = unwrap(normalise_hint(arg), tx.Annotated)
+    if isinstance(variable, tx.TypeVar) and any(
+        find_bound(each) is not None
+        for each in getattr(variable, "__constraints__", ())
+    ):
+        return misplaced_bound_message(found, constraint_bound_message)
+    return misplaced_bound_message(
+        found, lambda bound: slot_member_bound_message(bound, origin)
+    )
+
+
+def _check_written_bases(cls: tx.Any) -> None:
+    """Refuse a class that writes a bound among the arguments of a base
+    where the bound cannot be read.
+
+    `class Row(Sequence[Super[int]])` gives `Sequence`'s covariant slot a
+    lower bound, which that slot would ignore, just as it would in a
+    `Sequence[Super[int]]` hint. Such a class is refused whenever it is
+    compared against a parametrisation of one of its bases, with the
+    message the hint itself would get.
+    """
+    try:
+        message = _written_bases_message(cls)
+    except TypeError:
+        # A class whose metaclass defines `__eq__` alone cannot key the cache.
+        message = _written_bases_message.__wrapped__(cls)
+    if message is not None:
+        raise TypeError(message)
+
+
+@functools.lru_cache(maxsize=4096)
+def _written_bases_message(cls: tx.Any) -> tx.Optional[str]:
+    """Compose the error [`_check_written_bases`][] raises, or return
+    `None`.
+
+    Every class on the MRO of `cls` is read, each through the bases it
+    was itself written with.
+    """
+    for each in cls.__mro__:
+        for base in _own_orig_bases(each):
+            origin = safe_get_origin(base)
+            if any(origin is marker for marker in _PARAMETER_MARKERS):
+                continue
+            message = _argument_bound_message(
+                get_origin_uw(base), tuple(tx.get_args(base)), False
+            )
+            if message is not None:
+                shown = spell_generic(get_origin_uw(base), tx.get_args(base))
+                return f"{each.__name__} derives from {shown}: {message}"
+    return None
+
+
+def _check_type_argument(arg: tx.Any) -> None:
+    """Refuse a bound that the argument of `Type` or `Hint` holds in a
+    position where it cannot be read.
+
+    The argument may itself be a `Super[C]` or a `Between[L, U]`, but no
+    bound may appear inside the hints that bound is written with. A bound
+    reached through a union member or a `TypeVar` is refused as well,
+    because the argument is compared as a class or a hint, which would
+    read such a bound as if it stood on a value.
+    """
+    if is_bound(arg):
+        for end in written_ends(arg):
+            found = find_bound(end)
+            if found is not None:
+                raise TypeError(
+                    misplaced_bound_message(found, endpoint_bound_message)
+                )
+        return
+    found = find_bound(arg)
+    if found is not None:
+        raise TypeError(misplaced_bound_message(found, member_bound_message))
 
 
 def _literal_value_eq(a: tx.Any, b: tx.Any) -> bool:
@@ -511,6 +812,7 @@ def _ishintstance_type(obj: tx.Any, hint: tx.Any) -> bool:
         # hint is `type` (or `tx.Type`), so any type is valid
         return isinstance(obj, type)
     arg = args_uw[0]
+    _check_type_argument(arg)
     if is_bound(arg):
         # `type[Super[C]]` or `type[Between[L, U]]`: `obj` must be a class
         # within the bounds.
@@ -539,6 +841,7 @@ def _ishintstance_hint(obj: tx.Any, hint: tx.Any) -> bool:
     if not ishint(obj):
         return False
     arg = hint_arg(hint)
+    _check_type_argument(arg)
     if is_bound(arg):
         # A string is a forward reference, which is above nothing; it cannot
         # be put on the right of `issubhint` at all.
@@ -1738,23 +2041,46 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     its own, so `#!python Type[Exact[int]]` sits below
     `#!python Type[int]` and nothing ordinary sits below it.
 
-    A [`Super`][bagof.dispatchers.Super] argument inside `#!python Type`
-    or `#!python Hint` is ordered in the opposite direction to its bound:
-    `#!python Type[Super[numbers.Integral]]` is a sub-hint of
-    `#!python Type[Super[int]]`, because the classes above
+    A [`Super`][bagof.dispatchers.Super] bound is ordered in the opposite
+    direction to the class it names. On a value,
+    `#!python Super[numbers.Integral]` is a sub-hint of
+    `#!python Super[int]`, because the classes above
     `#!python numbers.Integral` are among the classes above
-    `#!python int`. `#!python Type[Exact[C]]` sits below both
-    `#!python Type[C]` and `#!python Type[Super[C]]`, while
-    `#!python Type[C]` and `#!python Type[Super[C]]` are not ordered
-    against each other in either direction.
+    `#!python int`, and the same holds inside `#!python Type` or
+    `#!python Hint`. `#!python Exact[C]` sits below both `C` and
+    `#!python Super[C]`, while `C` and `#!python Super[C]` are not
+    ordered against each other in either direction.
     [`Between`][bagof.dispatchers.Between]`[L, U]` names both ends of
     such a range, and one range is below another when it lies inside
-    it, so `#!python Type[Between[D, C]]`, for a class `D` derived from
-    `C`, is a sub-hint of both `#!python Type[C]` and
-    `#!python Type[Super[D]]`. A `Super` or
-    a `Between` anywhere other than the immediate argument of
-    `#!python Type` or `#!python Hint` raises a [`TypeError`][], since a
-    bound on a value cannot be checked.
+    it, so `#!python Between[D, C]`, for a class `D` derived from `C`, is
+    a sub-hint of both `C` and `#!python Super[D]`. On a value, each
+    bound of a `Super` or a `Between` must be a hint that a class can be
+    compared against, and one that reads the value itself, such as a
+    `#!python Literal`, raises a [`TypeError`][]. A bound also raises one
+    in a position where it cannot be read: inside another bound, as a
+    constraint of a `#!python TypeVar`, as a union member or a
+    `#!python TypeVar` bound inside the argument of `#!python Type`, of
+    `#!python Hint` or of a generic, as an element of a
+    `#!python Tuple`, and in the signature of a `#!python Callable`.
+
+    A bound can also be the whole type argument of a generic. At an
+    invariant position it names a range of arguments rather than a
+    single one, and the parametrisation stands for every parametrisation
+    whose argument lies in that range. `#!python List[int]` and
+    `#!python List[numbers.Integral]` are therefore sub-hints of
+    `#!python List[Super[int]]`, and `#!python List[bool]` is not. One
+    bounded argument is below another when its range lies inside the
+    other's, a plain argument counts as a range holding only itself, and
+    a `#!python TypeVar` bounded by `B` counts as the range
+    `#!python Between[Never, B]`. Each bound names its own range, so
+    `#!python List[List[int]]` is not a sub-hint of
+    `#!python List[List[Super[int]]]`, whose outer argument is the single
+    hint `#!python List[Super[int]]`. At a covariant or a contravariant
+    position the variance already widens the argument. A bound that says
+    no more than the variance does, such as the one in
+    `#!python Sequence[Between[Never, int]]`, is read as the plain
+    argument, and one with an end that the variance would ignore, such as
+    the one in `#!python Sequence[Super[int]]`, raises a [`TypeError`][].
 
     !!! example
         ```pycon
@@ -1826,22 +2152,35 @@ def _issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     """
     hint, superhint = normalise_hint(hint), normalise_hint(superhint)
 
+    # A bound form with no bounds names no hint, and a bound on a value must
+    # be written with hints a class can be compared against. Either is
+    # refused whichever side it stands on, before any shortcut can answer.
+    for side in (hint, superhint):
+        if is_unbounded_form(side):
+            raise TypeError(unbounded_form_message(side))
+        if is_bound(side):
+            message = value_bound_message(side)
+            if message is not None:
+                raise TypeError(message)
+
     # A bottom (`Never`/`NoReturn`) holds no values, so it is a sub-hint of
     # every hint -- `Exact[C]` included, which is why this comes first.
     # `Exact[Never]` holds no values either, since no value is exactly of a
-    # type that has none, so it is a bottom as well.
-    if _is_never(hint) or (
-        is_exact(hint) and _is_never(normalise_hint(exact_target(hint)))
+    # type that has none, so it is a bottom as well, and so is
+    # `Between[Never, Never]`, the one bound whose upper end is a bottom.
+    if (
+        _is_never(hint)
+        or (is_exact(hint) and _is_never(normalise_hint(exact_target(hint))))
+        or (is_bound(hint) and _is_never(bounds_of(hint, object)[1]))
     ):
         return True
 
-    # A bound means something only as the argument of `Type` or `Hint`,
-    # whose branches read it before recursing, so one met here stands on a
-    # value. Without this check, `Super[C]` would unwrap to a plain `C`, and
-    # `Between[L, U]` to a plain `U`.
-    for side in (hint, superhint):
-        if is_bare_bound(side):
-            raise TypeError(bare_bound_message(side))
+    # The argument of `Type` or `Hint` is read by those branches before they
+    # recurse, so a bound met here stands on a value. Without this branch,
+    # `Super[C]` would unwrap to a plain `C`, and `Between[L, U]` to a plain
+    # `U`.
+    if is_bound(hint) or is_bound(superhint):
+        return _issubvalue(hint, superhint)
 
     # A bare, unsubscripted `Annotated` super-hint is structural: only an
     # `Annotated` form is a sub-hint of it, so `issubhint(int, Annotated)` is
@@ -1910,11 +2249,15 @@ def _issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     if _is_any(superhint):
         return True
 
-    if hint is superhint:
-        return True
-
     # Unwrap superhint origin
     origin_uw = get_origin_uw(superhint)
+
+    if hint is superhint:
+        # A hint is below itself, but a bound written where it cannot be
+        # read is refused all the same.
+        if isinstance(origin_uw, type):
+            _check_argument_bounds(origin_uw, safe_get_args(unwrap(hint)))
+        return True
 
     if _is_any(origin_uw):
         return True
@@ -1981,6 +2324,8 @@ def _issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
             return False
         sub_arg = hint_arg(hint)
         super_arg = hint_arg(superhint)
+        _check_type_argument(sub_arg)
+        _check_type_argument(super_arg)
         if is_bound(sub_arg) or is_bound(super_arg):
             return _issubbounds(sub_arg, super_arg, tx.Any)
         if is_exact(super_arg):
@@ -2059,6 +2404,9 @@ def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
     # `type`, so handing either to `safe_issubclass` directly would
     # answer False for every one of them.
     hint_uw = unwrap(hint)
+    superhint_uw = unwrap(superhint)
+    _check_argument_bounds(origin, safe_get_args(superhint_uw))
+    _check_argument_bounds(get_origin_uw(hint_uw), safe_get_args(hint_uw))
     if not _issubclass_origin(get_origin_uw(hint_uw), origin):
         return False
 
@@ -2068,9 +2416,9 @@ def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
         # `Tuple`/`tuple`: the two report the same empty arguments on 3.11+, so
         # the "no arguments constrains nothing" rule below would wrongly accept
         # every tuple as a sub-hint of `Tuple[()]`.
-        return _issubtuplehint(hint_uw, unwrap(superhint))
+        return _issubtuplehint(hint_uw, superhint_uw)
 
-    superargs = safe_get_args(unwrap(superhint))
+    superargs = safe_get_args(superhint_uw)
     if not superargs:
         # An unparametrised superhint constrains nothing further.
         return True
@@ -2084,15 +2432,90 @@ def _issubclasshint(hint: tx.Any, superhint: tx.Any, origin: type) -> bool:
         # int]`. A class reaching the origin through several bases is below
         # the super-hint when any of them is, and the walk stops at the
         # first that is. When no base maps onto the origin the arguments are
-        # compared positionally, as before.
-        mapped = False
-        for args in _as_base_args(hint_uw, origin):
-            if _issubclassargs(args, superargs, variances):
-                return True
-            mapped = True
-        if mapped:
-            return False
-    return _issubclassargs(safe_get_args(hint_uw), superargs, variances)
+        # compared positionally, as before. A constrained `TypeVar` at an
+        # invariant slot stands for each of its constraints in turn, so the
+        # sub-hint is below when each of those parametrisations is.
+        _check_written_bases(get_origin_uw(hint_uw))
+        verdicts = [
+            _mapped_below(each, origin, superargs, variances)
+            for each in _instances(hint_uw, variances)
+        ]
+        if None not in verdicts:
+            return all(verdicts)
+    args = safe_get_args(hint_uw)
+    if variances is None or not len(variances) == len(args) == len(superargs):
+        # The arguments are compared positionally, with no variance to read a
+        # bound among them by, as in `Unmapped[Super[int], int]` against
+        # `Hook[[int], int]` for `class Unmapped(Hook, Generic[A, B])`. A bound
+        # is refused when the comparison would reach it: when both sides hold
+        # as many arguments, or when the super side has an open run that
+        # could take it. Fixed runs of different lengths compare nothing.
+        found = next((a for a in args if is_bound(normalise_hint(a))), None)
+        if found is not None and (
+            len(args) == len(superargs)
+            or _tuple_shape(superargs).rep is not None
+        ):
+            raise TypeError(unsupported_variance_message(found, origin))
+    return _issubclassargs(args, superargs, variances)
+
+
+def _mapped_below(
+    hint: tx.Any,
+    origin: type,
+    superargs: tx.Tuple[tx.Any, ...],
+    variances: tx.Optional[tx.Tuple[str, ...]],
+) -> tx.Optional[bool]:
+    """Report whether one of the parametrisations of `origin` that `hint`
+    reaches through its bases fits `superargs`.
+
+    `None` comes back when no base of `hint` maps onto `origin` at all,
+    which leaves the caller to compare the arguments positionally.
+    """
+    mapped = False
+    for args in _base_arguments(hint, origin, variances):
+        _check_argument_bounds(origin, args, mapped=True)
+        if _issubclassargs(args, superargs, variances):
+            return True
+        mapped = True
+    return False if mapped else None
+
+
+def _instances(
+    hint: tx.Any, variances: tx.Optional[tx.Tuple[str, ...]]
+) -> tx.Iterator[tx.Any]:
+    """Yield `hint` once for each choice of constraint for each constrained
+    `TypeVar` standing at an invariant slot of `hint`.
+
+    At an invariant slot, a constrained `TypeVar` on the sub side stands
+    for each of its constraints, so `W[TC]` for `TC` constrained to `int`
+    and `str` is below a hint exactly when `W[int]` and `W[str]` both are.
+    The variable is replaced wherever it appears in `hint`. `hint` is
+    yielded unchanged when it holds no such variable, or when `variances`,
+    those of the origin it is compared against, cannot be read.
+    """
+    args = safe_get_args(hint)
+    own = _generic_variances(get_origin_uw(hint)) if args else None
+    variables: tx.List[tx.Any] = []
+    if variances is not None and own is not None and len(own) == len(args):
+        for arg, variance in zip(args, own):
+            plain = unwrap(normalise_hint(arg), tx.Annotated)
+            if (
+                variance == _INVARIANT
+                and _is_plain_typevar(plain)
+                and getattr(plain, "__constraints__", ())
+                and not any(plain is seen for seen in variables)
+            ):
+                variables.append(plain)
+    if not variables:
+        yield hint
+        return
+    params = hint.__parameters__
+    for choice in itertools.product(
+        *(variable.__constraints__ for variable in variables)
+    ):
+        chosen = dict(zip(variables, choice))
+        fill = tuple(chosen.get(param, param) for param in params)
+        yield hint[fill if len(fill) > 1 else fill[0]]
 
 
 def _issubclassargs(
@@ -2170,13 +2593,22 @@ def _issubslot(sub: tx.Any, sup: tx.Any, variance: str) -> bool:
     instead, so a consumer of `int` can stand in for a consumer of
     `bool`; a `TypeVar` is read as its bound here too, and
     [`_issubslot_invariant`][] explains why it is never solved this way.
-    An invariant position is handled by [`_issubslot_invariant`][]:
-    either the two sides accept exactly the same values, or the super
-    side is a `TypeVar` that can be solved to the sub side, or the super
-    side is a top such as `Any` or a free `TypeVar`.
+    An invariant position is handled by [`_issubslot_invariant`][].
+
+    A `Super[C]` or a `Between[L, U]` argument names a range of
+    arguments, and stands for every parametrisation whose argument lies
+    in that range. At a covariant slot, all of those parametrisations
+    are below the one whose argument is the upper end of the range, so
+    the range is compared through its upper end, and at a contravariant
+    slot through its lower end. A bound written directly at such a slot
+    has already been accepted only when that end is all it says; a bound
+    that a class fills in for a base, as `Row[Super[int]]` fills in
+    `Sequence` for `class Row(Sequence[T])`, is read the same way, so
+    `Row[Super[int]]` is below `Sequence[Any]` and not below
+    `Sequence[int]`.
     """
     if variance == _COVARIANT:
-        return issubhint(sub, sup)
+        return issubhint(_slot_end(sub, 1), _slot_end(sup, 1))
     if variance == _CONTRAVARIANT:
         # Solving a `TypeVar` here would ask whether the two sides *overlap*
         # (`Snk[bool] <= Snk[T <= int]` needs some `T` below both `bool` and
@@ -2184,8 +2616,22 @@ def _issubslot(sub: tx.Any, sup: tx.Any, variance: str) -> bool:
         # `C`, which are not related -- and cannot be decided over an open
         # class hierarchy. So a contravariant slot keeps reading a `TypeVar`
         # as its bound, which keeps the order a preorder (#50, V5).
-        return issubhint(sup, sub)
+        return issubhint(_slot_end(sup, 0), _slot_end(sub, 0))
     return _issubslot_invariant(sub, sup)
+
+
+def _slot_end(arg: tx.Any, end: int) -> tx.Any:
+    """Read a type argument at a covariant or a contravariant slot.
+
+    A bound is read as one of its ends, as [`bound_ends`][] gives them,
+    the lower end for `end` 0 and the upper end for `end` 1. Any other
+    argument is returned as it is.
+    """
+    if is_bound(arg):
+        arg = normalise_hint(arg)
+        if is_bound(arg):
+            return bound_ends(arg)[end]
+    return arg
 
 
 def _issubslot_invariant(sub: tx.Any, sup: tx.Any) -> bool:
@@ -2209,11 +2655,20 @@ def _issubslot_invariant(sub: tx.Any, sup: tx.Any) -> bool:
     `sub` never satisfies this, since `Box[T <= int]` is not a
     `Box[int]`, because `T` could still turn out to be `bool`.
 
+    A `Super[C]` or a `Between[L, U]` on either side is read, together
+    with the other side, as a range of arguments ([`_issubslot_range`][]).
+
     This relation is transitive, since every one of these rules reduces
     either to `<=` or to equivalence against the super side's bound or
     constraints, and both of those chain.
     """
-    if sub is sup or issubhint(tx.Any, sup):
+    if sub is sup:
+        return True
+    if is_bound(sub) or is_bound(sup):
+        sub, sup = normalise_hint(sub), normalise_hint(sup)
+        if is_bound(sub) or is_bound(sup):
+            return _issubslot_range(sub, sup)
+    if issubhint(tx.Any, sup):
         return True
     sub_uw = unwrap(normalise_hint(sub), tx.Annotated)
     sup_uw = unwrap(normalise_hint(sup), tx.Annotated)
@@ -2237,6 +2692,47 @@ def _issubslot_invariant(sub: tx.Any, sup: tx.Any) -> bool:
     if sub_is_typevar:
         return False
     return _equivalent(sub, sup)
+
+
+def _issubslot_range(sub: tx.Any, sup: tx.Any) -> bool:
+    """Report whether `G[sub] <= G[sup]` holds at an invariant slot when
+    either side is a bound.
+
+    Each side is read as the range of arguments it accepts
+    ([`slot_bounds`][]), and `sub` fits `sup` when its range lies inside
+    the range of `sup`: the lower end of `sup` is below the lower end of
+    `sub`, and the upper end of `sub` is below the upper end of `sup`. A
+    plain argument is the single point it names, so `List[int]` is below
+    `List[Super[int]]` and `List[bool]` is not, and a bounded `TypeVar`
+    on either side is the range from `Never` up to its bound, the same
+    reading the relation already gives it. A constrained `TypeVar` stands
+    for one of its constraints, each of which is a point: on the super
+    side, the range of `sub` has to fit one of those points, and on the
+    sub side, every constraint has to lie in the range of `sup`.
+    """
+    for side in (sup, sub):
+        variable = unwrap(side, tx.Annotated)
+        constraints = (
+            getattr(variable, "__constraints__", ())
+            if isinstance(variable, tx.TypeVar)
+            else ()
+        )
+        if not constraints:
+            continue
+        if side is sup:
+            lower, upper = slot_bounds(sub)
+            return any(
+                issubhint(each, lower) and issubhint(upper, each)
+                for each in constraints
+            )
+        lower, upper = slot_bounds(sup)
+        return all(
+            issubhint(lower, each) and issubhint(each, upper)
+            for each in constraints
+        )
+    sub_lower, sub_upper = slot_bounds(sub)
+    sup_lower, sup_upper = slot_bounds(sup)
+    return issubhint(sup_lower, sub_lower) and issubhint(sub_upper, sup_upper)
 
 
 # --- declared parametrisations (#50, V5) -------------------------------
@@ -2416,6 +2912,123 @@ def _as_base_args(
         if bases is not None:
             # Depth first, the first-listed base on top.
             pending.extend(reversed(bases))
+
+
+# Stand-ins for the open arguments of a hint while its bases are read, one
+# per position (`_opened`). A hint with more parameters than this keeps its
+# open arguments as they are.
+_OPEN = tuple(tx.TypeVar(f"_Open{index}") for index in range(8))
+
+
+def _base_arguments(
+    hint: tx.Any,
+    target: type,
+    variances: tx.Optional[tx.Tuple[str, ...]],
+) -> tx.Iterator[tx.Tuple[tx.Any, ...]]:
+    """Yield `hint` re-expressed as parametrisations of `target`, as their
+    arguments, reading each open argument the way its own slot reads it.
+
+    This is [`_as_base_args`][] with one refinement. At an invariant slot,
+    `Any` or a `TypeVar` on the sub side stands for every argument it
+    admits, so `Box[Any]` is not below `Box[int]`. That reading has to
+    survive the walk to a base: for `class W(Snk[T])`, where `T` is
+    invariant in `W` and `Snk`'s parameter is contravariant, `W[Any]`
+    stands for every `W[Y]`, and so for every `Snk[Y]`, which is not below
+    `Snk[int]`. Each such argument is therefore handed to `target`'s slot
+    as the range it stands for, `Between[Never, B]` for a `TypeVar`
+    bounded by `B` and `Between[Never, Any]` otherwise, which
+    [`_issubslot`][] reads at each variance. An open argument that ends
+    up inside another hint, rather than as a whole argument of `target`,
+    is handed over as it was written. `variances` is `None` when
+    `target`'s variance cannot be read, and the arguments are then
+    handed over as they are.
+    """
+    opened = _opened(hint) if variances is not None else None
+    if opened is None:
+        yield from _as_base_args(hint, target)
+        return
+    marked, ranges = opened
+    for args in _as_base_args(marked, target):
+        yield tuple(_reclosed(arg, ranges) for arg in args)
+
+
+def _opened(
+    hint: tx.Any,
+) -> tx.Optional[tx.Tuple[tx.Any, tx.Dict[tx.Any, tx.Tuple[tx.Any, tx.Any]]]]:
+    """Mark each open argument at an invariant slot of `hint`.
+
+    The result is `hint` with each such argument replaced by a stand-in
+    `TypeVar`, and a mapping from each stand-in to the argument it
+    replaces and to the range that argument stands for; `None` comes back
+    when `hint` has no such argument.
+    """
+    args = safe_get_args(hint)
+    own = _generic_variances(get_origin_uw(hint)) if args else None
+    if not own or len(own) != len(args) or len(args) > len(_OPEN):
+        return None
+    ranges: tx.Dict[tx.Any, tx.Tuple[tx.Any, tx.Any]] = {}
+    marked = list(args)
+    for index, (arg, variance) in enumerate(zip(args, own)):
+        upper = _open_upper(arg) if variance == _INVARIANT else None
+        if upper is None:
+            continue
+        marked[index] = _OPEN[index]
+        spanned = _ANNOTATED_ALIAS(upper, (_Lower(tx.Never),))
+        ranges[_OPEN[index]] = (arg, spanned)
+    if not ranges:
+        return None
+    return _with_arguments(hint, tuple(marked)), ranges
+
+
+def _open_upper(arg: tx.Any) -> tx.Any:
+    """Return the upper end of the range an open type argument stands for.
+
+    `Any` and a free `TypeVar` stand for every argument, up to `Any`, and
+    a `TypeVar` bounded by `B` for every argument up to `B`. `None` comes
+    back for any other argument, a constrained `TypeVar` included, since
+    it stands for one of its constraints rather than for a range.
+    """
+    arg = normalise_hint(arg)
+    if is_bound(arg) or is_exact(arg):
+        return None
+    plain = unwrap(arg, tx.Annotated)
+    if _is_any(plain):
+        return tx.Any
+    if not _is_plain_typevar(plain) or getattr(plain, "__constraints__", ()):
+        return None
+    bound = getattr(plain, "__bound__", None)
+    return tx.Any if bound is None else normalise_hint(bound)
+
+
+def _reclosed(
+    arg: tx.Any, ranges: tx.Mapping[tx.Any, tx.Tuple[tx.Any, tx.Any]]
+) -> tx.Any:
+    """Undo [`_opened`][] on one argument of a base.
+
+    A stand-in that is the whole argument becomes the range it stands
+    for, and a stand-in inside the argument becomes the argument it
+    replaced.
+    """
+    for stand_in, (_, spanned) in ranges.items():
+        if arg is stand_in:
+            return spanned
+    params = getattr(arg, "__parameters__", ())
+    if not any(param in ranges for param in params):
+        return arg
+    fill = tuple(ranges[p][0] if p in ranges else p for p in params)
+    return arg[fill if len(fill) > 1 else fill[0]]
+
+
+def _with_arguments(alias: tx.Any, args: tx.Tuple[tx.Any, ...]) -> tx.Any:
+    """Build the parametrisation of `alias`'s origin with `args` in place
+    of its arguments, in the same spelling.
+
+    A `typing` alias such as `List[int]` or `Box[int]` is rebuilt by its
+    `copy_with`, and a PEP 585 alias such as `list[int]` by its own type.
+    """
+    if hasattr(alias, "copy_with"):
+        return alias.copy_with(args)
+    return type(alias)(tx.get_origin(alias), args)
 
 
 def _first_time(
@@ -2661,6 +3274,8 @@ def _is_subscripted_tuple(hint: tx.Any) -> bool:
 
 def _issubtuplehint(hint_uw: tx.Any, superhint_uw: tx.Any) -> bool:
     """Report whether a tuple hint is a sub-hint of a tuple superhint."""
+    _check_argument_bounds(tuple, safe_get_args(superhint_uw))
+    _check_argument_bounds(tuple, safe_get_args(hint_uw))
     if not _is_subscripted_tuple(superhint_uw):
         # A bare `Tuple`/`tuple` constrains nothing: any tuple is a sub-hint.
         return True
@@ -2853,18 +3468,21 @@ def _issubtype(hint: tx.Any, superhint: tx.Any) -> bool:
     args = safe_get_args(hint_uw)
     superargs = safe_get_args(superhint_uw)
     sub_arg, super_arg = args[0], superargs[0]
+    _check_type_argument(sub_arg)
+    _check_type_argument(super_arg)
     if is_bound(sub_arg) or is_bound(super_arg):
         return _issubbounds(sub_arg, super_arg, object)
     return issubhint(sub_arg, super_arg)
 
 
 def _issubbounds(sub: tx.Any, sup: tx.Any, top: tx.Any) -> bool:
-    """Order two `Type` or `Hint` arguments when a bound is involved.
+    """Order two hints when a bound is involved, on a value or as the
+    argument of `Type` or `Hint`.
 
-    Each argument is read by [`bounds_of`][] as the interval of classes,
-    or of hints, that it accepts, with `top` as the upper end of a
-    `Super[C]` interval: `object` inside `Type` and `Any` inside `Hint`.
-    A `Between[L, U]` argument names both of its ends itself.
+    Each hint is read by [`bounds_of`][] as the interval of classes, or
+    of hints, that it accepts, with `top` as the upper end of a
+    `Super[C]` interval: `object` on a value and inside `Type`, and `Any`
+    inside `Hint`. A `Between[L, U]` names both of its ends itself.
     `sub` is below `sup` when its interval lies inside that of `sup`,
     which holds when the lower bound of `sup` is below the lower bound of
     `sub` and the upper bound of `sub` is below the upper bound of `sup`.
@@ -2873,8 +3491,9 @@ def _issubbounds(sub: tx.Any, sup: tx.Any, top: tx.Any) -> bool:
     plain `Type[X]` and `Type[Super[C]]` apart, since a subclass of `X`
     can always be defined that is not above `C`.
 
-    A few shapes are settled before any interval is read. Inside `Type`,
-    a bottom `sub` holds no class and so is below everything, and the same
+    A few shapes are settled before any interval is read. On a value and
+    inside `Type`, a bottom `sub` holds no class and so is below
+    everything, and the same
     is true of an interval whose upper end is a bottom, such as
     `Between[Never, Never]` or `Exact[Never]`. Inside
     `Hint` the same shortcut would be unsound, because the hint `Never`
@@ -2899,29 +3518,61 @@ def _issubbounds(sub: tx.Any, sup: tx.Any, top: tx.Any) -> bool:
     if not (is_bound(sub) or is_exact(sub)):
         if get_origin_uw(sub) in UNION_TYPES and get_args_uw(sub):
             return all(
-                _issubbounds(_value_bound(member), sup, top)
-                for member in get_args_uw(sub)
+                _issubbounds(member, sup, top) for member in get_args_uw(sub)
             )
         if isinstance(sub, tx.TypeVar):
-            upper = _value_bound(normalise_hint(_typevar_upper(sub)))
+            upper = normalise_hint(_typevar_upper(sub))
             return _issubbounds(upper, sup, top)
     sub_lower, sub_upper = bounds_of(sub, top)
     sup_lower, sup_upper = bounds_of(sup, top)
     return issubhint(sup_lower, sub_lower) and issubhint(sub_upper, sup_upper)
 
 
-def _value_bound(hint: tx.Any) -> tx.Any:
-    """Refuse a bound reached through a union member or a `TypeVar` bound.
+def _issubvalue(hint: tx.Any, superhint: tx.Any) -> bool:
+    """Order two hints on a value when at least one of them is a bound.
 
-    Only the immediate argument of `Type` or `Hint` may be a `Super[C]` or
-    a `Between[L, U]`, so one found as a member of a union argument, or as
-    the bound of a `TypeVar` argument, is refused the same way the
-    relation refuses it anywhere else. Any other hint is returned
-    unchanged.
+    On a value, `Super[C]` and `Between[L, U]` each describe the values
+    whose class lies in an interval of classes, and every other hint is
+    read as the interval from the bottom `Never` up to itself, the way a
+    plain class accepts its instances and those of its subclasses. The
+    order is then inclusion of intervals, as [`_issubbounds`][] decides
+    it with `object` at the top. A few shapes are settled first, the way
+    the relation settles them everywhere else. A union below a bound
+    distributes over its members, a `TypeVar` below a bound is read as its
+    upper bound, and a `Literal` below a bound is below it when each of
+    its values is accepted. A bound below an [`Exact`][] hint is refused,
+    as it is inside `Type` and `Hint`. A bound below a union is below it
+    when it is below one member, or when its interval lies inside the
+    interval the whole union bounds, which is what puts
+    `Between[L, Union[A, B]]` below `Union[A, B]`.
     """
-    if is_bare_bound(hint):
-        raise TypeError(bare_bound_message(hint))
-    return hint
+    hint = _known_form(hint)
+    if is_bound(superhint):
+        if is_bound(hint) or is_exact(hint):
+            # A bound or an `Exact` built on a union or a `TypeVar` is one
+            # interval, not the members `get_origin_uw` would see through it.
+            return _issubbounds(hint, superhint, object)
+        if get_origin_uw(hint) in UNION_TYPES and get_args_uw(hint):
+            return all(
+                issubhint(member, superhint) for member in get_args_uw(hint)
+            )
+        if isinstance(hint, tx.TypeVar):
+            return issubhint(_typevar_upper(hint), superhint)
+        if _is_literal(get_origin_uw(hint)):
+            args = get_args_uw(hint)
+            return bool(args) and all(
+                ishintstance(arg, superhint) for arg in args
+            )
+        return _issubbounds(hint, superhint, object)
+    if is_exact(superhint):
+        return False
+    if get_origin_uw(superhint) in UNION_TYPES and get_args_uw(superhint):
+        return any(
+            issubhint(hint, member) for member in get_args_uw(superhint)
+        ) or _issubbounds(hint, superhint, object)
+    if isinstance(superhint, tx.TypeVar):
+        return _issubtypevar(hint, superhint)
+    return _issubbounds(hint, superhint, object)
 
 
 def _issubcallable(hint: tx.Any, superhint: tx.Any) -> bool:
@@ -2942,6 +3593,8 @@ def _issubcallable(hint: tx.Any, superhint: tx.Any) -> bool:
     superhint_uw = unwrap(superhint)
     superargs = safe_get_args(superhint_uw)
     hint_origin = get_origin_uw(hint_uw)
+    _check_argument_bounds(abc.Callable, superargs)
+    _check_argument_bounds(hint_origin, safe_get_args(hint_uw))
     if hint_origin is not abc.Callable:
         # A callable *class* has no parameter list: it can only stand in for a
         # bare `Callable`, exactly as `list` cannot stand in for `List[int]`.

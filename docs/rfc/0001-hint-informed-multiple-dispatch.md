@@ -208,7 +208,13 @@ entry marks a result worth double-checking against intuition.
 | `Type[Between[Dog, Animal]\] ≤ Type[Animal]`, `Type[Between[Dog, Animal]\] ≤ Type[Dog]` | True / **False** | *(0.3.0)* `Between[L, U]` inside `Type` accepts the classes from `L` up to `U`; the classes from `Dog` up to `Animal` all lie below `Animal`, but `Animal` itself is not below `Dog` (§4.2) |
 | `Type[Exact[Dog]\] ≤ Type[Between[Dog, Animal]\]` | True | *(0.3.0)* the single class `Dog` lies between `Dog` and `Animal` (§4.2) |
 | `Between[Animal, Dog]` | `TypeError` | *(0.3.0)* an empty interval is refused when it is written, and the message suggests `Between[Dog, Animal]` (§4.2) |
-| `issubhint(Super[int], int)`, `ishintstance(Dog(), Between[Dog, Animal])` | `TypeError` | *(0.3.0)* a lower bound or an interval is valid only as the immediate argument of `Type` or `Hint`; anywhere else it would bound a value from below, which cannot be checked (§4.2) |
+| `Dog() in Super[Dog]`, `Animal() in Super[Dog]`, `Puppy() in Super[Dog]` | True / True / **False** | *(0.3.0)* on a value, a bound constrains the value's class the way `Type[...]` of the same bound constrains a class passed in, so `v in Super[C]` when `C ≤ type(v)` (§4.2) |
+| `Between[Dog, Animal] ≤ Animal`, `Dog ≤ Super[Dog]`, `Exact[Dog] ≤ Super[Dog]` | True / **False** / True | *(0.3.0)* on a value, each form is an interval of classes read against `type(v)` and ordered by inclusion; a plain `Dog` is the interval from `Never` up to `Dog`, and its value `Puppy()` keeps it out of `Super[Dog]` (§4.2) |
+| `issubhint(Super[Literal[1]\], int)`, `ishintstance(1, Between[Never, List[int]\])` | `TypeError` | *(0.3.0)* on a value, each bound must be a hint that a class can be compared against, and a `Literal` or a parametrised generic is matched against the value itself (§4.2) |
+| `List[int] ≤ List[Super[int]\]`, `List[Integral] ≤ List[Super[int]\]`, `List[bool] ≤ List[Super[int]\]`, `List[Super[Integral]\] ≤ List[Super[int]\]` | True / True / **False** / True | *(0.3.0)* the whole argument of an invariant slot may be a bound, which names a range of arguments; one parametrisation is below another when its range lies inside the other's (§4.3) |
+| `Sequence[Super[int]\]`, `Sequence[Between[Never, int]\] ≡ Sequence[int]` | `TypeError` / True | *(0.3.0)* a covariant slot already accepts every argument below the one written, so a lower bound there would be ignored and is refused, while an upper bound adds nothing and reads as the plain argument (§4.3) |
+| `Dict[str, Between[Never, int]\] ≤ Mapping[str, int]`, `Dict[str, Super[int]\] ≤ Mapping[str, int]` | True / **False** | *(0.3.0)* a range that reaches a covariant slot through the bases is read through its upper end (§4.3) |
+| `W[Any] ≤ Snk[int]`, `W[Any] ≤ Snk[Never]`, `W[T] ≤ Snk[T]`, `W[Any] ≤ Snk[Any]` (`class W(Snk[T])`, `Snk` contravariant) | **False** / True / **False** / **False** | *(0.3.0)* `Any` at `W`'s invariant slot stands for every argument, and it reaches `Snk`'s contravariant slot as that whole range rather than as the point `Any`; the family of every `W[Y]` is therefore below `Snk[X]` only when every `Snk[Y]` is, which never holds for `Snk[Any]` or `Snk[T]`, since both sit at the bottom of the contravariant order (§2.3) |
 | `issubhint(1, int)`, `issubhint(1, 1)`, `issubhint(int, 1)` | `TypeError` | *(0.2.0)* a non-hint on either side is a caller error, reported for the left argument first, the way `issubclass` rejects a non-class; a non-hint no longer reads as `Any` |
 
 The value-level check, `ishintstance`, does not look at the values held
@@ -253,6 +259,15 @@ Type[Between[L, U]\]` when `L ≤ v` and `v ≤ U`, so `Dog` and `Animal` are
 hint is `in Hint[Between[L, U]\]` under the same condition, so `int`,
 `numbers.Integral`, and `numbers.Real` are `in Hint[Between[int, Real]\]`
 while `bool`, `object`, and `Any` are not.
+
+*(0.3.0)* On a value parameter, the same bounds are read against the
+value's own class. A value `v` is `in Super[C]` when `C ≤ type(v)`, and
+`in Between[L, U]` when `L ≤ type(v)` and `type(v) ≤ U`, so `Dog()` and
+`Animal()` are `in Super[Dog]` while `Puppy()` and `1` are not, and `Dog()`
+and `Animal()` are `in Between[Dog, Animal]` while `Puppy()` and
+`object()` are not. This is the rule `Type[...]` applies, with `type(v)` in
+place of the class passed, and it is the rule a plain class already
+follows, since `v in C` when `type(v) ≤ C`.
 
 ### 2.2 Binding and selection (name-aware, normative)
 
@@ -545,6 +560,25 @@ such as `List[int]`, is read positionally against a standard-library origin
 it subclasses that takes the same number of arguments, exactly as two
 standard-library origins have always been compared.
 
+*(0.3.0)* An argument that stands for more than one type keeps doing so
+when it reaches a base. `Any` or an unconstrained TypeVar at an invariant
+slot of the sub-hint stands, on the sub side, for every argument it admits
+(see "`Any` and gradual typing" below), so `W[Any]` for `class W(Snk[T])`
+stands for every `W[Y]`, and therefore for every `Snk[Y]`. When such an
+argument lands as the whole argument of the base's slot, it is handed over
+as the range it stands for, `Between[Never, B]` for a TypeVar bounded by `B`
+and `Between[Never, Any]` otherwise, and read at the base's variance the
+way §4.3 reads a bound: through its upper end at a covariant slot, which is
+what the plain argument already gave, and through its lower end at a
+contravariant one, where the plain argument `Any` would have been the
+bottom of the order instead. A constrained TypeVar at an invariant slot
+stands for each of its constraints in turn, so the sub-hint is below when
+each of those parametrisations is. Handing over the point `Any` instead
+would put `W[Any]` below `Snk[int]` while `W[bool]`, one of the
+parametrisations it stands for, is not, and the order would stop being
+transitive. An open argument nested inside another hint, as in
+`class N(Sequence[List[T]])`, is handed over as written.
+
 Sometimes nothing can be mapped this way:
 
 - a runtime-only standard-library subclass such as `Counter`, which records
@@ -687,6 +721,18 @@ not match `Snk[T]` bounded by `int`, even though a type checker would
 accept it. This is a documented limitation, accepted because it keeps the
 relation itself computable and transitive, rather than trying to answer a
 question that is not decidable over an open hierarchy.
+
+*(0.3.0)* **Bounds on a position.** A `Super[C]` or a `Between[L, U]` written
+as the whole argument of an invariant slot names a range of arguments, and
+`G[A] ⊑ G[B]` holds when the range of `A` lies inside the range of `B`
+(§4.3). A plain argument is a range of one point, and a TypeVar bounded by
+`B` is the range `Between[Never, B]`, which is exactly the super-side rule
+above restated; the sub-side rule is the same range read from the other
+side. At a covariant or contravariant slot the declared variance already
+widens a plain argument, so a range there means its upper or its lower end.
+A bound that says only that is accepted and read as the plain argument, and
+one whose other end would be ignored is refused, which is how Kotlin treats
+a use-site projection on a parameter that declares its variance.
 
 A generic that mixes variance across its positions can leave two of its
 parametrisations incomparable. `Generator[Y, S, R]` is covariant in what
@@ -1178,39 +1224,53 @@ that were degenerate before: `type[Any]` now accepts every class,
 `type[Union[…]\]` accepts a class in the union, and `type[T]` for a free
 TypeVar accepts every class.
 
-### 4.2 Bounds: `Super[C]` and `Between[L, U]` inside `Type` and `Hint`
+### 4.2 Bounds: `Super[C]` and `Between[L, U]`
 
-*(0.3.0)* An ordinary argument to `Type[…]` or `Hint[…]` is an upper bound:
-`Type[Animal]` accepts `Animal` and the classes below it. `Super[C]` supplies
-the missing lower bound. `Type[Super[Dog]\]` accepts the class `Dog` and
-every class that `Dog` derives from, and `Hint[Super[int]\]` accepts the
-hint `int` and every hint that `int` is a sub-hint of. It is spelled
+*(0.3.0)* A hint on a value parameter constrains the value's own class
+exactly as `Type[hint]` constrains a class passed in. A plain `C` on a
+value accepts `v` when `type(v) ≤ C`, which is `Type[C]` asked of
+`type(v)`, and `Exact[C]` on a value is `Type[Exact[C]\]` asked of
+`type(v)`. `Super[C]` and `Between[L, U]` complete that family, both on a
+value and inside `Type` or `Hint`.
+
+An ordinary hint is an upper bound: `Animal` accepts an instance of
+`Animal` or of a class below it, and `Type[Animal]` accepts `Animal` and
+the classes below it. `Super[C]` supplies the missing lower bound.
+`Super[Dog]` accepts a value whose class is `Dog` or a class that `Dog`
+derives from, `Type[Super[Dog]\]` accepts the class `Dog` and every class
+that `Dog` derives from, and `Hint[Super[int]\]` accepts the hint `int`
+and every hint that `int` is a sub-hint of. It is spelled
 `bagof.dispatchers.Super[C]` and implemented, like `Exact`, as
 `tx.Annotated[C, SUPER]` behind a private sentinel. `SuperType[C]` and
 `SuperHint[X]` are aliases that expand to exactly `Type[Super[C]\]` and
 `Hint[Super[X]\]`.
 
-`Between[L, U]` supplies both bounds at once. `Type[Between[Dog, Animal]\]`
-accepts the classes from `Dog` up to `Animal`, both included, and
-`Hint[Between[int, Real]\]` accepts the hints from `int` up to
-`numbers.Real`. It is spelled `bagof.dispatchers.Between[L, U]` and
+`Between[L, U]` supplies both bounds at once. `Between[Dog, Animal]`
+accepts a value whose class lies between `Dog` and `Animal`, both
+included, `Type[Between[Dog, Animal]\]` accepts those classes themselves,
+and `Hint[Between[int, Real]\]` accepts the hints between `int` and
+`numbers.Real`, both included. It is spelled `bagof.dispatchers.Between[L, U]` and
 implemented as `tx.Annotated[U, LOWER(L)]`, the upper bound annotated with
 a private marker that carries the lower one. There are no `BetweenType` or
 `BetweenHint` aliases, since `Type[Between[Dog, Animal]\]` already reads
 naturally.
 
-The relation reads the argument of a `Type` or `Hint` form as a closed
-interval of the classes, or hints, it accepts. A plain argument `X` is the
-interval from the bottom `Never` up to `X`, `Super[C]` is the interval from
-`C` up to the top of the form, which is `object` inside `Type` and `Any`
-inside `Hint`, and `Between[L, U]` is the interval from `L` up to `U`.
-`Type[X]` is therefore the same as `Type[Between[Never, X]\]`, and
-`Type[Super[C]\]` the same as `Type[Between[C, object]\]`. `Exact[C]` stays
-outside this family: it names the one hint `C` structurally, which is
-narrower than `Between[C, C]`, the interval of every hint equivalent to
-`C`. One form is below another when its interval lies
-inside the other's, meaning that its lower bound is higher and its upper
-bound is lower. The rules that follow from that reading are these:
+The relation reads each of these forms as a closed interval of the
+classes, or hints, it accepts. A plain `X` is the interval from the bottom
+`Never` up to `X`, `Super[C]` is the interval from `C` up to the top, which
+is `object` on a value and inside `Type`, and `Any` inside `Hint`, and
+`Between[L, U]` is the interval from `L` up to `U`. `Type[X]` is therefore
+the same as `Type[Between[Never, X]\]`, and `Type[Super[C]\]` the same as
+`Type[Between[C, object]\]`; on a value, `X` is the same as
+`Between[Never, X]` and `Super[C]` the same as `Between[C, object]`.
+`Exact[C]` is the point below `Between[C, C]`: it names the one hint `C`
+structurally, while `Between[C, C]` is the interval of every hint
+equivalent to `C`. On a value that difference is between a class
+identical to `C` and a class that `register` or `__subclasshook__` has
+made mutually a subclass of `C`. One form is below another when its
+interval lies inside the other's, meaning that its lower bound is higher
+and its upper bound is lower. The rules that follow from that reading are
+these:
 
 | Query | Result | Why |
 |---|---|---|
@@ -1221,51 +1281,85 @@ bound is lower. The rules that follow from that reading are these:
 | `Type[Super[C]\] ≤ Type[Exact[X]\]` | False | conservative: an interval above `C` is never taken to be a single class |
 | `Type[Between[L1, U1]\] ≤ Type[Between[L2, U2]\]` | iff `L2 ≤ L1` and `U1 ≤ U2` | the first interval lies inside the second; every row above is a special case of this one |
 
-`Hint` follows the same table with `Any` in place of `object`. Every rule is
-an inclusion of intervals, so the relation stays a preorder, and it stays
-sound: when `A ≤ B`, every class or hint in `A` is also in `B`. Values are
-matched against the same interval (§2.1), which keeps the two levels in
-agreement.
+`Hint` follows the same table with `Any` in place of `object`. On a value
+parameter the same table holds with `type(v)` in place of the class passed
+and `object` as the top, so `Between[Dog, Animal] < Animal`, `Exact[Dog]`
+is below every interval that contains `Dog`, and `Dog` and `Super[Dog]`
+are incomparable. A union below a bound distributes over its members, a
+`TypeVar` is read as its upper bound, and a `Literal` is below a bound
+when each of its values is accepted, so `Literal[1] ≤ Super[int]` while
+`Literal[True]` is not. Every rule is an inclusion of intervals, so the
+relation stays a preorder, and it stays sound: when `A ≤ B`, every class,
+hint, or value in `A` is also in `B`. Values are matched against the same
+interval (§2.1), which keeps the two levels in agreement.
+
+On a value, each bound must be a hint that a class can be compared
+against: for every class `K`, `K ≤ E` must hold exactly when an instance
+of `K` is `in E`. A class, an ABC, `object`, `type` (or a bare `Type`,
+which is the same hint), `NoneType`, a `NewType`, a bare alias such as
+`List`, a protocol with methods only, `Never`, `Any`, a union of such
+hints, and a `TypeVar` bounded by one all qualify. A `Literal`, a
+`TypedDict`, a protocol with data members, a parametrised generic,
+`Tuple[...]`, `Callable[[...], R]`, `Type[C]`, and `Hint` in any spelling
+do not, because each of them reads the value itself or
+names no class, so `Between[Never, E]` would accept nothing while `E`
+accepts values. Such a bound on a value is refused wherever it is read,
+naming the offending bound; `Between[Type[A], Type[B]\]` is refused with a
+message naming `Type[Between[A, B]\]`. Inside `Type` or `Hint`, where the
+value passed is itself a class or a hint, any hint can be a bound, so the
+same `Between[Literal[1], int]` that is refused on a value is legal inside
+`Hint[...]`. When a hint is passed as a value to a `Hint[X]` parameter,
+only a bound at the top level of that hint is checked on arrival: a bound
+nested inside it, as in `Optional[Super[Literal[1]]\]`, is refused only
+when the comparison with `X` reaches it, and a comparison with `Any` never
+does.
 
 An interval must not be empty. `Between[L, U]` requires `L ≤ U`, and an
 empty one is refused when it is written, with a message that suggests
 `Between[U, L]` when that spelling is not empty. `Between[Any, U]` is
 refused with a message pointing to `Between[Never, U]`, the interval with
-no lower bound, which inside `Type` or `Hint` means the same as plain `U`.
-An upper bound written as a forward reference is checked once it resolves,
-when the method is registered or when its signature is first used, and the
-refusal then names the parameter. A lower bound cannot itself be a quoted
-forward reference, because it is carried as `Annotated` metadata, which
+no lower bound, which means the same as plain `U`. An upper bound written
+as a forward reference is checked once it resolves, when the method is
+registered or when its signature is first used, and the refusal then
+names the parameter. A lower bound cannot itself be a quoted forward
+reference, because it is carried as `Annotated` metadata, which
 `get_type_hints` never resolves; quoting the whole annotation works as
 usual. The degenerate intervals are legal: `Between[C, C]` holds the hints
 equivalent to `C`, and `Between[Never, Never]`, `Between[Never, Any]`, and
 `Between[Any, Any]` mean what their bounds say.
 
-A lower bound is valid only as the immediate argument of `Type` or `Hint`.
-On an ordinary value parameter it would bound a value from below, but a
-value has one concrete class, and code written for the instances of a class
-must also accept the instances of its subclasses, so a lower bound on a
-value cannot be checked. Registration therefore refuses `Super` and
-`Between` anywhere else, whether on their own, inside a union or a
-container, or as a `TypeVar`'s bound, with an error naming the parameter
-and suggesting `Type[Super[C]\]` or `Hint[Super[C]\]`, or the matching
-`Between` spelling. The relation refuses the same hints with the same
-message, so `issubhint`, `ishintstance`, and `resolve_hint` never read
-`Super[C]` silently as `C`, or `Between[L, U]` as `U`. An unsubscripted
-`Super`, `SuperType`, `SuperHint`, or `Between` is refused too, since an
-unbounded form would only repeat what `type` or `Hint` already says.
-`Super[Type[C]\]` is normalised to `Type[Super[C]\]` and
-`Super[Super[C]\]` collapses to `Super[C]`, while `Between` has no outer
-spelling, so `Between[Type[A], Type[B]\]` is refused as a misplaced bound.
-`Super` and `Exact` cannot be combined in either order, because an exact
-type leaves nothing above it to bound, and neither can be combined with
-`Between`, nor can `Between` take one of them as a bound.
+A bound stands in four kinds of position. On a value parameter it may be
+the whole hint, a member of the parameter's union, as in
+`Optional[Super[Dog]\]`, or the bound of a `TypeVar` used there. Inside
+`Type` or `Hint` it must be the whole argument: a union member or a
+`TypeVar` bound inside the argument is refused, because the argument is
+compared as a class or a hint, which would read the bound as if it stood
+on a value. As the type argument of a generic it must likewise be the
+whole argument of a slot, where it names a range of arguments, and the
+variance of the slot decides whether that range means anything (§4.3).
+Everywhere else it is refused: as a constraint of a `TypeVar`, which is
+solved to the one constraint an argument's class is below and so would
+never apply, and as an element of a `Tuple` or in the signature of a
+`Callable`, whose variance the form already fixes. These positions nest,
+so a bound inside a generic inside a `Callable` parameter, as in
+`Callable[[List[Super[int]\]], None]`, stands at a slot of `List` and is
+legal. Registration refuses each misplaced bound with an error naming the
+parameter and the spelling to write instead, and the relation refuses the
+same hints with the same messages. An unsubscripted `Super`, `SuperType`,
+`SuperHint`, or `Between` is refused too, since an unbounded form names
+nothing. `Super[Type[C]\]` is normalised to `Type[Super[C]\]` and
+`Super[Super[C]\]` collapses to `Super[C]`. `Exact`, `Super`, and
+`Between` cannot be nested inside one another in any order, even through a
+union or a `TypeVar`, because an exact type leaves nothing above it to
+bound and each form already describes the whole hint at its position.
 
-The degenerate bounds need no special case. `Type[Super[Never]\]` accepts
-every class, like `type`. `Type[Super[object]\]` accepts only `object`.
-`Type[Super[Any]\]` accepts no class at all, because no class is above
-`Any`, while `Hint[Super[Any]\]` accepts the tops: `Any`, a free `TypeVar`,
-and an opaque form.
+The degenerate bounds need no special case. On a value, `Super[Never]`
+accepts exactly what `object` accepts, `Super[object]` accepts only an
+instance of `object` itself, and `Super[Any]` accepts no value, because no
+class is above `Any`. In the same way `Type[Super[Never]\]` accepts every
+class, like `type`, `Type[Super[object]\]` accepts only `object`, and
+`Type[Super[Any]\]` accepts no class at all, while `Hint[Super[Any]\]`
+accepts the tops: `Any`, a free `TypeVar`, and an opaque form.
 
 To a type checker, `Super[C]` is `Union[C, Any]`. `Exact[C]` can present as
 plain `C`, but `Type[Super[Dog]\]` read as `Type[Dog]` would reject a call
@@ -1278,15 +1372,169 @@ read. `Between[L, U]` is `Union[L, U, Any]` for the same reason. Checked
 with mypy 1.19.1 and pyright 1.1.408, neither rejects a call with `Dog`,
 `Animal`, `object`, or `Puppy` on a `Type[Between[Dog, Animal]\]`
 parameter, nor one with `Animal`, `object`, `Dog`, `Puppy`, or `int` on a
-`Type[Super[Dog]\]` parameter: both over-accept, and neither rejects a call
-that dispatch accepts.
+`Type[Super[Dog]\]` parameter, nor any call on a value parameter
+annotated `Super[Dog]`, `Between[Dog, Animal]`, or
+`Optional[Super[Dog]\]`: both over-accept, and neither rejects a call that
+dispatch accepts. Inside the function body the same reading has a cost: a
+checker reads `x: Super[Dog]` as `Union[Dog, Any]`, and so checks
+attribute access against `Dog` although the runtime may pass an
+`Animal()`. `Between[Dog, Animal]` reads as `Union[Dog, Animal, Any]`,
+whose shared attributes are those of `Animal`, which is right. When the
+difference matters, a `Super[C]` value is best treated as `object` in the
+body.
 
-Three things are deliberately left out. There is no option to flip the
+Two things are deliberately left out. There is no option to flip the
 direction in which `Type` orders its argument; a lower bound is written
-where it is meant. There is no value-level `Super`, for the reason given
-above. And a contravariant `TypeVar` is read exactly as before (§2.3):
-`Super` bounds the argument of `Type` or `Hint`, and is not a spelling of a
-generic's contravariant parameter.
+where it is meant. And a contravariant `TypeVar` is read exactly as before
+(§2.3): `Super` bounds a hint, and is not a spelling of a generic's
+contravariant parameter.
+
+Bounding a value's class from below has little precedent. Julia can write
+`f(x::T) where {T>:Dog}`, but its concrete types are final, so
+`typeof(x) >: Dog` collapses to `typeof(x) == Dog` for a concrete `Dog`,
+and to nothing for an abstract one. Java's `? super L` and Kotlin's `in`
+exist only on the type arguments of a generic, never on a value, and C++
+and Rust have no equivalent. Python's classes are open, which is what
+gives an interval of a value's class real content. `Exact`, `Super`, and
+`Between` on a value are one family of exact-class-interval tests, with
+`Exact` the point and the other two the half-open and closed intervals,
+and each is a deliberate opt-out of substitutability: `Exact[C]` excludes
+the instances of subclasses of `C`, and `Super[C]` and `Between[L, U]`
+exclude the instances of classes below `L`. The type arguments of a
+generic are where bounds do have a long history, which §4.3 compares.
+
+### 4.3 Bounds as type arguments
+
+*(0.3.0)* An argument at an invariant slot of a generic means exactly that
+type: `List[int]` accepts a list declared to hold `int`, and neither one
+declared to hold `bool` nor one declared to hold `object`. A bound written
+as the whole argument of such a slot widens it into a range of arguments.
+`List[Super[int]\]` stands for every `List[Y]` with `int ≤ Y`, so it
+accepts a list declared to hold `int`, `numbers.Integral`, or `object`, and
+refuses one declared to hold `bool` or `str`.
+`Box[Between[Never, Integral]\]` stands for every `Box[Y]` with
+`Y ≤ Integral`. A value that declares nothing, such as a plain `[1]`,
+matches every parametrisation, as it always has (§2.1), and a value that
+declares a bounded parametrisation, such as `Box[Super[int]\]()`, is read
+as the range it names.
+
+Each bound is an anonymous range of its own. Two bounds in one signature
+are independent of each other, and a bound nested inside an argument does
+not widen the slot around it: `List[List[Super[int]\]\]` has the single
+argument `List[Super[int]\]` at its outer, invariant slot, so it accepts a
+list declared to hold `List[Super[int]\]` and not one declared to hold
+`List[int]`. The range of lists whose items are below `List[Super[int]\]`
+is written `List[Between[Never, List[Super[int]\]\]\]`. Every end of a
+bound at a slot may be any hint, because a slot compares hint with hint,
+so the `Between[Literal[1], int]` that is refused on a value (§4.2) is
+legal in `List[...]`.
+
+The order is inclusion of ranges, as in §4.2, with `Any` as the top. At an
+invariant slot a plain `X` is the single point from `X` to `X`,
+`Super[C]` runs from `C` to `Any`, `Between[L, U]` from `L` to `U`, `Any`
+and a free TypeVar from `Never` to `Any`, and a TypeVar bounded by `B` from
+`Never` to `B`, which is the reading §2.3 already gives it. A constrained
+TypeVar stands for one of its constraints, each a point. `Exact[C]` is an
+ordinary point there, because the exact hint `C` is a narrower argument
+than `C`: `List[Exact[int]\]` is below `List[Between[Never, int]\]` and
+not below `List[int]` or `List[Super[int]\]`. The rules that follow are
+these, with `TB` bounded by `int`:
+
+| Query | Result | Why |
+|---|---|---|
+| `List[int] ≤ List[Super[int]\]`, `List[object] ≤ List[Super[int]\]` | True / True | the one argument lies in the range above `int` |
+| `List[bool] ≤ List[Super[int]\]`, `List[Any] ≤ List[Super[int]\]` | **False** / **False** | `bool` is below `int`, and `Any` on the sub side stands for every argument |
+| `List[Super[Integral]\] ≤ List[Super[int]\]` | True | a higher lower end leaves a smaller range |
+| `List[Super[int]\] ≤ List[int]`, `List[Super[int]\] ≤ List[Any]` | **False** / True | a range is below a point only when it is that point, and below `Any` always |
+| `List[TB] ≡ List[Between[Never, int]\]`, `List[Between[int, int]\] ≡ List[int]`, `List[Between[Never, Any]\] ≡ List[Any]` | True | the same range, written three ways each |
+| `List[Between[int, Real]\] ≤ List[Super[int]\]`, `List[Between[Never, int]\] ≤ List[Super[int]\]` | True / **False** | the first range lies above `int`, the second reaches below it |
+
+A covariant or contravariant slot already widens its argument, so a range
+there collapses to one of its ends. At a covariant slot every `G[Y]` with
+`Y ≤ U` is below `G[U]`, so a range means its upper end, and at a
+contravariant slot every `G[Y]` with `Y ≥ L` is below `G[L]`, so a range
+means its lower end. A bound whose other end is trivial says exactly that
+and is accepted as redundant, while a bound whose other end would be
+silently dropped is refused as conflicting, with a message naming the plain
+spelling:
+
+| Slot | `Between[Never, U]` | `Super[L]`, `Between[L, Any]` | `Between[L, U]`, both ends non-trivial |
+|---|---|---|---|
+| invariant: `list`, both `dict` slots, `set`, `MutableSequence`, a `Mapping` key, an unflagged `T`, a [PEP 585] subclass | arguments at or below `U` | arguments at or above `L` | arguments from `L` up to `U` |
+| covariant: `Sequence`, `frozenset`, `Iterable`, a `Mapping` value, a `T_co` | redundant: `G[U]` | refused: would accept every `G` | refused: write `G[U]` |
+| contravariant: a `T_contra`, the send slot of `Generator` | refused: would accept every `G` | redundant: `G[L]` | refused: write `G[L]` |
+
+A bound that a user generic's invariant slot accepts can reach a variant
+slot of a base, as `Row[Super[int]\]` does for `class Row(Sequence[T])`. It
+was written where it can be read, so it is not refused there; it stands for
+every `Row[Y]` in its range, and so reaches `Sequence` through that range's
+upper end, which makes `Row[Super[int]\]` below `Sequence[Any]` but not
+below `Sequence[int]`, and `Dict[str, Between[Never, int]\]` below
+`Mapping[str, int]`. A class that writes a bound directly into a variant
+base, such as `class Row(Sequence[Super[int]\])`, is refused whenever it is
+compared against a parametrisation of that base, with the message the hint
+`Sequence[Super[int]\]` would get, prefixed with the class. A bound that
+reaches a base only as part of a union, or at a slot whose variance cannot
+be read, is refused as well.
+
+A bound must be the whole argument of its slot. A union member or a TypeVar
+bound inside a slot, as in `List[Union[Super[int], str]\]`, is refused with
+a message suggesting `Union[List[Super[int]\], List[str]\]`, and a bound is
+refused as an argument of a generic whose variance cannot be read, such as
+one with a `ParamSpec` or a `TypeVarTuple` parameter. `Tuple` elements and
+`Callable` parameters and returns keep refusing a bound (§4.2), since the
+form already fixes their variance and a bound could at best repeat it.
+Registration, the relation, and `ishintstance` refuse the same hints with
+the same messages, so `ishintstance([], Sequence[Super[int]\])` raises
+although a plain list declares nothing.
+
+Specificity stays the sub-hint order, with no separate heuristic and no
+option to change it; `priority` settles what the order leaves tied. Two
+ranges that overlap without either lying inside the other, such as
+`List[Between[Never, Integral]\]` and `List[Super[int]\]`, which share the
+parametrisations `List[int]` and `List[Integral]`, make their methods
+ambiguous, and registering both warns (§5).
+
+To a type checker the aliases of §4.2 still apply, so `List[Super[int]\]`
+reads as `List[Union[int, Any]\]`. Checked with mypy 1.19.1 and pyright
+1.1.408, with `class Dog(Animal)` and `class Puppy(Dog)`: pyright reports
+no error for any call to a parameter annotated `List[Super[Dog]\]`,
+`List[Between[Never, Animal]\]`, `List[Between[Puppy, Animal]\]`, or
+`Dict[str, Super[Dog]\]`, so it never rejects a call that dispatch
+accepts, and it over-accepts. mypy is exact for a lower bound, accepting
+`list[Dog]`, `list[Animal]`, `list[object]`, and `list[Any]` for
+`List[Super[Dog]\]` and rejecting `list[Puppy]` and `list[str]`, and it is
+exact for `Dict[str, Super[Dog]\]`. For an upper bound it is not: mypy
+accepts `list[X]` against `list[Union[A, B, Any]\]` only when `A ≤ X` and
+`B ≤ X`, reading every member as a lower bound, so it rejects `list[Puppy]`
+and `list[Dog]` for `List[Between[Never, Animal]\]` and for
+`List[Between[Puppy, Animal]\]`, calls that dispatch accepts. No generic
+alias spelling avoids this, and a bounded TypeVar is the spelling of an
+upper bound that both checkers check natively: `List[A]` with
+`A = TypeVar("A", bound=Animal)` is checked exactly by both, and dispatch
+reads it as `List[Between[Never, Animal]\]`. `Super` and `Between` serve
+for lower and two-sided bounds, and mypy cannot check the upper end of a
+two-sided bound at an invariant slot. Where mypy's rejection gets in the
+way, the function can be annotated `List[Any]` and registered with
+`Function.register((List[Between[Puppy, Animal]\],))`, or the call can
+carry `# type: ignore[arg-type]`.
+
+Bounds on type arguments are well established elsewhere. Julia bounds a
+type parameter from above and below, as in `Vector{>:Int}` or
+`T where Int<:T<:Real`, and its parameters are all invariant, so every slot
+takes a bound; its method specificity, though, comes from a separate
+`morespecific` heuristic with known non-transitive cases, where here it is
+the sub-hint order, whose preorder argument is the whole story. Java's
+wildcards `? super L` and `? extends U` exist because all its generics are
+invariant, and never combine both ends. Kotlin's use-site projections are
+the closest match, because Kotlin, like Python, also has declaration-site
+variance: an `in` projection on an `out` parameter is an error, as a
+conflicting bound is refused here, and an `out` projection on an `out`
+parameter is a redundant-projection warning, where here a redundant bound
+is accepted silently, so that code that builds hints generically does not
+trip over it. Nested bounds behave as in Java and Julia, where
+`List<List<? super Integer>>` and `Vector{Vector{>:Int}}` do not accept a
+list of lists of integers either.
 
 ---
 
@@ -1370,23 +1618,49 @@ specific. Two hints ordered against each other always share the narrower
 one's values. A lower bound adds pairs that share values without being
 ordered: `Type[Animal]` and `Type[Super[Dog]\]` are incomparable, yet both
 accept `Dog` and `Animal`, and `Type[Dog]` and
-`Type[Between[Dog, Animal]\]` both accept `Dog`. Such a pair is recognised
-by reading each argument as an interval (§4.2) and asking whether some
-candidate lies in both intervals. The candidates are the ends of the two
-intervals and, inside `Type`, every class on the MRO of a lower end that is
-a class, because a class shared by both intervals lies above both lower
-ends. That is how `Type[Between[A, C]\]` and `Type[Between[B, D]\]` are
+`Type[Between[Dog, Animal]\]` both accept `Dog`. On a value the same
+holds for `Animal` and `Super[Dog]`, which share a `Dog()` and an
+`Animal()`, and for `Dog` and `Between[Dog, Animal]`, which share a
+`Dog()`. Such a pair is recognised by reading each hint, or each `Type` or
+`Hint` argument, as an interval (§4.2) and asking whether some candidate
+lies in both intervals. The candidates are the ends of the two intervals
+and, on a value or inside `Type`, every class on the MRO of a lower end
+that is a class, because a class shared by both intervals lies above both
+lower ends. That is how `Type[Between[A, C]\]` and `Type[Between[B, D]\]` are
 found to share `X`, for a class `X(C, D)` with subclasses `A` and `B`,
-although no end of either interval lies in the other. Inside `Type`, a
-candidate must also be a class, since only a class can be passed there. The
+although no end of either interval lies in the other. There a candidate
+must also be a class, since the intervals hold classes. The
 test is sufficient, so a reported overlap always has a real call behind it,
 and for nominal class hierarchies, in which no class is made a subclass
 through `register` or `__subclasshook__`, it is also complete when every
 bound is a class. It is only ever consulted for a pair that involves a lower
 bound, which leaves every other warning as it was. Registering
-`Type[Animal]` and `Type[Super[Dog]\]` side by side therefore warns. A method for `Type[Exact[Dog]\]` settles the call
-with `Dog`, but not the one with `Animal`, while a `priority` on either
-method settles both.
+`Type[Animal]` and `Type[Super[Dog]\]` side by side therefore warns, and so
+does registering `Animal` and `Super[Dog]`. A method for
+`Type[Exact[Dog]\]` settles the call with `Dog`, but not the one with
+`Animal`, while a `priority` on either method settles both; on a value,
+`Exact[Dog]` settles the call with a `Dog()` in the same way.
+
+*(0.3.0)* A bound in a type argument (§4.3) adds pairs of the same kind.
+`List[Between[Never, Integral]\]` and `List[Super[int]\]` are unordered,
+yet a list declared to hold `int` belongs to both. Such a pair is
+recognised by looking for a parametrisation below both hints: one is built
+on the more derived of the two origins, with each argument replaced in turn
+by an end of the range it names or, for a shared origin, by the argument
+the other hint gives there, and each candidate is checked against both
+hints by the relation itself. The test is therefore sufficient, so a
+reported overlap always has a real value behind it, and it is only
+consulted when a bound stands among the arguments, which keeps
+`List[int]` and `List[str]` silent as before.
+
+The MRO tie-break (§2.2) does not apply to a bound. A bound names a range
+of classes rather than one position in the value's MRO, just as
+`Type[C]` does, so `mro_index` gives no refinement for it, and a call with
+a `Dog()` stays ambiguous between `Animal` and `Super[Dog]` exactly as a
+call with `Dog` is between `Type[Animal]` and `Type[Super[Dog]\]`. When such
+a call raises, the suggested fix spells the argument `Exact[Dog]`, because
+the exact class is below every competitor that accepts the value, a bound
+included, while the plain class `Dog` is not below `Super[Dog]`.
 
 ---
 
@@ -1736,11 +2010,13 @@ special-form detection described in §11, `TypedDict` markers, and the
 `core/_exact.py` holds `Exact`, its `EXACT` sentinel, and the helpers that
 read it; these are also re-exported at the top level. *(0.3.0)*
 `core/_super.py` holds `Super`, `SuperType`, `SuperHint`, their `SUPER`
-sentinel, and the message that refuses a lower bound outside those forms;
-the three public names are re-exported at the top level. *(0.3.0)*
+sentinel, and the messages that refuse the unbounded forms; the three
+public names are re-exported at the top level. *(0.3.0)*
 `core/_bounds.py` holds `Between` and its `LOWER` marker, the interval
-reading of a `Type` or `Hint` argument (§4.2), and the refusals shared by
-every bound written where it cannot stand, including the empty-interval
+reading of a bound on a value or of a `Type` or `Hint` argument (§4.2),
+the readers of a bound written as a type argument and of its slot's
+variance (§4.3), and the position, endpoint, and variance refusals shared
+by every bound written where it cannot stand, including the empty-interval
 message; `Between` is re-exported at the top level. `core/_introspect.py` holds
 the general-purpose introspection helpers (`safe_get_origin`/
 `safe_get_args`, `get_origin_uw`/`get_args_uw`, `unwrap`, `normalise_hint`,
@@ -1908,30 +2184,59 @@ Each case below is covered by a dedicated test.
   merely something equivalent to it, so a free `TypeVar` does not match
   `Hint[Exact[Any]\]`. `Hint[X]` is value-dependent, and the outer form
   `Exact[Hint[X]\]` normalises to `Hint[Exact[X]\]`.
-- *(0.3.0)* `Super[C]` is a lower bound valid only as the immediate
-  argument of `Type` or `Hint` (§4.2). `Type[Super[Any]\]` accepts no
-  class, `Type[Super[object]\]` accepts only `object`, and
+- *(0.3.0)* `Super[C]` is a lower bound (§4.2). On a value parameter it
+  accepts a value whose class is `C` or above it, and inside `Type` or
+  `Hint` the class or hint `C` and everything above it. On a value it may
+  also be a member of the parameter's union or the bound of a `TypeVar`
+  used there, and each bound must be a hint a class can be compared
+  against; inside `Type` or `Hint`, and as the type argument of a
+  generic (§4.3), it must be the whole argument, and any hint can be its
+  bound. `Super[Never]` on a value is equivalent to
+  `object`, `Super[object]` accepts only an instance of `object` itself,
+  and `Super[Any]` accepts no value. In the same way `Type[Super[Any]\]`
+  accepts no class, `Type[Super[object]\]` accepts only `object`, and
   `Type[Super[Never]\]` accepts every class; `Hint[Super[Any]\]` accepts
   only the tops. `Super[Super[C]\]` collapses to `Super[C]`, and
   `Super[Type[C]\]` normalises to `Type[Super[C]\]`. `Super[Exact[C]\]`
-  and `Exact[Super[C]\]` are refused when they are written. A bare
-  `Super[C]`, and an unsubscripted `Super`, `SuperType`, or `SuperHint`,
-  are refused at registration with the parameter named, and by the
-  relation with the same message.
-- *(0.3.0)* `Between[L, U]` is valid only as the immediate argument of
-  `Type` or `Hint` (§4.2). `Between[C, C]` is legal and holds the hints
-  equivalent to `C`, which is wider than `Exact[C]`, so
-  `Type[Exact[C]\] ≤ Type[Between[C, C]\]` but not the reverse. The
-  degenerate `Between[Never, Never]`, `Between[Never, Any]`, and
-  `Between[Any, Any]` are legal, while `Between[Any, U]` for any other `U`
-  is refused as empty, with a message pointing to `Between[Never, U]`.
-  `Exact`, `Super`, and `Between` cannot be nested inside one another in
-  any order. There is no outer form: `Between[Type[A], Type[B]\]` is not
-  rewritten and is refused as a misplaced bound.
+  and `Exact[Super[C]\]` are refused when they are written. An
+  unsubscripted `Super`, `SuperType`, or `SuperHint`, and a bound in a
+  position where it cannot stand, are refused at registration with the
+  parameter named, and by the relation with the same message.
+- *(0.3.0)* `Between[L, U]` stands in the same positions as `Super[C]`
+  (§4.2). `Between[C, C]` is legal and holds the hints equivalent to `C`,
+  which is wider than `Exact[C]`, so `Exact[C] ≤ Between[C, C]` and
+  `Type[Exact[C]\] ≤ Type[Between[C, C]\]` but not the reverse; on a
+  value, `Between[C, C]` accepts a value whose class is equivalent to `C`,
+  not only one whose class is `C` itself. The degenerate
+  `Between[Never, Never]`, `Between[Never, Any]`, and `Between[Any, Any]`
+  are legal, while `Between[Any, U]` for any other `U` is refused as
+  empty, with a message pointing to `Between[Never, U]`. `Exact`, `Super`,
+  and `Between` cannot be nested inside one another in any order, even
+  through a union or a `TypeVar`. There is no outer form:
+  `Between[Type[A], Type[B]\]` is not rewritten, and on a value it is
+  refused with a message naming `Type[Between[A, B]\]`.
+- *(0.3.0)* A bound may be the whole type argument of an invariant slot,
+  where it names a range of arguments (§4.3): `List[Super[int]\]` accepts a
+  list declared to hold `int` or a type above it. At a covariant slot,
+  `Sequence[Between[Never, C]\]` is the same as `Sequence[C]` and
+  `Sequence[Super[C]\]` is refused; at a contravariant slot the reverse
+  holds. A bound in a union or as a `TypeVar` bound inside a slot, a bound
+  in a generic whose variance cannot be read, and a bound in a `Tuple` or
+  `Callable` are refused, while one nested inside a generic there is
+  legal. A bound does not reach through the slot around it, so
+  `List[List[Super[C]\]\]` is a single point at its outer slot. A value
+  declaring `Box[Super[int]\]` is read as that range, and
+  `ishintstance([], Sequence[Super[int]\])` raises, since the hint is
+  refused.
+- *(0.3.0)* `Any` or an unconstrained TypeVar at an invariant slot reaches
+  a base's slot as the range it stands for, and a constrained TypeVar as
+  each of its constraints, so `W[Any] ≤ Snk[int]` is False for
+  `class W(Snk[T])` with `Snk` contravariant (§2.3).
 - *(0.3.0)* `Type[C]` and `Type[Super[D]\]` with `D ≤ C` are incomparable
   yet share the classes between `D` and `C`, so registering both warns, and
   a call with one of those classes is ambiguous unless `priority` or an
-  `Exact` method settles it (§5).
+  `Exact` method settles it (§5). The same holds on a value for `C` and
+  `Super[D]`, and for the values whose class lies between `D` and `C`.
 - *(0.2.0)* `issubhint` and `ishintstance` reject a non-hint the way
   `issubclass` and `isinstance` do: a non-hint on either side of
   `issubhint`, or as the hint argument of `ishintstance`, raises

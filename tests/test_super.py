@@ -1,4 +1,4 @@
-"""Tests for `Super[C]`, a lower bound inside `Type[...]` and `Hint[...]`."""
+"""Tests for `Super[C]`, a lower bound on a value, a class or a hint."""
 
 # stdlib
 import itertools
@@ -187,69 +187,86 @@ def test_bounds_of_reads_each_argument_as_an_interval() -> None:
     assert bounds_of(int, object) == (tx.Never, int)
 
 
-# --- a lower bound outside Type or Hint is refused ---------------------
+# --- where a lower bound can stand ------------------------------------
 
 
 def test_is_bare_super() -> None:
-    for hint in (Super, SuperType, SuperHint, Super[int]):
+    for hint in (Super, SuperType, SuperHint):
         assert is_bare_super(hint) is True
-    for hint in (int, tx.Type[Super[int]], Hint[Super[int]], Exact[int]):
+    for hint in (
+        int,
+        Super[int],
+        tx.Type[Super[int]],
+        Hint[Super[int]],
+        Exact[int],
+    ):
         assert is_bare_super(hint) is False
 
 
 def test_bare_super_messages() -> None:
-    assert bare_super_message(Super[int]).startswith(
-        "Super[int] is only valid inside Type[...] or Hint[...]"
+    assert bare_super_message(Super) == (
+        "Super needs a bound: write Super[C] to accept a value whose class "
+        "is C or a class above it, Type[Super[C]] to accept the class C or "
+        "any class above it, or Hint[Super[C]] to accept the hint C or any "
+        "hint above it."
     )
-    assert "Type[Super[int]]" in bare_super_message(Super[int])
-    assert "Hint[Super[int]]" in bare_super_message(Super[int])
-    assert "List[int]" in bare_super_message(Super[tx.List[int]])
-    assert bare_super_message(Super).startswith("Super needs a bound")
     assert bare_super_message(SuperType).startswith("SuperType needs a bound")
     assert bare_super_message(SuperHint).startswith("SuperHint needs a bound")
 
 
-_BARE = [
+@pytest.mark.parametrize("hint", [Super, SuperType, SuperHint], ids=repr)
+def test_bare_super_is_refused_by_the_relation(hint: tx.Any) -> None:
+    with pytest.raises(TypeError, match=r"needs a bound"):
+        issubhint(hint, int)
+    with pytest.raises(TypeError, match=r"needs a bound"):
+        issubhint(int, hint)
+    with pytest.raises(TypeError, match=r"needs a bound"):
+        ishintstance(1, hint)
+
+
+_ON_A_VALUE = [
     Super[int],
-    Super,
-    SuperType,
-    SuperHint,
     tx.Optional[Super[int]],
     tx.TypeVar("_TSUPER", bound=Super[int]),
 ]
 
 
-@pytest.mark.parametrize("hint", _BARE, ids=repr)
-def test_bare_super_is_refused_by_the_relation(hint: tx.Any) -> None:
-    with pytest.raises(TypeError, match=r"Super"):
-        issubhint(hint, int)
-    with pytest.raises(TypeError, match=r"Super"):
-        issubhint(int, hint)
-    with pytest.raises(TypeError, match=r"Super"):
-        ishintstance(1, hint)
-
-
-def test_bare_super_in_an_invariant_argument_is_refused_by_the_relation(
+@pytest.mark.parametrize("hint", _ON_A_VALUE, ids=repr)
+def test_a_lower_bound_on_a_value_is_read_by_the_relation(
+    hint: tx.Any,
 ) -> None:
-    with pytest.raises(TypeError, match=r"Type\[Super\[int\]\]"):
-        issubhint(tx.List[Super[int]], tx.List[int])
-    with pytest.raises(TypeError, match=r"Type\[Super\[int\]\]"):
-        issubhint(tx.List[int], tx.List[Super[int]])
+    assert ishintstance(1, hint) is True
+    assert ishintstance(object(), hint) is True
+    assert ishintstance(True, hint) is False
+    assert issubhint(hint, int) is False
+    assert issubhint(hint, object) is True
+    assert issubhint(Exact[int], hint) is True
+    assert issubhint(int, hint) is False
+
+
+def test_super_in_an_invariant_argument_is_a_range() -> None:
+    assert issubhint(tx.List[int], tx.List[Super[int]]) is True
+    assert issubhint(tx.List[bool], tx.List[Super[int]]) is False
+    assert issubhint(tx.List[Super[int]], tx.List[int]) is False
+    assert ishintstance([1], tx.List[Super[int]]) is True
 
 
 def test_super_below_a_union_or_typevar_inside_type_is_refused() -> None:
-    # Only the immediate argument of `Type` may be a lower bound: one reached
+    # Only the whole argument of `Type` may be a lower bound: one reached
     # through a union member or a `TypeVar` bound is refused, whichever side
     # of the comparison carries the other lower bound.
     bounded = tx.TypeVar("bounded", bound=Super[Dog])
-    with pytest.raises(TypeError, match=r"Super\[Dog\]"):
+    needle = r"Super\[Dog\] cannot be a member of a union"
+    with pytest.raises(TypeError, match=needle):
         issubhint(tx.Type[tx.Union[Super[Dog], int]], _ts(Animal))
-    with pytest.raises(TypeError, match=r"Super\[Dog\]"):
+    with pytest.raises(TypeError, match=needle):
         issubhint(tx.Type[bounded], _ts(Animal))
-    with pytest.raises(TypeError, match=r"Super\[Dog\]"):
+    with pytest.raises(TypeError, match=needle):
         issubhint(_ts(Animal), tx.Type[tx.Union[Super[Dog], int]])
-    with pytest.raises(TypeError, match=r"Super\[Dog\]"):
+    with pytest.raises(TypeError, match=needle):
         ishintstance(Dog, tx.Type[tx.Union[Super[Dog], int]])
+    with pytest.raises(TypeError, match=needle):
+        ishintstance(int, Hint[tx.Optional[Super[Dog]]])
 
 
 def test_a_typevar_below_a_lower_bound_is_read_by_its_bound() -> None:
@@ -299,18 +316,43 @@ def _fn(annotation: tx.Any, kind: str = "x") -> tx.Any:
 @pytest.mark.parametrize(
     "hint, needle",
     [
-        (Super[int], "Type[Super[int]]"),
         (SuperType, "SuperType needs a bound"),
-        (tx.Type[tx.Union[Super[int], str]], "Type[Super[int]]"),
-        (tx.List[Super[int]], "Type[Super[int]]"),
-        (tx.Callable[[Super[int]], int], "Type[Super[int]]"),
-        (tx.TypeVar("_TCON", Super[int], str), "Type[Super[int]]"),
-        (tx.Type[Super[tx.List[Super[int]]]], "Type[Super[int]]"),
+        (
+            tx.Type[tx.Union[Super[int], str]],
+            "Super[int] cannot be a member of a union",
+        ),
+        (
+            tx.Sequence[Super[int]],
+            "Super[int] puts a lower bound on argument 1 of Sequence",
+        ),
+        (
+            tx.Callable[[Super[int]], int],
+            "Super[int] cannot be a parameter or the return type of Callable",
+        ),
+        (tx.Tuple[Super[int]], "Super[int] cannot be an element of Tuple"),
+        (
+            tx.TypeVar("_TCON", Super[int], str),
+            "Super[int] cannot be a constraint of a TypeVar",
+        ),
+        (
+            tx.Type[Super[tx.Sequence[Super[int]]]],
+            "Super[int] puts a lower bound on argument 1 of Sequence",
+        ),
+        (
+            # What `Super["Later"]` becomes once `Later` resolves to a hint
+            # holding a bound: the resolved hint is never built by `Super`.
+            tx.Annotated[tx.Optional[Super[int]], SUPER],
+            "Super[int] cannot appear inside an Exact, Super or Between form",
+        ),
+        (
+            Super[tx.Literal[1]],
+            "Super[Literal[1]] cannot bound a value with Literal[1]",
+        ),
         (tx.Type[Super], "Super needs a bound"),
     ],
     ids=repr,
 )
-def test_bare_super_is_refused_at_registration(
+def test_misplaced_super_is_refused_at_registration(
     hint: tx.Any, needle: str
 ) -> None:
     with pytest.raises(TypeError) as info:
@@ -325,19 +367,32 @@ def test_bare_super_is_refused_at_registration(
     assert needle in str(info.value)
 
 
-@pytest.mark.parametrize(
-    "kind, name", [("args", "args"), ("kwargs", "kwargs")]
-)
-def test_bare_super_is_refused_on_a_catch_all(kind: str, name: str) -> None:
-    with pytest.raises(TypeError, match=rf"^'{name}' of f: Super\[int\]"):
-        dispatch(_fn(Super[int], kind))
+@pytest.mark.parametrize("hint", _ON_A_VALUE, ids=repr)
+def test_super_on_a_value_is_accepted_at_registration(hint: tx.Any) -> None:
+    f = Function("f")
+    f.register((hint,))(lambda x: "above int")
+    assert f(1) == "above int"
+    assert f(object()) == "above int"
+    with pytest.raises(NoMethodError):
+        f(True)
 
 
-def test_bare_super_is_refused_by_from_hints() -> None:
-    with pytest.raises(TypeError, match=r"^positional hint 0: Super\[int\]"):
-        Signature.from_hints(Super[int])
-    with pytest.raises(TypeError, match=r"^'scale': Super\[int\]"):
-        Signature.from_hints(scale=Super[int])
+@pytest.mark.parametrize("kind", ["args", "kwargs"])
+def test_super_is_accepted_on_a_catch_all(kind: str) -> None:
+    f = dispatch(_fn(Super[int], kind))
+    if kind == "args":
+        assert f(1, object()) is None
+        with pytest.raises(NoMethodError):
+            f(1, True)
+    else:
+        assert f(a=1, b=object()) is None
+        with pytest.raises(NoMethodError):
+            f(a=True)
+
+
+def test_super_is_accepted_by_from_hints() -> None:
+    sig = Signature.from_hints(Super[int], scale=Super[int])
+    assert sig.dispatched_names == ("scale",)
 
 
 @pytest.mark.parametrize(
@@ -348,7 +403,7 @@ def test_bare_super_is_refused_by_from_hints() -> None:
         "def f(**kw: 'Later'): pass",
     ],
 )
-def test_a_forward_reference_to_a_bare_super_is_refused_once_resolved(
+def test_a_forward_reference_to_a_lower_bound_is_checked_once_resolved(
     source: str,
 ) -> None:
     namespace: tx.Dict[str, tx.Any] = {}
@@ -356,7 +411,14 @@ def test_a_forward_reference_to_a_bare_super_is_refused_once_resolved(
     sig = Signature.from_callable(namespace["f"])
     assert sig._deferred
     namespace["Later"] = Super[int]
-    with pytest.raises(TypeError, match=r"Super\[int\] is only valid inside"):
+    sig._settle()
+    assert not sig._deferred
+
+    namespace = {}
+    exec(source, namespace)
+    sig = Signature.from_callable(namespace["f"])
+    namespace["Later"] = tx.Sequence[Super[int]]
+    with pytest.raises(TypeError, match=r"puts a lower bound on argument 1"):
         sig._settle()
 
 
@@ -370,6 +432,12 @@ def test_super_inside_type_or_hint_is_accepted_at_registration() -> None:
     @f.register((Hint[Super[int]], tx.Callable[[int], tx.Any]))
     def _hints(x: object, y: object) -> str:
         return "hint"
+
+    # A bound is also read as the whole argument of an invariant slot,
+    # however deeply that slot is nested.
+    @f.register((tx.List[Super[int]], tx.Type[Super[tx.List[Super[int]]]]))
+    def _slots(x: object, y: object) -> str:
+        return "slots"
 
     # A forward reference inside a hint is left for later, not refused.
     @f.register((tx.List["Later"], tx.Literal["a"], tx.Literal[1]))
@@ -711,15 +779,19 @@ def test_an_optional_lower_bound_is_ambiguous_with_a_plain_type() -> None:
     assert f(None) == "super"
 
 
-def test_a_bare_super_passed_to_a_hint_parameter_is_refused() -> None:
+def test_a_lower_bound_is_a_hint_value() -> None:
     f = Function("f")
 
     @f.register((Hint[tx.Any],))
     def _any(h: object) -> str:
         return "any"
 
-    with pytest.raises(TypeError, match=r"Super\[int\]"):
-        f(Super[int])
+    assert f(Super[int]) == "any"
+    # The values of `Super[int]` are those whose class is above `int`, so it
+    # is not below `int`, whose values include `True`, and `int` is not below
+    # it either.
+    assert ishintstance(Super[int], Hint[int]) is False
+    assert ishintstance(Super[int], Hint[Super[int]]) is False
 
 
 def test_a_forward_reference_to_a_lower_bound_settles_later() -> None:
@@ -816,7 +888,7 @@ def test_resolve_hint_super_key() -> None:
     assert resolve_hint(tx.Type[Animal], registry, default=0) == 0
 
 
-@pytest.mark.parametrize("query", [Super[int], SuperType, Super])
+@pytest.mark.parametrize("query", [SuperType, Super])
 def test_resolve_hint_bare_super_query_raises(query: tx.Any) -> None:
-    with pytest.raises(TypeError, match=r"Super"):
+    with pytest.raises(TypeError, match=r"needs a bound"):
         resolve_hint(query, {int: 1, query: 2})

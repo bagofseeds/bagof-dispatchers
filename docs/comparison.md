@@ -33,7 +33,7 @@ not.
 | **Generics and values** | | | | | |
 | Reads a container's contents at the call | n/a | n/a | yes | no | **no** |
 | Parametric types invariant | n/a | n/a | no, covariant by content | yes | **yes** |
-| An `Exact`-style "exclude subclasses" overload | no | no | no | no | **yes** |
+| `Exact`, `Super` and `Between`: exclude subclasses, or bound a value's class from below | no | no | no | no; `T >: C` with a concrete `C` only matches `C` | **yes** |
 | | | | | | |
 | **Around the edges** | | | | | |
 | Function namespacing across modules | n/a, no shared registry | shared global by default | shared global by default | n/a, module system | **per module by default; shared via `Dispatcher`** |

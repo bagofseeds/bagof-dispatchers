@@ -36,12 +36,17 @@ walks through registering overloads in more detail.
 - `Hint[X]` dispatches on a type hint passed as a value, matching the hints
   that are sub-hints of `X`, so a function handed a hint can branch on what
   the hint is. See [Dispatching on hints][hints-as-values].
-- `Super[C]`, written inside `Type[...]` or `Hint[...]`, is the mirror image
-  of `Exact`: it accepts `C` together with everything above it, so
-  `Type[Super[Dog]]` accepts the class `Dog` and each class it derives from.
-  `Between[L, U]`, written in the same place, bounds the argument from both
-  sides, so `Type[Between[Dog, Animal]]` accepts the classes from `Dog` up
-  to `Animal`. See [Exact types][exact-types].
+- `Super[C]` accepts a value whose class is `C` or a class above it, and
+  inside `Type[...]` or `Hint[...]` it accepts the class or hint `C` and
+  everything above it, so `Type[Super[Dog]]` accepts the class `Dog` and
+  each class it derives from. `Between[L, U]` bounds from both sides at
+  once, so `Between[Dog, Animal]` accepts a value whose class lies
+  between `Dog` and `Animal`, both included, and
+  `Type[Between[Dog, Animal]]` accepts those classes themselves. As the
+  type argument of an invariant generic, a bound names a range of
+  arguments, so `List[Super[int]]` accepts a list declared to hold `int`,
+  `numbers.Integral` or `object`. See [Exact types][exact-types] and
+  [Variance][variance].
 - A call that matches no overload, or that matches two equally specific
   overloads, is always a clear error rather than a silent guess.
   `NoMethodError` is a `TypeError` carrying the closest candidates, and

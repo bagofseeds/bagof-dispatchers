@@ -305,14 +305,16 @@ def _lower_exact(hint: tx.Any) -> tx.Any:
 def _lower_super(hint: tx.Any) -> tx.Any:
     """Rewrite an outer `Super` around `Type` or `Hint` as an inner one.
 
-    A lower bound is only meaningful as the argument of a `Type` or `Hint`
-    form, but it can also be written around the whole form. This rewrites
-    that outer spelling to the inner one, so that `#!python Super[Type[int]]`
+    A lower bound on the classes passed to a `Type` parameter, or on the
+    hints passed to a `Hint` parameter, is written inside the form, but it
+    can also be written around the whole form. This rewrites that outer
+    spelling to the inner one, so that `#!python Super[Type[int]]`
     becomes `#!python Type[Super[int]]` and `#!python Super[Hint[int]]`
     becomes `#!python Hint[Super[int]]`. Unlike `Exact`, a `Super` around a
-    bare `Type`, `type` or `Hint` is not rewritten, because it names no
-    bound: it stays as written and is refused wherever a hint is read. Any
-    other `Super` hint also comes back unchanged.
+    bare `Type` or `Hint` is not rewritten, because it names no bound: it
+    stays as written and is refused on a value, where its bound is read
+    against the value's class. Any other `Super` hint also comes back
+    unchanged.
     """
     target = super_target(hint)
     origin = tx.get_origin(target)
@@ -344,8 +346,9 @@ def normalise_hint(hint: tx.Any) -> tx.Any:
     `#!python Exact[Type[int]]` becomes `#!python Type[Exact[int]]` and
     `#!python Super[Hint[int]]` becomes `#!python Hint[Super[int]]`. A
     [`Between`][bagof.dispatchers.Between] has no such outer spelling, so
-    one written around a whole `Type` or `Hint` is left as it is, to be
-    refused wherever the hint is read.
+    one written around a whole `Type` or `Hint`, such as
+    `#!python Between[Type[A], Type[B]]`, is left as it is and refused
+    with a message naming `#!python Type[Between[A, B]]`.
 
     These steps repeat until the hint stops changing, so an alias that
     expands into a qualified `NewType` is resolved all the way through
@@ -1303,7 +1306,10 @@ def mro_index(hint: tx.Any, value_type: type) -> tx.Optional[int]:
     structurally or through registration rather than inheritance, gives
     no refinement and returns `#!python None`. The same is true of a
     `#!python Union`, a `#!python Literal`, a `#!python type[...]`, or
-    any other parametrised generic.
+    any other parametrised generic, and of a
+    [`Super`][bagof.dispatchers.Super] or a
+    [`Between`][bagof.dispatchers.Between] bound, which names a range of
+    classes rather than one position in the MRO.
 
     !!! example
         ```pycon
@@ -1321,7 +1327,13 @@ def mro_index(hint: tx.Any, value_type: type) -> tx.Optional[int]:
         where `0` is `value_type` itself, or `#!python None` when no
         refinement applies.
     """
+    # Imported here because `_bounds` imports this module.
+    from ._bounds import is_bound
+
     hint = normalise_hint(hint)
+    if is_bound(hint):
+        # A bound names a range of classes rather than one position.
+        return None
     if is_exact(hint):
         cls = normalise_hint(exact_target(hint))
     else:
