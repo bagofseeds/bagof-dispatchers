@@ -170,15 +170,12 @@ such as `bool` being a subclass of `int`:
 stay, equally specific at the type level:
 
 ```pycon
->>> import warnings
 >>> from bagof.dispatchers import Function
 >>> combine = Function("combine")
->>> with warnings.catch_warnings():
-...     warnings.simplefilter("ignore")
-...     @combine.register((float, object), priority=1)
-...     def _(a, b): return "left"
-...     @combine.register((object, float))
-...     def _(a, b): return "right"
+>>> @combine.register((float, object), priority=1)
+... def _(a, b): return "left"
+>>> @combine.register((object, float))
+... def _(a, b): return "right"
 >>> combine(1.0, 2.0)
 'left'
 ```

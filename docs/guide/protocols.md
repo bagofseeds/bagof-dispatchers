@@ -131,12 +131,11 @@ class, and a call matching both overloads is ambiguous:
 ambiguous
 ```
 
-Registering the two overloads produces no warning, and
-[`ambiguities()`][bagof.dispatchers.Function.ambiguities] does not list them
-as a pair. The clash depends on what a particular instance happens to have,
-and only shows up at the call. To resolve it, annotate the member on the
-class (`name: str`) so its overload becomes the more specific one, or give
-one overload a higher `priority`.
+[`ambiguities()`][bagof.dispatchers.Function.ambiguities] does not list
+the two overloads as a pair. The clash depends on what a particular
+instance happens to have, and only shows up at the call. To resolve it,
+annotate the member on the class (`name: str`) so its overload becomes the
+more specific one, or give one overload a higher `priority`.
 
 !!! note
     A protocol without `@runtime_checkable` cannot be checked against a

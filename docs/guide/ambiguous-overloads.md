@@ -7,15 +7,12 @@ message lists the overloads that tie:
 
 ```pycon
 >>> from bagof.dispatchers import dispatch, AmbiguousMethodError
->>> import warnings
->>> with warnings.catch_warnings():
-...     warnings.simplefilter("ignore")   # registration warns about the clash
-...     @dispatch
-...     def combine(a: float, b: object) -> str:
-...         return "left"
-...     @dispatch
-...     def combine(a: object, b: float) -> str:
-...         return "right"
+>>> @dispatch
+... def combine(a: float, b: object) -> str:
+...     return "left"
+>>> @dispatch
+... def combine(a: object, b: float) -> str:
+...     return "right"
 >>> try:
 ...     combine(1.0, 2.0)
 ... except AmbiguousMethodError as error:
@@ -23,15 +20,51 @@ message lists the overloads that tie:
 ['combine', 'combine']
 ```
 
-Registering the second overload already warns about the clash with a
-`RuntimeWarning`, since dispatch can tell, from the two signatures alone,
-that some call will eventually tie between them. The example above
-silences that warning only to keep the page's output focused on the
-exception the call itself raises.
+Registering the two overloads raises nothing and warns about nothing. The
+tie is reported by the call that meets it, and only a call whose
+arguments match both overloads meets it. `#!python combine(1.0, "x")`,
+for instance, matches only the first overload and runs it.
 
 To resolve a tie like this one, give one overload a higher `priority`, or
 register a signature that is strictly more specific than both, such as
 `(float, float)`.
+
+## Finding ambiguities before a call
+
+A tie that no call has met yet can still be found.
+[`ambiguities`][bagof.dispatchers.Function.ambiguities] lists each pair
+of overloads that some call would match with nothing to choose between
+them:
+
+```pycon
+>>> for first, second in combine.ambiguities():
+...     print(first.signature, second.signature)
+Signature(a: float, b: object) Signature(a: object, b: float)
+```
+
+The check takes every registered overload into account, as a call does.
+Once an overload for `(float, float)` is registered, that overload wins
+every call the pair has in common, so the pair is no longer reported,
+whichever order the three overloads were registered in:
+
+```pycon
+>>> @dispatch
+... def combine(a: float, b: float) -> str:
+...     return "both"
+>>> combine.ambiguities()
+[]
+>>> combine(1.0, 2.0)
+'both'
+```
+
+`ambiguities` is meant to be run in a test suite, where
+`#!python assert not combine.ambiguities()` fails as soon as a new
+overload leaves some call without a most specific overload. The check
+looks only at calls written the way the overloads' own parameters are,
+so it does not find a tie that is reachable only by spreading arguments
+into `*args`. It can also report a pair that no call actually trips
+over, when several narrower overloads together win every call the pair
+has in common but none of them wins all of those calls alone.
 
 ## Inspecting the candidates of a call
 
@@ -53,17 +86,15 @@ polygons, and a third overload that accepts any two shapes:
 >>> class Shape: pass
 >>> class Polygon(Shape): pass
 >>> class Square(Polygon): pass
->>> with warnings.catch_warnings():
-...     warnings.simplefilter("ignore")   # registration warns about the clash
-...     @dispatch
-...     def overlap(a: Polygon, b: Shape) -> str:
-...         return "polygon first"
-...     @dispatch
-...     def overlap(a: Shape, b: Polygon) -> str:
-...         return "polygon second"
-...     @dispatch
-...     def overlap(a: Shape, b: Shape) -> str:
-...         return "any shapes"
+>>> @dispatch
+... def overlap(a: Polygon, b: Shape) -> str:
+...     return "polygon first"
+>>> @dispatch
+... def overlap(a: Shape, b: Polygon) -> str:
+...     return "polygon second"
+>>> @dispatch
+... def overlap(a: Shape, b: Shape) -> str:
+...     return "any shapes"
 ```
 
 For two squares, `bestcandidates` returns both of the tied overloads.

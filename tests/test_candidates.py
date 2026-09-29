@@ -63,13 +63,6 @@ class Sized:
         return 0
 
 
-def _quiet(fn: typing.Callable[[], typing.Any]) -> typing.Any:
-    """Run `fn`, ignoring the registration-time ambiguity warnings."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        return fn()
-
-
 def _add(
     f: Function,
     name: str,
@@ -87,7 +80,7 @@ def _add(
     namespace: typing.Dict[str, typing.Any] = {}
     exec(f"def {name}({', '.join(params)}): return {name!r}", namespace)
     spec: typing.Tuple[typing.Any, ...] = (hints, named) if named else (hints,)
-    _quiet(lambda: f.register(*spec, priority=priority)(namespace[name]))
+    f.register(*spec, priority=priority)(namespace[name])
 
 
 # --- the corpus ------------------------------------------------------
@@ -154,7 +147,7 @@ def _tightness() -> Function:
         return "defaulted"
 
     for fn in (fixed, spread, defaulted):
-        _quiet(lambda fn=fn: f.register(fn))
+        f.register(fn)
     return f
 
 

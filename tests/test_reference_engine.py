@@ -30,7 +30,6 @@ the oracle re-derives their grouping independently.
 import itertools
 import random
 import typing
-import warnings
 
 # dependencies
 import pytest
@@ -310,13 +309,11 @@ def _make_impl(arity: int, tag: int) -> typing.Callable[..., int]:
 
 
 def _build_function(specs: typing.List[_Spec]) -> Function:
-    """A `Function` with `specs` registered (overlay form), warnings muted."""
+    """A `Function` with `specs` registered (overlay form)."""
     f = Function("f")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        for spec in specs:
-            impl = _make_impl(len(spec.hints), spec.tag)
-            f.register(spec.hints, priority=spec.priority)(impl)
+    for spec in specs:
+        impl = _make_impl(len(spec.hints), spec.tag)
+        f.register(spec.hints, priority=spec.priority)(impl)
     return f
 
 

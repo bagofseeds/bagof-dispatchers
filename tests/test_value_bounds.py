@@ -11,7 +11,6 @@ import abc
 import itertools
 import numbers
 import typing
-import warnings
 
 # dependencies
 import pytest
@@ -748,11 +747,10 @@ def test_unhashable_hints_are_searched_without_the_cache() -> None:
 # --- dispatch ----------------------------------------------------------
 
 
-def _quiet_register(f: Function, *fns: tx.Any) -> None:
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        for fn in fns:
-            f.register(fn)
+def _register_unambiguous(f: Function, *fns: tx.Any) -> None:
+    for fn in fns:
+        f.register(fn)
+    assert f.ambiguities() == []
 
 
 def test_dispatch_value_super() -> None:
@@ -767,7 +765,7 @@ def test_dispatch_value_super() -> None:
     def puppy(x: Puppy) -> str:
         return "puppy"
 
-    _quiet_register(f, above, exact, puppy)
+    _register_unambiguous(f, above, exact, puppy)
     assert f(Animal()) == "super"
     assert f(object()) == "super"
     assert f(Dog()) == "exact"
@@ -776,18 +774,18 @@ def test_dispatch_value_super() -> None:
         f(Cat())
 
 
-def test_dispatch_plain_vs_super_warns_and_is_ambiguous() -> None:
+def test_dispatch_plain_vs_super_is_ambiguous() -> None:
     f = Function("f")
 
     @f.register
     def plain(x: Animal) -> str:
         return "plain"
 
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
+    @f.register
+    def above(x: S[Dog]) -> str:
+        return "super"
 
-        @f.register
-        def above(x: S[Dog]) -> str:
-            return "super"
+    assert len(f.ambiguities()) == 1
 
     for value, name in [(Dog(), "Dog"), (Animal(), "Animal")]:
         with pytest.raises(AmbiguousMethodError) as info:
@@ -797,10 +795,8 @@ def test_dispatch_plain_vs_super_warns_and_is_ambiguous() -> None:
     assert f(object()) == "super"
 
     g = Function("g")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        g.register(plain, priority=1)
-        g.register(above)
+    g.register(plain, priority=1)
+    g.register(above)
     assert g(Dog()) == "plain"
     assert g(object()) == "super"
 
@@ -812,11 +808,11 @@ def test_dog_vs_super_dog_is_ambiguous_for_dog() -> None:
     def plain(x: Dog) -> str:
         return "plain"
 
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
+    @f.register
+    def above(x: S[Dog]) -> str:
+        return "super"
 
-        @f.register
-        def above(x: S[Dog]) -> str:
-            return "super"
+    assert len(f.ambiguities()) == 1
 
     with pytest.raises(AmbiguousMethodError):
         f(Dog())
@@ -860,15 +856,15 @@ def test_a_bound_among_several_parameters() -> None:
     def text(x: S[Dog], y: str) -> str:
         return "text"
 
-    _quiet_register(Function("f"), plain, text)
+    _register_unambiguous(Function("f"), plain, text)
 
     def flag(x: S[Dog], y: bool) -> str:
         return "flag"
 
     f = Function("f")
     f.register(plain)
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
-        f.register(flag)
+    f.register(flag)
+    assert len(f.ambiguities()) == 1
     with pytest.raises(AmbiguousMethodError) as info:
         f(Dog(), True)
     assert "f(x: Exact[Dog], y: bool)" in str(info.value)
@@ -881,8 +877,8 @@ def test_a_bound_among_several_parameters() -> None:
 
     g = Function("g")
     g.register(optional)
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
-        g.register(reversed_)
+    g.register(reversed_)
+    assert len(g.ambiguities()) == 1
     with pytest.raises(AmbiguousMethodError) as info:
         g(Dog(), Dog())
     assert "g(x: Exact[Dog], y: Exact[Dog])" in str(info.value)
@@ -908,7 +904,7 @@ def test_between_below_plain_wins() -> None:
     def between(x: B[Dog, Animal]) -> str:
         return "between"
 
-    _quiet_register(f, plain, between)
+    _register_unambiguous(f, plain, between)
     assert f(Dog()) == "between"
     assert f(Animal()) == "between"
     assert f(Puppy()) == "plain"
@@ -929,11 +925,11 @@ def test_candidates_and_bestcandidates_with_bounds() -> None:
     def plain(x: Animal) -> str:
         return "plain"
 
-    with pytest.warns(RuntimeWarning):
+    @f.register
+    def above(x: S[Dog]) -> str:
+        return "super"
 
-        @f.register
-        def above(x: S[Dog]) -> str:
-            return "super"
+    assert len(f.ambiguities()) == 1
 
     @f.register
     def between(x: B[Dog, Animal]) -> str:

@@ -264,16 +264,17 @@ else:
         `#!python Super[Dog]`, since the single class `Dog` belongs to each
         of them. A plain `Animal` and `#!python Super[Dog]` are not ordered
         against each other, yet a value of class `Dog` or `Animal` matches
-        both, so registering methods for both warns about the ambiguity. A
-        third method for `#!python Exact[Dog]` settles the call with a
-        `Dog`, and an explicit `priority` on either method settles every
-        call the two share. The same order holds inside `Type` and `Hint`,
-        where `#!python Type[Exact[Dog]]` sits below both
-        `#!python Type[Dog]` and `#!python Type[Super[Dog]]`. As a type
-        argument, one range is more specific than another when it lies
-        inside it, and a plain argument counts as a range holding only
-        itself, so `#!python List[Dog]` and `#!python List[Super[Animal]]`
-        are both more specific than `#!python List[Super[Dog]]`.
+        both, so a call with such a value is ambiguous when methods are
+        registered for both. A third method for `#!python Exact[Dog]`
+        settles the call with a `Dog`, and an explicit `priority` on either
+        method settles every call the two share. The same order holds
+        inside `Type` and `Hint`, where `#!python Type[Exact[Dog]]` sits
+        below both `#!python Type[Dog]` and `#!python Type[Super[Dog]]`.
+        As a type argument, one range is more specific than another when
+        it lies inside it, and a plain argument counts as a range holding
+        only itself, so `#!python List[Dog]` and
+        `#!python List[Super[Animal]]` are both more specific than
+        `#!python List[Super[Dog]]`.
 
         `Super` and `Exact` cannot be combined, in either order, because
         an exact type has nothing above it to bound, and neither of them

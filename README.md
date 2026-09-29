@@ -50,7 +50,9 @@ walks through registering overloads in more detail.
 - A call that matches no overload, or that matches two equally specific
   overloads, is always a clear error rather than a silent guess.
   `NoMethodError` is a `TypeError` carrying the closest candidates, and
-  `AmbiguousMethodError` names the overloads that tie. See
+  `AmbiguousMethodError` names the overloads that tie. A function's
+  `ambiguities()` finds such ties before any call is made, so a test suite
+  can assert that there are none. See
   [When two overloads are equally specific][ambiguous] and
   [When nothing matches][no-match].
 - Dispatch is aware of argument names as well as positions, so a call binds

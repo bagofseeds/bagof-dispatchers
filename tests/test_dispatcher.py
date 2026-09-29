@@ -2,7 +2,6 @@
 
 # stdlib
 import types
-import warnings
 
 # dependencies
 import pytest
@@ -183,16 +182,13 @@ def test_overlay_priority_breaks_a_tie() -> None:
     """`priority` given to the overlay form breaks an otherwise-tie."""
     registry = Dispatcher()
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
+    @registry((float, object))
+    def _(a: tx.Any, b: tx.Any) -> str:
+        return "left"
 
-        @registry((float, object))
-        def _(a: tx.Any, b: tx.Any) -> str:
-            return "left"
-
-        @registry((object, float), priority=5)
-        def _(a: tx.Any, b: tx.Any) -> str:  # noqa: F811 -- an overload
-            return "right"
+    @registry((object, float), priority=5)
+    def _(a: tx.Any, b: tx.Any) -> str:  # noqa: F811 -- an overload
+        return "right"
 
     resolved = _  # the decorator returns the shared Function
     assert isinstance(resolved, Function)
@@ -260,16 +256,13 @@ def test_end_to_end_ambiguous() -> None:
     """Two equally specific overloads raise `AmbiguousMethodError`."""
     registry = Dispatcher()
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
+    @registry((float, object))
+    def _(a: tx.Any, b: tx.Any) -> str:
+        return "left"
 
-        @registry((float, object))
-        def _(a: tx.Any, b: tx.Any) -> str:
-            return "left"
-
-        @registry((object, float))
-        def _(a: tx.Any, b: tx.Any) -> str:  # noqa: F811 -- an overload
-            return "right"
+    @registry((object, float))
+    def _(a: tx.Any, b: tx.Any) -> str:  # noqa: F811 -- an overload
+        return "right"
 
     resolved = _  # the decorator returns the shared Function
     with pytest.raises(AmbiguousMethodError):

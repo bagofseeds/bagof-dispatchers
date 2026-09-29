@@ -114,8 +114,9 @@ def overlaps(a: tx.Any, b: tx.Any) -> bool:
     below, share a value.
 
     Two hints that are ordered against each other always share the
-    values of the narrower one, which is what the registration-time
-    ambiguity check relies on. A lower bound breaks that shortcut: the
+    values of the narrower one, which is what the ambiguity audit of
+    [`Function.ambiguities`][bagof.dispatchers.Function.ambiguities]
+    relies on. A lower bound breaks that shortcut: the
     hints `Animal` and `#!python Super[Dog]` are not ordered either way,
     yet a value of class `Dog` belongs to both, so a call with it cannot
     choose between methods written with them. `Dog` and
@@ -135,7 +136,7 @@ def overlaps(a: tx.Any, b: tx.Any) -> bool:
     intervals lies above both lower ends. There a candidate must also be
     a class, because the interval holds classes. The test is therefore a
     sufficient condition: when it reports an overlap, a value in both
-    really exists, which is the direction a warning needs. When the
+    really exists, which is the direction the audit needs. When the
     bounds involved are classes of a nominal hierarchy, in which no class
     is made a subclass through `register` or `__subclasshook__`, it also
     finds every overlap there is. A `#!python Literal` names no class to

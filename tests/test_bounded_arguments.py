@@ -12,7 +12,6 @@ its ends.
 import collections.abc as cabc
 import numbers
 import sys
-import warnings
 
 # dependencies
 import pytest
@@ -833,20 +832,20 @@ def test_a_signature_mixes_both_levels() -> None:
 
 def test_dispatch_on_a_bounded_list() -> None:
     f = Function("f")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
 
-        @f.register
-        def _above(xs: L[S[int]]) -> str:
-            return "above int"
+    @f.register
+    def _above(xs: L[S[int]]) -> str:
+        return "above int"
 
-        @f.register
-        def _exactly(xs: L[int]) -> str:
-            return "int"
+    @f.register
+    def _exactly(xs: L[int]) -> str:
+        return "int"
 
-        @f.register
-        def _below(xs: L[B[N, bool]]) -> str:
-            return "bool or below"
+    @f.register
+    def _below(xs: L[B[N, bool]]) -> str:
+        return "bool or below"
+
+    assert f.ambiguities() == []
 
     assert f(IntList()) == "int"
     assert f(ObjList()) == "above int"
@@ -860,18 +859,18 @@ def test_dispatch_on_a_bounded_list() -> None:
         f([1])
 
 
-def test_dispatch_bounded_vs_upper_warns_and_priority_settles() -> None:
+def test_dispatch_bounded_vs_upper_is_ambiguous_and_priority_settles() -> None:
     f = Function("f")
 
     @f.register
     def _upper(xs: L[B[N, int]]) -> str:
         return "int or below"
 
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
+    @f.register
+    def _lower(xs: L[S[bool]]) -> str:
+        return "bool or above"
 
-        @f.register
-        def _lower(xs: L[S[bool]]) -> str:
-            return "bool or above"
+    assert len(f.ambiguities()) == 1
 
     # `bool` and `int` lie in both ranges.
     for value in (BoolList(), IntList()):
@@ -887,12 +886,11 @@ def test_dispatch_bounded_vs_upper_warns_and_priority_settles() -> None:
     def _upper_first(xs: L[B[N, int]]) -> str:
         return "int or below"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
+    @g.register
+    def _lower_second(xs: L[S[bool]]) -> str:
+        return "bool or above"
 
-        @g.register
-        def _lower_second(xs: L[S[bool]]) -> str:
-            return "bool or above"
+    assert g.ambiguities() == []
 
     assert g(IntList()) == "int or below"
 

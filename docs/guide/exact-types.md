@@ -213,9 +213,11 @@ because each accepts a value the other refuses: a `Puppy` is an `Animal`
 but its class is not above `Dog`, and a plain `object()` has a class above
 `Dog` but is not an `Animal`. They do share the values whose class lies in
 between, a `Dog` and an `Animal`, so a call with either of those matches
-both overloads and neither is more specific. Registering the second of the
-two therefore warns about the ambiguity, and the same holds for
-`Type[Animal]` and `Type[Super[Dog]]` with the classes `Dog` and `Animal`.
+both overloads and neither is more specific. Such a call raises
+[`AmbiguousMethodError`][bagof.dispatchers.AmbiguousMethodError], and
+[`ambiguities()`][bagof.dispatchers.Function.ambiguities] reports the two
+overloads as a pair. The same holds for `Type[Animal]` and
+`Type[Super[Dog]]` with the classes `Dog` and `Animal`.
 
 There are two ways to settle the tie. An overload for `Exact[Dog]` settles
 the call with a `Dog`, since it is more specific than both, but a call with
@@ -226,7 +228,7 @@ suggests an `Exact[...]` overload for it:
 @dispatch
 def feed(x: Animal) -> str: ...
 
-@dispatch  # warns: ambiguous with feed(x: Animal)
+@dispatch  # feed(Dog()) and feed(Animal()) are ambiguous
 def feed(x: Super[Dog]) -> str: ...
 
 @dispatch  # feed(Dog()) now picks this overload; feed(Animal()) still ties
@@ -235,8 +237,8 @@ def feed(x: Exact[Dog]) -> str: ...
 
 The alternative is to give one of the two overloads a higher `priority`
 when it is registered, in place of the second overload above. The lower
-bound then wins every value the two share, so nothing warns and nothing
-ties:
+bound then wins every value the two share, so no call ties and the pair
+is not reported:
 
 ```python
 @dispatch
@@ -249,8 +251,8 @@ def feed_ancestor(x: Super[Dog]) -> str: ...
 A range and a plain class can overlap in the same way. `Dog` and
 `Between[Dog, Animal]` are not ordered against each other, since a `Puppy`
 belongs only to the first and an `Animal` only to the second, yet both
-accept a `Dog`. Registering overloads for both therefore warns that a call
-with a `Dog` is ambiguous, and the same two remedies apply.
+accept a `Dog`. When overloads are registered for both, a call with a `Dog`
+is therefore ambiguous, and the same two remedies apply.
 
 ### Writing a bound
 
