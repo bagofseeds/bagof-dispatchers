@@ -330,7 +330,7 @@ def test_bare_super_is_refused_by_from_hints() -> None:
 def test_a_forward_reference_to_a_bare_super_is_refused_once_resolved(
     source: str,
 ) -> None:
-    namespace = {}  # type: tx.Dict[str, tx.Any]
+    namespace: tx.Dict[str, tx.Any] = {}
     exec(source, namespace)
     sig = Signature.from_callable(namespace["f"])
     assert sig._deferred
@@ -702,7 +702,7 @@ def test_a_bare_super_passed_to_a_hint_parameter_is_refused() -> None:
 
 
 def test_a_forward_reference_to_a_lower_bound_settles_later() -> None:
-    namespace = {"Type": tx.Type, "Super": Super}  # type: tx.Dict[str, tx.Any]
+    namespace: tx.Dict[str, tx.Any] = {"Type": tx.Type, "Super": Super}
     exec("def f(cls: 'Type[Super[Later]]'): return 'super'", namespace)
     f = Function("f")
     f.register(namespace["f"])
