@@ -609,8 +609,8 @@ def test_typevar_constraint_is_refused() -> None:
     with pytest.raises(TypeError, match="cannot be a constraint"):
         dispatch(_fn(nested))
     # A constraint that holds no bound is walked like any other hint.
-    listed = tx.TypeVar("_TLS", tx.List[S[Dog]], Cat)
-    with pytest.raises(TypeError, match="not supported as a type argument"):
+    listed = tx.TypeVar("_TLS", tx.Sequence[S[Dog]], Cat)
+    with pytest.raises(TypeError, match="puts a lower bound on argument 1"):
         dispatch(_fn(listed))
 
 
@@ -678,10 +678,6 @@ class Row(tx.Sequence[S[int]]):
 
 _P = tx.ParamSpec("_P")
 _SLOTS = [
-    (tx.List[S[int]], "is not supported as a type argument of list[...]"),
-    (tx.List[tx.Optional[S[int]]], "is not supported as a type argument"),
-    (tx.Dict[str, B[bool, int]], "is not supported as a type argument"),
-    (Box[S[int]], "is not supported as a type argument of Box[...]"),
     (tx.Tuple[S[int]], "cannot be an element of Tuple[...]"),
     (tx.Tuple[int, S[int]], "cannot be an element of Tuple[...]"),
     (
@@ -697,13 +693,13 @@ _SLOTS = [
 
 
 @pytest.mark.parametrize("hint, needle", _SLOTS, ids=repr)
-def test_generic_tuple_callable_positions_are_refused(
+def test_tuple_and_callable_positions_are_refused(
     hint: tx.Any, needle: str
 ) -> None:
     other = {
         tuple: tx.Tuple[int],
         abc_callable(): tx.Callable[[int], None],
-    }.get(tx.get_origin(hint), tx.List[int])
+    }[tx.get_origin(hint)]
     for call in (
         lambda: issubhint(hint, other),
         lambda: issubhint(other, hint),
@@ -720,12 +716,18 @@ def abc_callable() -> tx.Any:
     return tx.get_origin(tx.Callable[[int], None])
 
 
-def test_a_bound_reached_through_a_base_is_refused() -> None:
-    needle = "Super[int] is not supported as a type argument of Sequence"
-    with pytest.raises(TypeError, match=needle.replace("[", r"\[")):
-        issubhint(Row, tx.Sequence[int])
-    with pytest.raises(TypeError, match=r"not supported as a type argument"):
-        ishintstance(Row(), tx.Sequence[int])
+def test_a_bound_written_in_a_covariant_base_is_refused() -> None:
+    needle = (
+        "Row derives from Sequence[Super[int]]: Super[int] puts a lower "
+        "bound on argument 1 of Sequence"
+    )
+    for call in (
+        lambda: issubhint(Row, tx.Sequence[int]),
+        lambda: ishintstance(Row(), tx.Sequence[int]),
+    ):
+        with pytest.raises(TypeError) as info:
+            call()
+        assert str(info.value).startswith(needle)
 
 
 def test_a_bound_inside_type_inside_a_generic_is_legal() -> None:
@@ -981,14 +983,16 @@ def test_a_hint_value_is_checked_for_a_bound_at_its_top_level() -> None:
     # comparison with `Any` never does.
     for nested in (
         tx.Optional[S[tx.Literal[1]]],
-        tx.List[S[int]],
+        tx.Sequence[S[int]],
         tx.Type[tx.Union[S[int], str]],
     ):
         assert ishintstance(nested, Hint[tx.Any]) is True
     with pytest.raises(TypeError, match="cannot bound a value with"):
         ishintstance(tx.Optional[S[tx.Literal[1]]], Hint[object])
-    with pytest.raises(TypeError, match="is not supported as a type argument"):
-        ishintstance(tx.List[S[int]], Hint[object])
+    with pytest.raises(TypeError, match="puts a lower bound on argument 1"):
+        ishintstance(tx.Sequence[S[int]], Hint[object])
+    # A bound that a type argument can hold is no error at all.
+    assert ishintstance(tx.List[S[int]], Hint[object]) is True
 
 
 def test_value_bound_renders() -> None:

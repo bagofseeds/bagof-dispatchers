@@ -377,6 +377,16 @@ CORPUS = [
     Between[tx.Never, int],
     tx.Optional[Super[_Dog]],
     Exact[_Dog],
+    # Bounds as type arguments (0.3.0): a range of arguments at an invariant
+    # slot, ordered by inclusion, and the plain argument it already means at
+    # a covariant or contravariant slot.
+    tx.List[Super[int]],
+    tx.List[Between[tx.Never, int]],
+    _Box[Between[bool, numbers.Integral]],
+    _Box[Super[bool]],
+    _Src[Between[tx.Never, int]],
+    _Snk[Super[int]],
+    tx.Dict[str, Super[int]],
     # Any / None, and the bottom on its own -- below every hint above,
     # `Exact[C]` included (#54)
     tx.Any,
