@@ -1246,10 +1246,10 @@ and every hint that `int` is a sub-hint of. It is spelled
 `Hint[Super[X]\]`.
 
 `Between[L, U]` supplies both bounds at once. `Between[Dog, Animal]`
-accepts a value whose class lies from `Dog` up to `Animal`, both included,
-`Type[Between[Dog, Animal]\]` accepts those classes themselves, and
-`Hint[Between[int, Real]\]` accepts the hints from `int` up to
-`numbers.Real`. It is spelled `bagof.dispatchers.Between[L, U]` and
+accepts a value whose class lies between `Dog` and `Animal`, both
+included, `Type[Between[Dog, Animal]\]` accepts those classes themselves,
+and `Hint[Between[int, Real]\]` accepts the hints between `int` and
+`numbers.Real`, both included. It is spelled `bagof.dispatchers.Between[L, U]` and
 implemented as `tx.Annotated[U, LOWER(L)]`, the upper bound annotated with
 a private marker that carries the lower one. There are no `BetweenType` or
 `BetweenHint` aliases, since `Type[Between[Dog, Animal]\]` already reads
@@ -1295,19 +1295,24 @@ interval (§2.1), which keeps the two levels in agreement.
 
 On a value, each bound must be a hint that a class can be compared
 against: for every class `K`, `K ≤ E` must hold exactly when an instance
-of `K` is `in E`. A class, an ABC, `object`, `type`, `NoneType`, a
-`NewType`, a bare alias such as `List`, a protocol with methods only,
-`Never`, `Any`, a union of such hints, and a `TypeVar` bounded by one all
-qualify. A `Literal`, a `TypedDict`, a protocol with data members, a
-parametrised generic, `Tuple[...]`, `Callable[[...], R]`, and the `Type`
-and `Hint` forms do not, because each of them reads the value itself or
+of `K` is `in E`. A class, an ABC, `object`, `type` (or a bare `Type`,
+which is the same hint), `NoneType`, a `NewType`, a bare alias such as
+`List`, a protocol with methods only, `Never`, `Any`, a union of such
+hints, and a `TypeVar` bounded by one all qualify. A `Literal`, a
+`TypedDict`, a protocol with data members, a parametrised generic,
+`Tuple[...]`, `Callable[[...], R]`, `Type[C]`, and `Hint` in any spelling
+do not, because each of them reads the value itself or
 names no class, so `Between[Never, E]` would accept nothing while `E`
 accepts values. Such a bound on a value is refused wherever it is read,
 naming the offending bound; `Between[Type[A], Type[B]\]` is refused with a
 message naming `Type[Between[A, B]\]`. Inside `Type` or `Hint`, where the
 value passed is itself a class or a hint, any hint can be a bound, so the
 same `Between[Literal[1], int]` that is refused on a value is legal inside
-`Hint[...]`.
+`Hint[...]`. When a hint is passed as a value to a `Hint[X]` parameter,
+only a bound at the top level of that hint is checked on arrival: a bound
+nested inside it, as in `Optional[Super[Literal[1]]\]`, is refused only
+when the comparison with `X` reaches it, and a comparison with `Any` never
+does.
 
 An interval must not be empty. `Between[L, U]` requires `L ≤ U`, and an
 empty one is refused when it is written, with a message that suggests

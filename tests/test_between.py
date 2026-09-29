@@ -203,7 +203,7 @@ def test_a_bound_inside_a_bound_is_refused_when_written(
     with pytest.raises(TypeError) as info:
         build()
     assert str(info.value).startswith(
-        f"{needle} cannot appear inside the bound of another Super or Between"
+        f"{needle} cannot appear inside an Exact, Super or Between form"
     )
 
 
@@ -243,7 +243,7 @@ def test_a_nested_forward_reference_lower_bound_is_refused(
     # Refused as a quoted lower bound, not reported as an empty interval.
     # How `Optional` is spelled differs between Python versions.
     shown = _render_target(lower)
-    assert "ForwardRef('Later')" in shown
+    assert "Later" in shown
     with pytest.raises(TypeError) as info:
         Between[lower, object]
     assert str(info.value) == (
@@ -458,7 +458,7 @@ def _fn(annotation: tx.Any, kind: str = "x") -> tx.Any:
             # a hint holding a bound: the resolved hint is never built by
             # `Between`.
             tx.Type[tx.Annotated[tx.Optional[Super[int]], _Lower(tx.Never)]],
-            "Super[int] cannot appear inside the bound of another",
+            "Super[int] cannot appear inside an Exact, Super or Between form",
         ),
         (
             Between[tx.Never, tx.List[int]],

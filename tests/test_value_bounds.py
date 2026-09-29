@@ -186,6 +186,8 @@ _LEGAL_ENDS = [
     Integral,
     object,
     type,
+    tx.Type,
+    typing.Type,
     type(None),
     UserId,
     tx.List,
@@ -211,7 +213,6 @@ _ILLEGAL_ENDS = [
     tx.Callable[[int], str],
     tx.Union,
     tx.Literal,
-    tx.Type,
     tx.LiteralString,
     tx.TypeGuard[int],
     tx.Optional[tx.List[int]],
@@ -258,6 +259,20 @@ def test_a_bound_read_against_a_value_is_refused(end: tx.Any) -> None:
             ishintstance(1, hint)
 
 
+def test_a_bare_type_end_reads_like_type() -> None:
+    # A bare `Type` is the same hint as `type`, so it bounds a value alike.
+    for end in (tx.Type, typing.Type):
+        assert issubhint(end, type) and issubhint(type, end)
+        for value in (int, Dog, object(), Dog(), 1):
+            assert ishintstance(value, S[end]) is ishintstance(value, S[type])
+            assert ishintstance(value, B[end, object]) is ishintstance(
+                value, B[type, object]
+            )
+        assert issubhint(S[end], S[type]) and issubhint(S[type], S[end])
+        assert issubhint(S[object], S[end]) is True
+        assert issubhint(S[end], S[object]) is False
+
+
 def test_a_marked_hint_is_not_class_like() -> None:
     for hint in (S[Dog], B[Dog, Animal], E[Dog], S):
         assert is_class_hint(hint) is False
@@ -300,8 +315,54 @@ def test_the_endpoint_message() -> None:
         assert message is not None and message.endswith(advice)
 
 
+def test_an_end_is_spelled_as_written_in_the_message() -> None:
+    # A `Hint[...]` end reads as written, not by its qualified class name.
+    message = value_bound_message(B[Hint[Dog], Hint[Animal]])
+    assert message is not None
+    assert message.startswith(
+        "Between[Hint[Dog], Hint[Animal]] cannot bound a value with "
+        "Hint[Dog]: "
+    )
+    assert message.endswith("write Hint[Between[Dog, Animal]].")
+    with pytest.raises(TypeError) as info:
+        ishintstance(Dog(), B[Hint[Dog], Hint[Animal]])
+    assert str(info.value) == message
+    # An `Exact` in a union end reads as `Exact[Dog]`, not as `Annotated`.
+    message = value_bound_message(S[tx.Union[E[Dog], Cat]])
+    assert message is not None
+    spelled = next(
+        each
+        for each in ("Union[Exact[Dog], Cat]", "Exact[Dog] | Cat")
+        if message.startswith(f"Super[{each}] cannot bound a value with ")
+    )
+    assert f"with {spelled}: " in message
+    assert "Annotated" not in message and __name__ not in message
+
+
+def _forward_dispatch(name: str, later: tx.Any) -> tx.Any:
+    # Each call needs its own function name, since `dispatch` joins a function
+    # of the same name in the same module, and its own forward reference,
+    # since `typing` caches `Between[int, "Later"]` and the `ForwardRef`
+    # inside it remembers the first value it resolved to.
+    forward = name.capitalize()
+    namespace: tx.Dict[str, tx.Any] = {"dispatch": dispatch, "Between": B}
+    exec(
+        f"@dispatch\ndef {name}(x: Between[int, '{forward}']):\n"
+        "    return 'between'",
+        namespace,
+    )
+    namespace[forward] = later
+    return namespace[name]
+
+
 def test_a_forward_reference_end_is_checked_once_it_resolves() -> None:
     assert value_bound_message(B[Dog, "Later"]) is None
+    # Bound after the method is defined, the end is read at the first call.
+    f = _forward_dispatch("literal", tx.Literal[1])
+    with pytest.raises(TypeError, match="cannot bound a value with"):
+        f(1)
+    f = _forward_dispatch("integral", Integral)
+    assert f(1) == "between"
 
 
 def test_a_bound_is_legal_anywhere_inside_type_or_hint() -> None:
@@ -594,11 +655,13 @@ def test_a_bound_nested_in_a_type_argument_bound_is_refused() -> None:
     # What `Type[Between[Never, "Later"]]` becomes once `Later` resolves to a
     # hint holding a bound.
     nested = tx.Type[tx.Annotated[tx.Optional[S[Dog]], _Lower(tx.Never)]]
-    needle = "Super[Dog] cannot appear inside the bound of another"
+    needle = "Super[Dog] cannot appear inside an Exact, Super or Between form"
     for call in (
         lambda: issubhint(nested, tx.Type[Animal]),
         lambda: ishintstance(Dog, nested),
         lambda: ishintstance(1, tx.Annotated[tx.Optional[S[Dog]], SUPER]),
+        lambda: E[tx.Optional[S[Dog]]],
+        lambda: E[tx.TypeVar("_TE", bound=S[Dog])],
     ):
         with pytest.raises(TypeError) as info:
             call()
@@ -767,6 +830,75 @@ def test_dog_vs_super_dog_is_ambiguous_for_dog() -> None:
     assert f(Dog()) == "exact"
 
 
+def test_a_bound_on_variadic_parameters() -> None:
+    f = Function("f")
+
+    @f.register
+    def args(*args: S[Dog]) -> str:
+        return "args"
+
+    assert f(Animal(), Dog()) == "args"
+    with pytest.raises(NoMethodError):
+        f(Puppy())
+
+    g = Function("g")
+
+    @g.register
+    def kwargs(**kwargs: B[Dog, Animal]) -> str:
+        return "kwargs"
+
+    assert g(a=Animal(), b=Dog()) == "kwargs"
+    with pytest.raises(NoMethodError):
+        g(a=Puppy())
+
+
+def test_a_bound_among_several_parameters() -> None:
+    def plain(x: Animal, y: int) -> str:
+        return "plain"
+
+    # `str` and `int` never overlap, so the methods cannot both match.
+    def text(x: S[Dog], y: str) -> str:
+        return "text"
+
+    _quiet_register(Function("f"), plain, text)
+
+    def flag(x: S[Dog], y: bool) -> str:
+        return "flag"
+
+    f = Function("f")
+    f.register(plain)
+    with pytest.warns(RuntimeWarning, match="ambiguous"):
+        f.register(flag)
+    with pytest.raises(AmbiguousMethodError) as info:
+        f(Dog(), True)
+    assert "f(x: Exact[Dog], y: bool)" in str(info.value)
+
+    def optional(x: Animal, y: tx.Optional[S[Dog]]) -> str:
+        return "optional"
+
+    def reversed_(x: S[Dog], y: Animal) -> str:
+        return "reversed"
+
+    g = Function("g")
+    g.register(optional)
+    with pytest.warns(RuntimeWarning, match="ambiguous"):
+        g.register(reversed_)
+    with pytest.raises(AmbiguousMethodError) as info:
+        g(Dog(), Dog())
+    assert "g(x: Exact[Dog], y: Exact[Dog])" in str(info.value)
+
+
+def test_a_constrained_typevar_as_an_end() -> None:
+    constrained = tx.TypeVar("_TC", Animal, str)
+    # A class is above the variable only when it is above every constraint.
+    hint = S[constrained]
+    assert ishintstance(object(), hint) is True
+    for value in (Animal(), Dog(), "text", 1):
+        assert ishintstance(value, hint) is False
+    assert issubhint(B[Dog, Animal], constrained) is True
+    assert issubhint(S[Dog], constrained) is False
+
+
 def test_between_below_plain_wins() -> None:
     f = Function("f")
 
@@ -840,6 +972,27 @@ def test_bound_as_a_hint_value() -> None:
     assert ishintstance(S[int], Hint[int]) is False
     assert ishintstance(S[int], Hint[S[int]]) is False
     assert ishintstance(B[Dog, Animal], Hint[Animal]) is True
+
+
+def test_a_hint_value_is_checked_for_a_bound_at_its_top_level() -> None:
+    # A bound at the top of a hint passed as a value is always refused.
+    for sup in (Hint[tx.Any], Hint[object]):
+        with pytest.raises(TypeError, match="cannot bound a value with"):
+            ishintstance(S[tx.Literal[1]], sup)
+    # A nested one is found only when the comparison reaches it, which a
+    # comparison with `Any` never does.
+    for nested in (
+        tx.Optional[S[tx.Literal[1]]],
+        tx.Sequence[S[int]],
+        tx.Type[tx.Union[S[int], str]],
+    ):
+        assert ishintstance(nested, Hint[tx.Any]) is True
+    with pytest.raises(TypeError, match="cannot bound a value with"):
+        ishintstance(tx.Optional[S[tx.Literal[1]]], Hint[object])
+    with pytest.raises(TypeError, match="puts a lower bound on argument 1"):
+        ishintstance(tx.Sequence[S[int]], Hint[object])
+    # A bound that a type argument can hold is no error at all.
+    assert ishintstance(tx.List[S[int]], Hint[object]) is True
 
 
 def test_value_bound_renders() -> None:

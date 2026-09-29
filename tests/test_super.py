@@ -342,7 +342,7 @@ def _fn(annotation: tx.Any, kind: str = "x") -> tx.Any:
             # What `Super["Later"]` becomes once `Later` resolves to a hint
             # holding a bound: the resolved hint is never built by `Super`.
             tx.Annotated[tx.Optional[Super[int]], SUPER],
-            "Super[int] cannot appear inside the bound of another",
+            "Super[int] cannot appear inside an Exact, Super or Between form",
         ),
         (
             Super[tx.Literal[1]],

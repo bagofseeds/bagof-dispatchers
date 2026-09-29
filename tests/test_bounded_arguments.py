@@ -697,7 +697,8 @@ def test_a_bound_nested_in_a_slot_bound_is_refused() -> None:
         lambda: issubhint(nested, L[int]),
         lambda: dispatch(_fn(nested)),
     ):
-        with pytest.raises(TypeError, match="cannot appear inside the bound"):
+        needle = "cannot appear inside an Exact, Super or Between form"
+        with pytest.raises(TypeError, match=needle):
             call()
 
 

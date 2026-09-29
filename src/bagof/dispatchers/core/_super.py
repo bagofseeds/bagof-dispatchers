@@ -6,7 +6,7 @@ hint.
 import typing_extensions as tx
 
 # local
-from ._compat import ishint
+from ._compat import UNION_TYPES, ishint
 from ._exact import _ANNOTATED_ALIAS, exact_target, is_exact
 from ._hint import Hint
 
@@ -28,22 +28,119 @@ SUPER = _SuperMarker()
 
 
 def _render_target(hint: tx.Any) -> str:
-    """Spell a hint the way an error message names it.
+    """Spell a hint the way an error message or a signature names it.
 
     A class is named by its `__name__`, a forward reference by the name
-    it was written with, and any other hint by its string form with the
-    `typing.` and `typing_extensions.` prefixes removed, so that a message
-    reads `Super[int]` or `Super[List[int]]`.
+    it was written with, and an `Exact`, `Super` or `Between` hint by the
+    spelling it was written with rather than by its `Annotated` form. The
+    argument of `Type` or `Hint`, the members of a union and the type
+    arguments of a generic are spelled the same way, so that a marked
+    hint nested in them reads back as it was written, as in
+    `List[Super[int]]`. Any other hint is spelled by its string form with
+    the `typing.` and `typing_extensions.` prefixes removed, so that a
+    message reads `Super[int]` or `Super[List[int]]`.
     """
-    if isinstance(hint, type):
-        return hint.__name__
+    # Imported here because `_bounds` and `_introspect` import this module.
+    from ._bounds import between_bounds, is_between
+    from ._introspect import get_args_uw, get_origin_uw
+
     if isinstance(hint, str):
         return hint
     forward = getattr(hint, "__forward_arg__", None)
     if isinstance(forward, str):
         return forward
+    if hint is tx.Any:
+        return "Any"
+    if is_exact(hint):
+        return f"Exact[{_render_target(exact_target(hint))}]"
+    if is_super(hint):
+        return f"Super[{_render_target(super_target(hint))}]"
+    if is_between(hint):
+        lower, upper = between_bounds(hint)
+        return f"Between[{_render_target(lower)}, {_render_target(upper)}]"
+    origin, args = get_origin_uw(hint), get_args_uw(hint)
+    if origin is type and args:
+        return f"Type[{_render_target(args[0])}]"
+    if origin is Hint and args:
+        return f"Hint[{_render_target(args[0])}]"
+    if origin in UNION_TYPES and args:
+        return _render_union(hint, args)
+    if isinstance(hint, type):
+        return hint.__name__
     text = str(hint)
-    return text.replace("typing_extensions.", "").replace("typing.", "")
+    text = text.replace("typing_extensions.", "").replace("typing.", "")
+    if args and "[" in text and _holds_a_marked_hint(args):
+        # A generic with a marked hint among its arguments, such as
+        # `List[Super[int]]`: the name it was written with, then each
+        # argument spelled the same way.
+        return f"{text[:text.index('[')]}[{_render_arguments(args)}]"
+    return text
+
+
+def _holds_a_marked_hint(args: tx.Sequence[tx.Any]) -> bool:
+    """Report whether an `Exact`, `Super` or `Between` hint appears
+    anywhere among `args`, the arguments of a generic, however deeply
+    nested.
+    """
+    # Imported here because `_bounds` and `_introspect` import this module.
+    from ._bounds import is_bound
+    from ._introspect import get_args_uw
+
+    for arg in args:
+        if isinstance(arg, tx.TypeVar):
+            # The `TypeVar` family first: on 3.8 the `ParamSpec` backport is a
+            # `list` holding itself.
+            continue
+        if isinstance(arg, (list, tuple)):
+            # A parameter list, of a `Callable` or of a `ParamSpec` generic.
+            if _holds_a_marked_hint(arg):
+                return True
+        elif (
+            is_bound(arg)
+            or is_exact(arg)
+            or _holds_a_marked_hint(get_args_uw(arg))
+        ):
+            return True
+    return False
+
+
+def _render_arguments(args: tx.Sequence[tx.Any]) -> str:
+    """Spell the arguments of a generic for [`_render_target`][].
+
+    A parameter list, of a `Callable` or of a `ParamSpec` generic, is
+    spelled in its brackets, and a `...` as written.
+    """
+    shown = []
+    for arg in args:
+        if isinstance(arg, (list, tuple)) and not isinstance(arg, tx.TypeVar):
+            shown.append(f"[{_render_arguments(arg)}]")
+        elif arg is Ellipsis:
+            shown.append("...")
+        else:
+            shown.append(_render_target(arg))
+    return ", ".join(shown)
+
+
+def _render_union(hint: tx.Any, args: tx.Tuple[tx.Any, ...]) -> str:
+    """Spell a union with each member spelled by [`_render_target`][].
+
+    The spelling follows the one the running interpreter gives the union,
+    whether `Optional[X]`, `Union[X, Y]` or `X | Y`, so that only the
+    members change: a `Super[C]`, `Between[L, U]` or `Exact[C]` among
+    them reads back as such rather than as its `Annotated` spelling.
+    """
+    text = str(hint).replace("typing_extensions.", "").replace("typing.", "")
+    members = [_render_target(arg) for arg in args]
+    # Python 3.14 prints every union as `X | Y`, so the two spellings below
+    # are only produced, and only exercised by the tests, on earlier versions.
+    if text.startswith("Optional["):  # pragma: no cover  -- Python < 3.14
+        (member,) = [
+            m for arg, m in zip(args, members) if arg is not type(None)
+        ]
+        return f"Optional[{member}]"
+    if text.startswith("Union["):  # pragma: no cover  -- Python < 3.14
+        return f"Union[{', '.join(members)}]"
+    return " | ".join(members)
 
 
 def combination_message(outer: str, inner: tx.Any) -> str:

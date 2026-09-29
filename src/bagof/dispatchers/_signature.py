@@ -65,7 +65,7 @@ from .core._bounds import (
 )
 from .core._compat import _UNPACK_FORMS, UNION_TYPES, spellings
 from .core._exact import exact_target, is_exact
-from .core._hint import Hint, is_hint_form
+from .core._hint import is_hint_form
 from .core._introspect import _typing_spelling
 from .core._relation import (
     _is_subscripted_tuple,
@@ -74,7 +74,7 @@ from .core._relation import (
     _TupleShape,
     arguments_bound_message,
 )
-from .core._super import is_super, super_target
+from .core._super import _render_target as _render_hint
 
 __all__ = ["Parameter", "Signature", "Binding"]
 
@@ -1768,102 +1768,6 @@ def _hint_for(
 
 
 # --- rendering ---------------------------------------------------------
-
-
-def _render_hint(hint: tx.Any) -> str:
-    """Render a short, readable spelling of a hint for a signature's `repr`."""
-    if isinstance(hint, str):
-        return hint
-    forward = getattr(hint, "__forward_arg__", None)
-    if forward is not None:
-        return forward
-    if hint is tx.Any:
-        return "Any"
-    # An `Exact[C]` reads back as `Exact[C]`, not its `Annotated` spelling.
-    if is_exact(hint):
-        return f"Exact[{_render_hint(exact_target(hint))}]"
-    if is_super(hint):
-        return f"Super[{_render_hint(super_target(hint))}]"
-    if is_between(hint):
-        lower, upper = between_bounds(hint)
-        return f"Between[{_render_hint(lower)}, {_render_hint(upper)}]"
-    # `Type[Exact[C]]` and `Hint[Exact[C]]` render their argument recursively,
-    # so a nested `Exact` reads as `Exact[C]`, not `Annotated[C, EXACT]`.
-    origin = get_origin_uw(hint)
-    args = get_args_uw(hint)
-    if origin is type and args:
-        return f"Type[{_render_hint(args[0])}]"
-    if origin is Hint and args:
-        return f"Hint[{_render_hint(args[0])}]"
-    if origin in UNION_TYPES and args:
-        return _render_union(hint, args)
-    if isinstance(hint, type):
-        return hint.__name__
-    text = str(hint)
-    text = text.replace("typing_extensions.", "").replace("typing.", "")
-    if args and "[" in text and _holds_a_bound(args):
-        # A generic with a bound among its arguments, such as
-        # `List[Super[int]]`: the name it was written with, then each
-        # argument rendered the same way.
-        return f"{text[:text.index('[')]}[{_render_arguments(args)}]"
-    return text
-
-
-def _holds_a_bound(args: tx.Sequence[tx.Any]) -> bool:
-    """Report whether a `Super` or a `Between` appears anywhere among
-    `args`, the arguments of a generic, however deeply nested.
-    """
-    for arg in args:
-        if isinstance(arg, tx.TypeVar):
-            # The `TypeVar` family first: on 3.8 the `ParamSpec` backport is a
-            # `list` holding itself.
-            continue
-        if isinstance(arg, (list, tuple)):
-            # A parameter list, of a `Callable` or of a `ParamSpec` generic.
-            if _holds_a_bound(arg):
-                return True
-        elif is_bound(arg) or _holds_a_bound(get_args_uw(arg)):
-            return True
-    return False
-
-
-def _render_arguments(args: tx.Sequence[tx.Any]) -> str:
-    """Render the arguments of a generic for [`_render_hint`][].
-
-    A parameter list, of a `Callable` or of a `ParamSpec` generic, is
-    rendered in its brackets, and a `...` as written.
-    """
-    shown = []
-    for arg in args:
-        if isinstance(arg, (list, tuple)) and not isinstance(arg, tx.TypeVar):
-            shown.append(f"[{_render_arguments(arg)}]")
-        elif arg is Ellipsis:
-            shown.append("...")
-        else:
-            shown.append(_render_hint(arg))
-    return ", ".join(shown)
-
-
-def _render_union(hint: tx.Any, args: tx.Tuple[tx.Any, ...]) -> str:
-    """Render a union with each member rendered by `_render_hint`.
-
-    The spelling follows the one the running interpreter gives the union,
-    whether `Optional[X]`, `Union[X, Y]` or `X | Y`, so that only the
-    members change: a `Super[C]`, `Between[L, U]` or `Exact[C]` among
-    them reads back as such rather than as its `Annotated` spelling.
-    """
-    text = str(hint).replace("typing_extensions.", "").replace("typing.", "")
-    members = [_render_hint(arg) for arg in args]
-    # Python 3.14 prints every union as `X | Y`, so the two spellings below
-    # are only produced, and only exercised by the tests, on earlier versions.
-    if text.startswith("Optional["):  # pragma: no cover  -- Python < 3.14
-        (member,) = [
-            m for arg, m in zip(args, members) if arg is not type(None)
-        ]
-        return f"Optional[{member}]"
-    if text.startswith("Union["):  # pragma: no cover  -- Python < 3.14
-        return f"Union[{', '.join(members)}]"
-    return " | ".join(members)
 
 
 def _render_parameters(

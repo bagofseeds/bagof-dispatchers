@@ -338,7 +338,7 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
     `#!python Hint[Exact[X]]` narrows that to the exact hint `X`, and
     `#!python Hint[Super[X]]` turns it around, accepting `X` and every
     hint that `X` is a sub-hint of, while `#!python Hint[Between[L, U]]`
-    accepts the hints from `L` up to `U`. A
+    accepts the hints between `L` and `U`, both included. A
     [`Literal`][tx.Literal] hint requires `obj` to equal one of its
     listed values, with the type checked alongside the value, so
     `#!python True` does not satisfy `#!python Literal[1]` even though
@@ -356,6 +356,16 @@ def ishintstance(obj: tx.Any, hint: tx.Any) -> bool:
     `U`. Each bound must then be a hint that a class can be compared
     against, and one that reads the value itself, such as a `Literal`,
     raises a [`TypeError`][].
+
+    When `obj` is itself a hint passed as a value to a `#!python Hint[X]`
+    hint, only a bound at the top level of `obj` is checked in this way,
+    so `#!python ishintstance(Super[Literal[1]], Hint[Any])` raises the
+    same error. A misplaced bound nested inside `obj`, as in
+    `#!python Optional[Super[Literal[1]]]` or
+    `#!python Sequence[Super[int]]`, is reported only when the
+    comparison with `X` reaches it, and a comparison with
+    `#!python Any` never does, because every hint is a sub-hint of
+    `#!python Any`.
 
     A [`TypedDict`][tx.TypedDict] hint describes the shape of a mapping
     rather than its class: `obj` must be a [`dict`][] carrying every
@@ -553,11 +563,11 @@ def is_class_hint(hint: tx.Any) -> bool:
     what a bound of a `Super` or a `Between` on a value needs, since the
     bound is compared against the value's class. A class, an abstract
     base class, a protocol with methods only, a bare generic alias such
-    as `List`, `Never`, `Any`, a union of such hints, and a `TypeVar`
-    whose bound or constraints are such hints all qualify. A hint that
-    reads the value itself does not, which includes a protocol with data
-    members, a `TypedDict`, a `Literal`, a parametrised generic, and the
-    `Type[...]` and `Hint[...]` forms.
+    as `List` or `Type`, `Never`, `Any`, a union of such hints, and a
+    `TypeVar` whose bound or constraints are such hints all qualify. A
+    hint that reads the value itself does not, which includes a protocol
+    with data members, a `TypedDict`, a `Literal`, a parametrised
+    generic, `Type[C]`, and `Hint` in any spelling.
     """
     hint = normalise_hint(hint)
     if is_bound(hint) or is_exact(hint) or is_unbounded_form(hint):
@@ -572,9 +582,6 @@ def is_class_hint(hint: tx.Any) -> bool:
     if origin in UNION_TYPES:
         return bool(args) and all(is_class_hint(arg) for arg in args)
     if args or not isinstance(origin, type):
-        return False
-    if origin is type and hint is not type:
-        # A bare `Type`, whose values are classes.
         return False
     return not (
         is_hint_form(origin)

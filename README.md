@@ -40,12 +40,13 @@ walks through registering overloads in more detail.
   inside `Type[...]` or `Hint[...]` it accepts the class or hint `C` and
   everything above it, so `Type[Super[Dog]]` accepts the class `Dog` and
   each class it derives from. `Between[L, U]` bounds from both sides at
-  once, so `Between[Dog, Animal]` accepts a value whose class lies from
-  `Dog` up to `Animal`, and `Type[Between[Dog, Animal]]` accepts those
-  classes themselves. As the type argument of an invariant generic, a bound
-  names a range of arguments, so `List[Super[int]]` accepts a list declared
-  to hold `int`, `numbers.Integral` or `object`. See
-  [Exact types][exact-types] and [Variance][variance].
+  once, so `Between[Dog, Animal]` accepts a value whose class lies
+  between `Dog` and `Animal`, both included, and
+  `Type[Between[Dog, Animal]]` accepts those classes themselves. As the
+  type argument of an invariant generic, a bound names a range of
+  arguments, so `List[Super[int]]` accepts a list declared to hold `int`,
+  `numbers.Integral` or `object`. See [Exact types][exact-types] and
+  [Variance][variance].
 - A call that matches no overload, or that matches two equally specific
   overloads, is always a clear error rather than a silent guess.
   `NoMethodError` is a `TypeError` carrying the closest candidates, and
