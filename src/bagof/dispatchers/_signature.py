@@ -59,7 +59,6 @@ from .core._bounds import (
     is_unbounded_form,
     member_bound_message,
     misplaced_bound_message,
-    slot_bound_message,
     unbounded_form_message,
     value_bound_message,
     written_ends,
@@ -73,6 +72,7 @@ from .core._relation import (
     _is_unpacked_typevartuple,
     _malformed_typeddict_reason,
     _TupleShape,
+    arguments_bound_message,
 )
 from .core._super import is_super, super_target
 
@@ -1433,14 +1433,13 @@ def _reject_variadic_param(
 
 # Where `_misplaced_bound_in` meets a hint: the hint of a value parameter, the
 # argument of `Type` or `Hint`, a union member or a `TypeVar` bound inside
-# such an argument, a hint a bound is written with, or (as `("slot", origin)`)
-# a type argument of the generic `origin`.
-_Where = tx.Union[str, tx.Tuple[str, tx.Any]]
+# such an argument, a hint a bound is written with, or a type argument of a
+# generic.
 _CONCATENATE_FORMS = spellings("Concatenate")
 
 
 def _misplaced_bound_in(
-    hint: tx.Any, where: _Where = "value"
+    hint: tx.Any, where: str = "value"
 ) -> tx.Optional[str]:
     """Explain what is wrong with a bound that `hint` carries, if anything.
 
@@ -1448,13 +1447,16 @@ def _misplaced_bound_in(
     either as its whole hint, as a member of its union, or as the bound
     of a `TypeVar` used there, and each bound it is written with must
     then be a hint that a class can be compared against. It can also
-    stand as the whole argument of a `Type` or a `Hint` form, where any
-    hint can be a bound. Everywhere else it is refused, which covers a
-    union member or a `TypeVar` bound inside the argument of `Type` or
-    `Hint`, a bound nested inside another bound, a constraint of a
-    `TypeVar`, an element of a `Tuple`, the signature of a `Callable`, and
-    a type argument of any other generic. An unsubscripted `Super`,
-    `SuperType`, `SuperHint` or `Between` is refused wherever it appears.
+    stand as the whole argument of a `Type` or a `Hint` form, and as the
+    whole type argument of a generic, where any hint can be a bound. At
+    a slot of a generic, the variance of the slot decides whether the
+    bound can be read there, exactly as the relation decides it when it
+    compares the hint. Everywhere else a bound is refused, which covers
+    a union member or a `TypeVar` bound inside the argument of `Type`,
+    of `Hint` or of a generic's slot, a bound nested inside another
+    bound, a constraint of a `TypeVar`, an element of a `Tuple`, and the
+    signature of a `Callable`. An unsubscripted `Super`, `SuperType`,
+    `SuperHint` or `Between` is refused wherever it appears.
 
     `where` says which of those positions `hint` stands in, and the walk
     carries it down into the hints `hint` is made of. The result is the
@@ -1495,19 +1497,25 @@ def _misplaced_bound_in(
     if origin is type or is_hint_form(origin):
         return _first_misplaced(args, "argument")
     if any(origin is form for form in _CONCATENATE_FORMS):
-        # A `Concatenate` prefix belongs to the `Callable` it is written in.
-        return _first_misplaced(args, where)
-    return _first_misplaced(args, ("slot", origin))
+        # A `Concatenate` prefix belongs to the `Callable` it is written in,
+        # which has already read it.
+        return _first_misplaced(args, "slot")
+    if not args:
+        return None
+    # The arguments of any other generic are read by the relation's own
+    # rule, and then each of them is walked for what it holds.
+    found = arguments_bound_message(origin, args)
+    if found is not None:
+        return found
+    return _first_misplaced(args, "slot")
 
 
-def _misplaced_in_bound(bound: tx.Any, where: _Where) -> tx.Optional[str]:
+def _misplaced_in_bound(bound: tx.Any, where: str) -> tx.Optional[str]:
     """Explain what is wrong with the bound `bound`, met in `where`."""
     if where == "member":
         return member_bound_message(bound)
     if where == "endpoint":
         return endpoint_bound_message(bound)
-    if isinstance(where, tuple):
-        return slot_bound_message(bound, where[1])
     if where == "value":
         found = value_bound_message(bound)
         if found is not None:
@@ -1519,7 +1527,7 @@ def _misplaced_in_bound(bound: tx.Any, where: _Where) -> tx.Optional[str]:
 
 
 def _first_misplaced(
-    args: tx.Sequence[tx.Any], where: _Where
+    args: tx.Sequence[tx.Any], where: str
 ) -> tx.Optional[str]:
     """Return the first message [`_misplaced_bound_in`][] gives for `args`.
 
@@ -1792,7 +1800,48 @@ def _render_hint(hint: tx.Any) -> str:
     if isinstance(hint, type):
         return hint.__name__
     text = str(hint)
-    return text.replace("typing_extensions.", "").replace("typing.", "")
+    text = text.replace("typing_extensions.", "").replace("typing.", "")
+    if args and "[" in text and _holds_a_bound(args):
+        # A generic with a bound among its arguments, such as
+        # `List[Super[int]]`: the name it was written with, then each
+        # argument rendered the same way.
+        return f"{text[:text.index('[')]}[{_render_arguments(args)}]"
+    return text
+
+
+def _holds_a_bound(args: tx.Sequence[tx.Any]) -> bool:
+    """Report whether a `Super` or a `Between` appears anywhere among
+    `args`, the arguments of a generic, however deeply nested.
+    """
+    for arg in args:
+        if isinstance(arg, tx.TypeVar):
+            # The `TypeVar` family first: on 3.8 the `ParamSpec` backport is a
+            # `list` holding itself.
+            continue
+        if isinstance(arg, (list, tuple)):
+            # A parameter list, of a `Callable` or of a `ParamSpec` generic.
+            if _holds_a_bound(arg):
+                return True
+        elif is_bound(arg) or _holds_a_bound(get_args_uw(arg)):
+            return True
+    return False
+
+
+def _render_arguments(args: tx.Sequence[tx.Any]) -> str:
+    """Render the arguments of a generic for [`_render_hint`][].
+
+    A parameter list, of a `Callable` or of a `ParamSpec` generic, is
+    rendered in its brackets, and a `...` as written.
+    """
+    shown = []
+    for arg in args:
+        if isinstance(arg, (list, tuple)) and not isinstance(arg, tx.TypeVar):
+            shown.append(f"[{_render_arguments(arg)}]")
+        elif arg is Ellipsis:
+            shown.append("...")
+        else:
+            shown.append(_render_hint(arg))
+    return ", ".join(shown)
 
 
 def _render_union(hint: tx.Any, args: tx.Tuple[tx.Any, ...]) -> str:

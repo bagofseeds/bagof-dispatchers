@@ -39,6 +39,7 @@ shape wherever a `TypedDict`-typed parameter is involved.
 """
 
 # stdlib
+import itertools
 from collections import abc
 
 # dependencies
@@ -53,11 +54,15 @@ from .core import (
     normalise_hint,
     unwrap,
 )
-from .core._bounds import bounds_of, is_bound
-from .core._compat import UNION_TYPES, is_typeddict_marker
+from .core._bounds import bounds_of, is_bound, slot_bounds
+from .core._compat import UNION_TYPES, is_typeddict_marker, spellings
 from .core._exact import is_exact
 from .core._hint import hint_arg, is_hint_form
-from .core._introspect import _reads_declared_arguments, is_typeddict
+from .core._introspect import (
+    _reads_declared_arguments,
+    is_typeddict,
+    safe_issubclass,
+)
 from .core._relation import (
     _callable_param_shape,
     _data_protocol_members,
@@ -71,7 +76,11 @@ from .core._relation import (
     _tuple_shape,
     _TupleShape,
     _typevar_upper,
+    _with_arguments,
 )
+
+# Every spelling of `Any`.
+_ANY_FORMS = spellings("Any")
 
 # --- equivalence -------------------------------------------------------
 
@@ -166,10 +175,12 @@ def overlaps(a: tx.Any, b: tx.Any) -> bool:
         # an interval of classes that a value's class must lie in.
         return _share_a_value(a, b, object)
     if get_origin_uw(a) is type and get_origin_uw(b) is type:
-        return _share_a_value(_type_arg(a), _type_arg(b), object)
+        a, b = _type_arg(a), _type_arg(b)
+        return _share_a_value(a, b, object) or _share_an_argument(a, b)
     if is_hint_form(a) and is_hint_form(b):
-        return _share_a_value(hint_arg(a), hint_arg(b), tx.Any)
-    return False
+        a, b = hint_arg(a), hint_arg(b)
+        return _share_a_value(a, b, tx.Any) or _share_an_argument(a, b)
+    return _share_an_argument(a, b)
 
 
 def _read(hint: tx.Any) -> tx.Any:
@@ -220,6 +231,115 @@ def _share_a_value(a: tx.Any, b: tx.Any, top: tx.Any) -> bool:
         if _within(end, first) and _within(end, second):
             return True
     return False
+
+
+# How many parametrisations `_share_an_argument` tries before it gives up.
+_MAX_WITNESSES = 64
+
+
+def _share_an_argument(a: tx.Any, b: tx.Any) -> bool:
+    """Report whether two parametrised generics, at least one of them with
+    a bound among its type arguments, share a parametrisation.
+
+    Two parametrisations of one generic that are not ordered can still
+    have a parametrisation below both, which a value can declare: a
+    `List[int]` is below both
+    `#!python List[Between[Never, numbers.Integral]]` and
+    `#!python List[Super[int]]`. The same holds when the origin of one
+    hint derives from the origin of the other, as `list` derives from
+    `MutableSequence`. The parametrisations tried are built on the more
+    derived origin, with each type argument replaced by one of the ends
+    of the range it names, or by an argument the other hint gives at the
+    same position when the origins are the same. Each one is then
+    checked against both hints by the relation itself, so an overlap
+    reported here is always real. Hints with no bound among their
+    arguments are never reported, which keeps `List[int]` and
+    `List[str]` apart, as the relation's own order does.
+    """
+    a, b = _read(a), _read(b)
+    if any(is_bound(each) or is_exact(each) for each in (a, b)):
+        # A bound or an `Exact` hint names a range of classes or hints, not a
+        # parametrisation, and has been read as such already.
+        return False
+    if not (_holds_argument_bound(a) or _holds_argument_bound(b)):
+        return False
+    origin_a, origin_b = get_origin_uw(a), get_origin_uw(b)
+    if origin_a is origin_b:
+        choices = [
+            _arguments_to_try(x) + _arguments_to_try(y)
+            for x, y in zip(get_args_uw(a), get_args_uw(b))
+        ]
+        base = a
+    elif safe_issubclass(origin_a, origin_b):
+        choices = [_arguments_to_try(x) for x in get_args_uw(a)]
+        base = a
+    elif safe_issubclass(origin_b, origin_a):
+        choices = [_arguments_to_try(x) for x in get_args_uw(b)]
+        base = b
+    else:
+        return False
+    if not choices:
+        # A class that fills in its bases' arguments itself, such as
+        # `class IntList(List[int])`, has no arguments of its own to vary.
+        return False
+    for args in itertools.islice(itertools.product(*choices), _MAX_WITNESSES):
+        witness = _with_arguments(base, args)
+        if issubhint(witness, a) and issubhint(witness, b):
+            return True
+    return False
+
+
+def _holds_argument_bound(hint: tx.Any) -> bool:
+    """Report whether a bound stands among the type arguments of the
+    parametrised generic `hint`, at any depth.
+    """
+    if is_bound(hint) or is_exact(hint):
+        return False
+    origin = get_origin_uw(hint)
+    if (
+        not isinstance(origin, type)
+        or origin is tuple
+        or origin is abc.Callable
+    ):
+        # `Tuple` and `Callable` hold no bound among their own arguments, and
+        # their arguments describe a shape rather than one argument per slot.
+        return False
+    return any(
+        is_bound(arg) or _holds_argument_bound(arg)
+        for arg in get_args_uw(hint)
+    )
+
+
+def _arguments_to_try(arg: tx.Any) -> tx.List[tx.Any]:
+    """List the type arguments to try in place of `arg` when looking for a
+    parametrisation that two hints share.
+
+    A bound, `Any` or a `TypeVar` gives the ends of the range it names, a
+    constrained `TypeVar` its constraints, a parametrised generic with a
+    bound among its own arguments the parametrisations built the same
+    way, and any other argument itself.
+    """
+    arg = normalise_hint(arg)
+    variable = unwrap(arg, tx.Annotated)
+    constraints = getattr(variable, "__constraints__", ())
+    if isinstance(variable, tx.TypeVar) and constraints:
+        return list(constraints)
+    if is_bound(arg) or _is_open(variable):
+        return list(slot_bounds(arg))
+    if _holds_argument_bound(arg):
+        choices = [_arguments_to_try(each) for each in get_args_uw(arg)]
+        return [
+            _with_arguments(arg, args)
+            for args in itertools.islice(itertools.product(*choices), 8)
+        ]
+    return [arg]
+
+
+def _is_open(arg: tx.Any) -> bool:
+    """Report whether a type argument is `Any` or a `TypeVar`."""
+    return isinstance(arg, tx.TypeVar) or any(
+        arg is form for form in _ANY_FORMS
+    )
 
 
 def _type_arg(hint: tx.Any) -> tx.Any:
@@ -682,7 +802,11 @@ def is_declaration_dependent(hint: tx.Any) -> bool:
     the instance itself, so every `#!python Box[int]()` shares a single
     cache entry. A value of any other class, such as a plain
     `#!python list`, never has this recorded parametrisation looked up,
-    and keys simply as its type paired with `#!python None`.
+    and keys simply as its type paired with `#!python None`. A generic
+    with a bound as a type argument, such as
+    `#!python List[Super[int]]`, is declaration-dependent like any other
+    parametrised generic, since the bound is compared against the
+    recorded argument.
 
     `#!python Type[C]`, a `TypedDict`, `#!python Tuple`, and
     `#!python Callable` each have their own matching logic and are not

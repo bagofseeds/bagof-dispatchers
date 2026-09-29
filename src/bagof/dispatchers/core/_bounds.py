@@ -14,7 +14,6 @@ where it cannot be read.
 
 # stdlib
 import functools
-from collections import abc
 
 # dependencies
 import typing_extensions as tx
@@ -23,7 +22,14 @@ import typing_extensions as tx
 from ._compat import _LITERAL_FORMS, UNION_TYPES, ishint, spellings
 from ._exact import _ANNOTATED_ALIAS, Exact, exact_target, is_exact
 from ._hint import hint_arg, is_hint_form
-from ._introspect import get_args_uw, get_origin_uw, normalise_hint
+from ._introspect import (
+    _CONTRAVARIANT,
+    _COVARIANT,
+    get_args_uw,
+    get_origin_uw,
+    normalise_hint,
+    unwrap,
+)
 from ._super import (
     SUPER,
     _render_target,
@@ -227,9 +233,30 @@ else:
         such as a class, a union of classes, `Never` or `Any`. A hint that
         reads the value itself, such as a `Literal`, a `TypedDict` or a
         parametrised generic, is refused as a bound there. Inside `Type`
-        or `Hint`, any hint can be a bound, so the same
+        or `Hint`, and as a type argument, the interval is compared
+        against another hint, so any hint can be a bound. The same
         `#!python Between[Literal[1], int]` that is refused on a value is
-        accepted inside `Hint[...]`.
+        therefore accepted inside `Hint[...]` and in `List[...]`.
+
+        As the type argument of an invariant generic, where a plain
+        argument means exactly that type, `Between[L, U]` names a range of
+        arguments and stands for every parametrisation whose argument lies
+        in it. `#!python List[Between[Dog, Animal]]` accepts a list
+        declared to hold `Dog` or `Animal`, such as an instance of
+        `#!python class Dogs(List[Dog])`, and refuses one declared to hold
+        `Puppy`. A value that declares nothing, such as a plain
+        `#!python [Dog()]`, matches as it matches every parametrisation
+        of `#!python List`. At a covariant position, such as the argument
+        of `#!python Sequence`, the plain argument `U` already accepts
+        every parametrisation below it, so
+        `#!python Sequence[Between[Never, U]]` means the same as
+        `#!python Sequence[U]` and is read that way, while a lower bound
+        there would change nothing and is refused with a message naming
+        `#!python Sequence[U]`. A contravariant
+        position is the mirror image, where an upper bound is refused. A
+        bound is also refused as an element of a `#!python Tuple` and in
+        the signature of a `#!python Callable`, whose positions have a
+        fixed variance of their own.
 
         One interval is more specific than another when it lies inside
         it, so `#!python Between[Dog, Animal]` is more specific than
@@ -246,7 +273,10 @@ else:
         when that one is not empty. `#!python Between[Any, U]` is refused
         as well unless `U` is `Any` itself, because nothing else lies
         above `Any`. The interval with no lower bound is spelled
-        `#!python Between[Never, U]`, which means the same as plain `U`.
+        `#!python Between[Never, U]`. On a value and inside `Type` or
+        `Hint` it means the same as plain `U`, while as the type argument
+        of an invariant generic it accepts every argument up to `U`, where
+        plain `U` accepts `U` alone.
         A lower bound cannot be a quoted forward reference, because
         nothing would ever resolve it, but quoting the whole annotation
         works as usual.
@@ -256,7 +286,14 @@ else:
         or `Hint` a bound is always written inside the brackets, as in
         `#!python Type[Between[L, U]]`, never around them. A type checker
         reads `Between[L, U]` as `#!python Union[L, U, Any]`, which
-        accepts every call the runtime accepts.
+        accepts every call the runtime accepts on a value and inside
+        `Type` or `Hint`. As a type argument of an invariant generic, mypy
+        reads each member of that union as a lower bound, so it cannot
+        check the upper end, and it rejects a valid call whose argument
+        lies below `U`, while pyright accepts every call there. For a bound
+        with no lower end, a `TypeVar` bounded by `U`, as in
+        `#!python List[T]`, is read by dispatch exactly as
+        `#!python List[Between[Never, U]]` and is checked by both tools.
 
         !!! example
             ```pycon
@@ -273,6 +310,13 @@ else:
             >>> ishintstance(Animal, Type[Between[Dog, Animal]])
             True
             >>> ishintstance(object, Type[Between[Dog, Animal]])
+            False
+            >>> from typing import List
+            >>> class Dogs(List[Dog]): pass
+            >>> class Puppies(List[Puppy]): pass
+            >>> ishintstance(Dogs(), List[Between[Dog, Animal]])
+            True
+            >>> ishintstance(Puppies(), List[Between[Dog, Animal]])
             False
             ```
         """
@@ -559,16 +603,180 @@ def constraint_bound_message(bound: tx.Any) -> str:
     )
 
 
-def argument_bound_message(bound: tx.Any, origin: tx.Any) -> str:
-    """Compose the error for a bound written as a type argument of a
-    generic class.
+def _origin_name(origin: tx.Any) -> str:
+    """Name a generic class the way an error message names it."""
+    return getattr(origin, "__name__", None) or _render_target(origin)
+
+
+def spell_generic(origin: tx.Any, args: tx.Sequence[tx.Any]) -> str:
+    """Spell the parametrisation `origin[args]` the way an error message
+    names it, with any bound among `args` named as it was written.
+
+    An argument that is already a string is taken as its own spelling.
     """
-    name = getattr(origin, "__name__", None) or _render_target(origin)
+    shown = [
+        each
+        if isinstance(each, str)
+        else "None"
+        if each is type(None)
+        else _render_marked(each)
+        for each in args
+    ]
+    return f"{_origin_name(origin)}[{', '.join(shown)}]"
+
+
+def _spelled(
+    origin: tx.Any, args: tx.Sequence[tx.Any], index: int, arg: tx.Any
+) -> str:
+    """Spell `origin[args]` with the argument at `index` replaced by `arg`.
+
+    `arg` is a hint, or a string that is already its spelling.
+    """
+    replaced = list(args)
+    replaced[index] = arg
+    return spell_generic(origin, replaced)
+
+
+def bound_ends(bound: tx.Any) -> tx.Tuple[tx.Any, tx.Any]:
+    """Return the ends of a `Super[C]` or a `Between[L, U]` written as a
+    type argument.
+
+    As a type argument, a bound names a range of arguments rather than a
+    range of classes. Every hint is below `Any`, so `Super[C]` runs from
+    `C` up to `Any`, and `Between[L, U]` names both of its ends itself.
+    """
+    if is_super(bound):
+        return super_target(bound), tx.Any
+    return between_bounds(bound)
+
+
+def slot_bounds(arg: tx.Any) -> tx.Tuple[tx.Any, tx.Any]:
+    """Read a type argument at an invariant slot as the range of arguments
+    it accepts.
+
+    At an invariant slot, a plain argument accepts only itself, together
+    with any argument that means the same, so a plain `X` is read as the
+    single point `(X, X)`. A `Super[C]` or a `Between[L, U]` names a
+    range, as [`bound_ends`][] reads it. `Any` and a free `TypeVar`
+    accept every argument, from `Never` up to `Any`, and a `TypeVar`
+    bounded by `B` accepts every argument from `Never` up to `B`, which
+    is exactly the range `Between[Never, B]` names. An `Exact[C]` is an
+    ordinary point, because the exact hint `C` is a narrower argument
+    than `C` itself. A constrained `TypeVar` accepts one of its
+    constraints rather than a range, so the caller reads it before
+    asking this. `arg` is expected in the form
+    [`normalise_hint`][bagof.dispatchers.core.normalise_hint] gives it.
+    """
+    if is_bound(arg):
+        return bound_ends(arg)
+    plain = arg if is_exact(arg) else unwrap(arg, tx.Annotated)
+    if _is_any(plain):
+        return tx.Never, tx.Any
+    if isinstance(plain, tx.TypeVar):
+        bound = getattr(plain, "__bound__", None)
+        return tx.Never, tx.Any if bound is None else normalise_hint(bound)
+    return arg, arg
+
+
+def slot_kind(bound: tx.Any, variance: str) -> str:
+    """Say what a bound written as a type argument means at its slot.
+
+    At an invariant slot every bound is meaningful, and the answer is
+    `"ok"`. At a covariant slot, each parametrisation whose argument lies
+    between `L` and `U` is below the one whose argument is `U`, so the
+    range reads as the plain argument `U`. A bound with no lower end,
+    `Between[Never, U]`, says exactly that and is `"redundant"`, while
+    any other lower end would be silently ignored, which makes the bound
+    `"conflicting"`. A contravariant slot is the mirror image: the range
+    reads as the plain argument `L`, a bound with no upper end is
+    `"redundant"`, and any other upper end is `"conflicting"`.
+    """
+    lower, upper = bound_ends(bound)
+    if variance == _COVARIANT:
+        return "redundant" if _is_never(lower) else "conflicting"
+    if variance == _CONTRAVARIANT:
+        return "redundant" if _is_any(upper) else "conflicting"
+    return "ok"
+
+
+def conflicting_bound_message(
+    bound: tx.Any,
+    index: int,
+    origin: tx.Any,
+    args: tx.Sequence[tx.Any],
+    variance: str,
+) -> str:
+    """Compose the error for a bound that the variance of its slot ignores.
+
+    `bound` is the argument at `index` of `origin[args]`, and
+    [`slot_kind`][] reports it as `"conflicting"` for `variance`. The
+    message says which end of the bound changes nothing there, and names
+    the plain spelling that means what the bound would mean.
+    """
+    name = _origin_name(origin)
+    shown = _render_marked(bound)
+    written = _spelled(origin, args, index, bound)
+    lower, upper = bound_ends(bound)
+    number = index + 1
+    if variance == _COVARIANT:
+        end, which, direction = "lower", "covariant", "below"
+        kept, dropped, loose = upper, lower, _is_any(upper)
+        widest = "Any"
+    else:
+        end, which, direction = "upper", "contravariant", "above"
+        kept, dropped, loose = lower, upper, _is_never(lower)
+        widest = "Never"
+    article = "a" if end == "lower" else "an"
+    head = (
+        f"{shown} puts {article} {end} bound on argument {number} of {name}, "
+        f"whose type parameter is {which}, so "
+    )
+    if loose:
+        plain = _spelled(origin, args, index, dropped)
+        if len(args) == 1:
+            meaning = f"would accept every {name}"
+            write, everything = f"{name} without an argument", f"every {name}"
+        else:
+            write = _spelled(origin, args, index, widest)
+            meaning = f"would mean the same as {write}"
+            everything = f"every such {name}"
+        return (
+            f"{head}{written} {meaning}. Write {write} to accept "
+            f"{everything}, or {plain} to accept {plain} and the "
+            f"parametrisations {direction} it."
+        )
+    plain = _spelled(origin, args, index, kept)
     return (
-        f"{_render_marked(bound)} is not supported as a type argument of "
-        f"{name}[...]: a bound can stand on a value parameter, or as the "
-        "argument of Type[...] or Hint[...], but not inside a generic's "
-        "type arguments. Write a plain type argument instead."
+        f"{head}the {end} bound {_render_target(dropped)} "
+        f"changes nothing there: {plain} already accepts every "
+        f"parametrisation {direction} {_render_target(kept)}. Write {plain}."
+    )
+
+
+def slot_member_bound_message(bound: tx.Any, origin: tx.Any) -> str:
+    """Compose the error for a bound reached through a union member or a
+    `TypeVar` inside a type argument of `origin`.
+    """
+    shown, name = _render_marked(bound), _origin_name(origin)
+    return (
+        f"{shown} cannot be a member of a union, or the bound of a TypeVar, "
+        f"inside a type argument of {name}: a bound there has to be the "
+        f"whole argument, so that {name} can read it as the range of "
+        f"arguments it accepts. Write Union[{name}[{shown}], {name}[B]] in "
+        f"place of {name}[Union[{shown}, B]], and {name}[{shown}] in place "
+        f"of {name}[T] with T bounded by {shown}."
+    )
+
+
+def unsupported_variance_message(bound: tx.Any, origin: tx.Any) -> str:
+    """Compose the error for a bound written as a type argument of a
+    generic whose variance cannot be read.
+    """
+    return (
+        f"{_render_marked(bound)} cannot be an argument of "
+        f"{_origin_name(origin)}: the variance of its type parameters cannot "
+        "be read, so a bound there has no meaning. Write a plain argument "
+        "instead."
     )
 
 
@@ -592,21 +800,6 @@ def callable_bound_message(bound: tx.Any) -> str:
         "return type is covariant by the form itself, so a bound adds "
         "nothing that a plain hint cannot say. Write a plain hint instead."
     )
-
-
-def slot_bound_message(bound: tx.Any, origin: tx.Any) -> str:
-    """Compose the error for a bound written as a type argument of
-    `origin`.
-
-    A tuple element and a `Callable` parameter or return type each have a
-    message of their own, and every other generic shares
-    [`argument_bound_message`][].
-    """
-    if origin is tuple:
-        return tuple_bound_message(bound)
-    if origin is abc.Callable:
-        return callable_bound_message(bound)
-    return argument_bound_message(bound, origin)
 
 
 def _is_never(hint: tx.Any) -> bool:

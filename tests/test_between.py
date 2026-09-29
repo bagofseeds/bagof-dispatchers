@@ -399,13 +399,10 @@ def test_misplaced_between_is_refused_by_the_relation(
         assert needle in str(info.value)
 
 
-def test_between_in_an_invariant_argument_is_refused_by_the_relation(
-) -> None:
-    needle = r"Between\[bool, int\] is not supported as a type argument"
-    with pytest.raises(TypeError, match=needle):
-        issubhint(tx.List[Between[bool, int]], tx.List[int])
-    with pytest.raises(TypeError, match=needle):
-        issubhint(tx.List[int], tx.List[Between[bool, int]])
+def test_between_in_an_invariant_argument_is_a_range() -> None:
+    assert issubhint(tx.List[bool], tx.List[Between[bool, int]]) is True
+    assert issubhint(tx.List[Integral], tx.List[Between[bool, int]]) is False
+    assert issubhint(tx.List[Between[bool, int]], tx.List[int]) is False
 
 
 def test_an_interval_is_a_hint_value() -> None:
@@ -441,19 +438,20 @@ def _fn(annotation: tx.Any, kind: str = "x") -> tx.Any:
     "hint, needle",
     [
         (
-            tx.List[Between[bool, int]],
-            "Between[bool, int] is not supported as a type argument of list",
+            tx.Sequence[Between[bool, int]],
+            "Between[bool, int] puts a lower bound on argument 1 of Sequence",
         ),
         (
-            tx.Dict[str, Between[bool, int]],
-            "Between[bool, int] is not supported as a type argument of dict",
+            tx.Dict[str, tx.Optional[Between[bool, int]]],
+            "Between[bool, int] cannot be a member of a union, or the bound "
+            "of a TypeVar, inside a type argument of dict",
         ),
         (Between, "Between needs two bounds"),
         (tx.Type[Between], "Between needs two bounds"),
         (Hint[Between], "Between needs two bounds"),
         (
-            tx.Type[Between[tx.Never, tx.List[Super[int]]]],
-            "Super[int] is not supported as a type argument of list",
+            tx.Type[Between[tx.Never, tx.Sequence[Super[int]]]],
+            "Super[int] puts a lower bound on argument 1 of Sequence",
         ),
         (
             # What `Between[Never, "Later"]` becomes once `Later` resolves to
@@ -528,6 +526,16 @@ def test_between_inside_type_or_hint_is_accepted_at_registration() -> None:
     @f.register((tx.Optional[_tb(Dog, Animal)], _hb(bool, Integral)))
     def _both(cls: object, h: object) -> str:
         return "both"
+
+    # A bound is also read as the whole argument of an invariant slot.
+    @f.register(
+        (
+            tx.Dict[str, Between[bool, int]],
+            tx.Type[Between[tx.Never, tx.List[Super[int]]]],
+        )
+    )
+    def _slots(d: object, cls: object) -> str:
+        return "slots"
 
     assert f(Dog, int) == "both"
     assert f(None, bool) == "both"

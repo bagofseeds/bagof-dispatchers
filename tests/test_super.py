@@ -244,15 +244,11 @@ def test_a_lower_bound_on_a_value_is_read_by_the_relation(
     assert issubhint(int, hint) is False
 
 
-def test_super_in_an_invariant_argument_is_refused_by_the_relation(
-) -> None:
-    needle = r"Super\[int\] is not supported as a type argument of list"
-    with pytest.raises(TypeError, match=needle):
-        issubhint(tx.List[Super[int]], tx.List[int])
-    with pytest.raises(TypeError, match=needle):
-        issubhint(tx.List[int], tx.List[Super[int]])
-    with pytest.raises(TypeError, match=needle):
-        ishintstance([1], tx.List[Super[int]])
+def test_super_in_an_invariant_argument_is_a_range() -> None:
+    assert issubhint(tx.List[int], tx.List[Super[int]]) is True
+    assert issubhint(tx.List[bool], tx.List[Super[int]]) is False
+    assert issubhint(tx.List[Super[int]], tx.List[int]) is False
+    assert ishintstance([1], tx.List[Super[int]]) is True
 
 
 def test_super_below_a_union_or_typevar_inside_type_is_refused() -> None:
@@ -326,8 +322,8 @@ def _fn(annotation: tx.Any, kind: str = "x") -> tx.Any:
             "Super[int] cannot be a member of a union",
         ),
         (
-            tx.List[Super[int]],
-            "Super[int] is not supported as a type argument of list[...]",
+            tx.Sequence[Super[int]],
+            "Super[int] puts a lower bound on argument 1 of Sequence",
         ),
         (
             tx.Callable[[Super[int]], int],
@@ -339,8 +335,8 @@ def _fn(annotation: tx.Any, kind: str = "x") -> tx.Any:
             "Super[int] cannot be a constraint of a TypeVar",
         ),
         (
-            tx.Type[Super[tx.List[Super[int]]]],
-            "Super[int] is not supported as a type argument of list[...]",
+            tx.Type[Super[tx.Sequence[Super[int]]]],
+            "Super[int] puts a lower bound on argument 1 of Sequence",
         ),
         (
             # What `Super["Later"]` becomes once `Later` resolves to a hint
@@ -421,8 +417,8 @@ def test_a_forward_reference_to_a_lower_bound_is_checked_once_resolved(
     namespace = {}
     exec(source, namespace)
     sig = Signature.from_callable(namespace["f"])
-    namespace["Later"] = tx.List[Super[int]]
-    with pytest.raises(TypeError, match=r"not supported as a type argument"):
+    namespace["Later"] = tx.Sequence[Super[int]]
+    with pytest.raises(TypeError, match=r"puts a lower bound on argument 1"):
         sig._settle()
 
 
@@ -436,6 +432,12 @@ def test_super_inside_type_or_hint_is_accepted_at_registration() -> None:
     @f.register((Hint[Super[int]], tx.Callable[[int], tx.Any]))
     def _hints(x: object, y: object) -> str:
         return "hint"
+
+    # A bound is also read as the whole argument of an invariant slot,
+    # however deeply that slot is nested.
+    @f.register((tx.List[Super[int]], tx.Type[Super[tx.List[Super[int]]]]))
+    def _slots(x: object, y: object) -> str:
+        return "slots"
 
     # A forward reference inside a hint is left for later, not refused.
     @f.register((tx.List["Later"], tx.Literal["a"], tx.Literal[1]))

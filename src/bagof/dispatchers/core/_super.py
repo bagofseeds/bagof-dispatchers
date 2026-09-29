@@ -100,10 +100,15 @@ else:
         the value passed is a type hint, `#!python Hint[Super[int]]`
         accepts the hint `#!python int` together with every hint above it,
         such as `#!python numbers.Integral`, `#!python Union[int, str]` and
-        `#!python Any`, but not `#!python bool`, which sits below it. In
-        each position `Super[C]` is the range that runs from `C` up to the
-        top of the order, and [`Between`][bagof.dispatchers.Between] names
-        both ends of such a range when the top should be bounded as well.
+        `#!python Any`, but not `#!python bool`, which sits below it. As
+        the type argument of an invariant generic, where a plain argument
+        means exactly that type, `#!python List[Super[int]]` accepts a
+        list declared to hold `#!python int` or a type above it, such as
+        `#!python numbers.Integral` or `#!python object`, and refuses one
+        declared to hold `#!python bool`. In each position `Super[C]` is
+        the range that runs from `C` up to the top of the order, and
+        [`Between`][bagof.dispatchers.Between] names both ends of such a
+        range when the top should be bounded as well.
 
         On a value, `Super` belongs to a family of hints that compare the
         value's own class against a range of classes. A plain `C` accepts
@@ -122,8 +127,31 @@ else:
         compared against, such as a class, a union of classes, `Never` or
         `Any`. A hint that reads the value itself, such as a `Literal`, a
         `TypedDict` or a parametrised generic, is refused as the bound of a
-        value, although any hint can be a bound inside `Type[...]` or
-        `Hint[...]`.
+        value. Inside `Type[...]` or `Hint[...]`, and as a type argument,
+        the bound is compared against another hint, so any hint can be a
+        bound there.
+
+        As a type argument, `Super[C]` stands for every parametrisation
+        whose argument lies at or above `C`. A value that declares its
+        arguments, such as an instance of
+        `#!python class IntList(List[int])`, matches when its declared
+        argument lies in that range, and a value that declares nothing,
+        such as a plain `#!python [1]`, matches as it matches every
+        parametrisation of `#!python List`. Each bound names its own
+        range and does not reach through the position around it, so
+        `#!python List[List[Super[int]]]` accepts a list declared to hold
+        `#!python List[Super[int]]` and not one declared to hold
+        `#!python List[int]`. A lower bound is meaningful at an invariant
+        position. At a covariant position, such as the argument of
+        `#!python Sequence`, the variance already accepts every
+        parametrisation below the argument, so a lower bound would accept
+        every sequence, and it is refused with a message naming the plain
+        spelling to write instead. At a contravariant position the
+        variance already reads the argument as a lower bound, so
+        `Super[C]` there means the same as plain `C` and is read that way.
+        A bound is also refused as an element of a `#!python Tuple` and in
+        the signature of a `#!python Callable`, whose positions have a
+        fixed variance of their own.
 
         `Super` is written inside the bracket, as in
         `#!python Type[Super[C]]`. Writing it around the whole form, as in
@@ -144,13 +172,21 @@ else:
         `Dog`, and an explicit `priority` on either method settles every
         call the two share. The same order holds inside `Type` and `Hint`,
         where `#!python Type[Exact[Dog]]` sits below both
-        `#!python Type[Dog]` and `#!python Type[Super[Dog]]`.
+        `#!python Type[Dog]` and `#!python Type[Super[Dog]]`. As a type
+        argument, one range is more specific than another when it lies
+        inside it, and a plain argument counts as a range holding only
+        itself, so `#!python List[Dog]` and `#!python List[Super[Animal]]`
+        are both more specific than `#!python List[Super[Dog]]`.
 
         `Super` and `Exact` cannot be combined, in either order, because
         an exact type has nothing above it to bound, and neither of them
         can be combined with `Between`. A type checker reads `Super[C]` as
         `#!python Union[C, Any]`, which accepts every call the runtime
-        accepts. Inside the function body, a checker therefore treats a
+        accepts. As a type argument of an invariant generic, mypy reads
+        that union as a lower bound, as the runtime does, so it accepts a
+        `#!python list[int]` or a `#!python list[object]` passed to a
+        `#!python List[Super[int]]` parameter and rejects a
+        `#!python list[bool]`. Inside the function body, a checker treats a
         parameter annotated `#!python Super[Dog]` as a `Dog` and checks
         attribute access against `Dog`, although the value may be an
         `Animal`. When that difference matters, the value is best treated
@@ -173,6 +209,13 @@ else:
             >>> ishintstance(object, Type[Super[int]])
             True
             >>> ishintstance(bool, Type[Super[int]])
+            False
+            >>> from typing import List
+            >>> class IntList(List[int]): pass
+            >>> class BoolList(List[bool]): pass
+            >>> ishintstance(IntList(), List[Super[int]])
+            True
+            >>> ishintstance(BoolList(), List[Super[int]])
             False
             ```
         """

@@ -147,7 +147,9 @@ accepts the classes `Dog` and `Animal` and those between them, and refuses
 `Puppy` and `object`. Inside `Hint[...]`, where the value passed is a type
 hint, the ranges hold hints instead. Inside either form, any hint can be a
 bound, because the value passed is itself compared as a class or a hint.
-The spellings available at each level are these:
+The spellings available at each level, including the type argument of a
+generic described on the [variance](variance.md#bounding-a-type-argument)
+page, are these:
 
 | Where                      | Spelling              | Accepts                                             |
 |----------------------------|-----------------------|-----------------------------------------------------|
@@ -163,6 +165,8 @@ The spellings available at each level are these:
 | On a `Hint[...]` parameter | `Hint[Exact[X]]`      | the hint `X` alone                                  |
 | On a `Hint[...]` parameter | `Hint[Super[X]]`      | the hint `X` or a hint above it                     |
 | On a `Hint[...]` parameter | `Hint[Between[L, U]]` | a hint from `L` up to `U`, both ends included       |
+| As a type argument         | `List[Super[C]]`      | a list declared to hold `C` or a type above it      |
+| As a type argument         | `List[Between[L, U]]` | a list declared to hold a type from `L` up to `U`   |
 
 The `Type` forms combine the same way the value forms do.
 `Type[Exact[Dog]]` is more specific than both `Type[Dog]` and
@@ -277,12 +281,15 @@ a message naming `Type[Between[Dog, Animal]]`. `Exact`, `Super` and
 `TypeVar`, since each of them already describes the whole hint at its
 position. A bound can be a member of a union on a value parameter, as in
 `Optional[Super[Dog]]`, or the bound of a `TypeVar` used there, but inside
-`Type[...]` or `Hint[...]` it has to be the whole argument. A bound is also
-refused as a constraint of a `TypeVar`, as an element of a `Tuple`, in the
-signature of a `Callable`, and as a type argument of another generic, such
-as `List[Super[int]]`. Each of these is refused when the overload is
-registered, with an error naming the parameter and the spelling to use
-instead.
+`Type[...]` or `Hint[...]` it has to be the whole argument. A bound can
+also be the whole type argument of a generic, as in `List[Super[int]]`,
+where it widens the argument into a range of types; the
+[variance](variance.md#bounding-a-type-argument) page describes that use and
+the positions where the generic's variance makes a bound meaningless. A
+bound is refused as a constraint of a `TypeVar`, as an element of a
+`Tuple`, and in the signature of a `Callable`. Each misplaced bound is
+refused when the overload is registered, with an error naming the parameter
+and the spelling to use instead.
 
 ### Type checkers
 
@@ -295,4 +302,7 @@ although the value may be an `Animal` or a plain `object`. When that
 difference matters, treat such a value as an `object` in the body. A
 parameter annotated `Between[Dog, Animal]` reads as `Dog`, `Animal` or
 `Any`, whose shared attributes are those of `Animal`, which matches what
-the runtime passes.
+the runtime passes. A bound written as a type argument, as in
+`List[Super[Dog]]`, reads the same way to a checker, with one limitation for
+upper bounds that the [variance](variance.md#type-checkers-and-bounded-type-arguments)
+page explains together with the spelling that avoids it.
