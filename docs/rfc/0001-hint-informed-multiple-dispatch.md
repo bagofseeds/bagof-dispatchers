@@ -204,7 +204,7 @@ entry marks a result worth double-checking against intuition.
 | `Type[Super[Animal]\] ≤ Type[Super[Dog]\]`, `Type[Super[Dog]\] ≤ Type[Super[Animal]\]` (`class Dog(Animal)`) | True / **False** | *(0.3.0)* `Super[C]` inside `Type` accepts `C` and every class above it; the classes above `Animal` are among those above `Dog`, so lower bounds are ordered contravariantly by their bound (§4.2) |
 | `Type[Exact[Dog]\] ≤ Type[Super[Dog]\]`, `Type[Exact[Dog]\] ≤ Type[Dog]` | True / True | *(0.3.0)* the single class `Dog` belongs to both, so the exact form sits below the plain form and the lower bound alike (§4.2) |
 | `Type[Dog] ≤ Type[Super[Dog]\]`, `Type[Super[Dog]\] ≤ Type[Dog]` | **False** / **False** | *(0.3.0)* incomparable: each accepts a class the other refuses (a subclass of `Dog`, and `object`), although both accept `Dog`; registering both warns (§5) |
-| `Type[Super[Dog]\] ≤ Type[object]`, `Hint[Super[bool]\] ≤ Hint` | True / True | *(0.3.0)* every class is below `object` and every hint below `Any`, so a lower bound sits below the top of its form |
+| `Type[Super[Dog]\] ≤ Type[object]`, `Hint[Super[int]\] ≤ Hint` | True / True | *(0.3.0)* every class is below `object` and every hint below `Any`, so a lower bound sits below the top of its form |
 | `issubhint(Super[int], int)`, `ishintstance(1, Super[int])` | `TypeError` | *(0.3.0)* a lower bound is valid only as the immediate argument of `Type` or `Hint`; anywhere else it would bound a value from below, which cannot be checked (§4.2) |
 | `issubhint(1, int)`, `issubhint(1, 1)`, `issubhint(int, 1)` | `TypeError` | *(0.2.0)* a non-hint on either side is a caller error, reported for the left argument first, the way `issubclass` rejects a non-class; a non-hint no longer reads as `Any` |
 
@@ -241,9 +241,10 @@ type, the call cache keys such an argument on the hint itself.
 *(0.3.0)* A lower bound turns the value-level match around. A class `v` is
 `in Type[Super[C]\]` when `C ≤ v`, so `Animal` and `object` are `in
 Type[Super[Dog]\]` while `Puppy`, `int`, and the instance `Dog()` are not.
-A hint `v` is `in Hint[Super[X]\]` when `X ≤ v`, so `int`, `object`, `Any`,
-a free `TypeVar`, and `Union[bool, str]` are `in Hint[Super[bool]\]`, while
-`Literal[True]`, `str`, and the value `1` are not.
+A hint `v` is `in Hint[Super[X]\]` when `X ≤ v`, so `numbers.Integral`,
+`object`, `Any`, a free `TypeVar`, and `Union[int, str]` are
+`in Hint[Super[int]\]`, while `bool`, `Literal[1]`, `str`, and the value `1`
+are not.
 
 ### 2.2 Binding and selection (name-aware, normative)
 
@@ -1129,12 +1130,12 @@ just under `C` in the order, which is what keeps `⊑` a proper preorder
 from bagof.dispatchers import dispatch, Exact
 
 @dispatch
-def describe(x: int) -> str:          # int and any subclass, bool included
+def describe(x: Exact[int]) -> str:  # exactly int, so not bool
     return "an integer"
 
 @dispatch
-def describe(x: Exact[bool]) -> str:  # exactly bool
-    return "a boolean"
+def describe(x: object) -> str:      # everything else, True included
+    return "something else"
 ```
 
 `Exact` answers the reverse of the usual dispatch need: an `int` overload
@@ -1174,8 +1175,8 @@ TypeVar accepts every class.
 *(0.3.0)* An ordinary argument to `Type[…]` or `Hint[…]` is an upper bound:
 `Type[Animal]` accepts `Animal` and the classes below it. `Super[C]` supplies
 the missing lower bound. `Type[Super[Dog]\]` accepts the class `Dog` and
-every class that `Dog` derives from, and `Hint[Super[bool]\]` accepts the
-hint `bool` and every hint that `bool` is a sub-hint of. It is spelled
+every class that `Dog` derives from, and `Hint[Super[int]\]` accepts the
+hint `int` and every hint that `int` is a sub-hint of. It is spelled
 `bagof.dispatchers.Super[C]` and implemented, like `Exact`, as
 `tx.Annotated[C, SUPER]` behind a private sentinel. `SuperType[C]` and
 `SuperHint[X]` are aliases that expand to exactly `Type[Super[C]\]` and

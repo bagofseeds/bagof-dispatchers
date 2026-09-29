@@ -86,9 +86,10 @@ else:
         `#!python Type[Super[Dog]]` accepts the class `Dog` and every class
         that `Dog` derives from, such as `Animal` and `object`, but not a
         subclass of `Dog` and not an unrelated class. In the same way,
-        `#!python Hint[Super[bool]]` accepts the hint `#!python bool`
-        together with every hint above it, such as `#!python int`,
-        `#!python Union[bool, str]`, and `#!python Any`.
+        `#!python Hint[Super[int]]` accepts the hint `#!python int`
+        together with every hint above it, such as
+        `#!python numbers.Integral`, `#!python Union[int, str]`, and
+        `#!python Any`, but not `#!python bool`, which sits below it.
 
         Which spellings are available therefore depends on where the hint
         appears. On an ordinary value parameter, a hint can be written as
@@ -192,9 +193,10 @@ else:
 
         `#!python SuperHint[X]` is exactly `#!python Hint[Super[X]]`, the
         spelling [`Super`][] describes, so a parameter annotated
-        `#!python SuperHint[bool]` accepts the hint `#!python bool` and
-        every hint that `#!python bool` is a sub-hint of, such as
-        `#!python int` or `#!python Any`. The alias always needs its
+        `#!python SuperHint[int]` accepts the hint `#!python int` and
+        every hint that `#!python int` is a sub-hint of, such as
+        `#!python numbers.Integral` or `#!python Any`, but not the
+        narrower `#!python bool`. The alias always needs its
         bound: a bare `#!python SuperHint` is refused wherever a hint is
         read, because the unbounded reading would be every hint, which
         plain [`Hint`][] already spells.

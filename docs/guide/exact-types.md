@@ -8,16 +8,20 @@ any of its subclasses:
 ```pycon
 >>> from bagof.dispatchers import dispatch, Exact
 >>> @dispatch
-... def label(x: int) -> str:
-...     return "an integer"
+... def label(x: Exact[int]) -> str:
+...     return "exactly an int"
 >>> @dispatch
-... def label(x: Exact[bool]) -> str:
-...     return "a boolean"
+... def label(x: object) -> str:
+...     return "something else"
 >>> label(5)
-'an integer'
+'exactly an int'
 >>> label(True)
-'a boolean'
+'something else'
 ```
+
+`True` is an `int`, since `bool` is a subclass of `int`, so a plain `int`
+overload would take it. `Exact[int]` refuses it, and the call falls through
+to the `object` overload.
 
 This is the reverse of the usual multiple-dispatch situation, where an
 overload written for a base class is meant to also serve its subclasses.

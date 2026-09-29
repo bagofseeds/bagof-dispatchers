@@ -1741,9 +1741,10 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
 
     A [`Super`][bagof.dispatchers.Super] argument inside `#!python Type`
     or `#!python Hint` is ordered in the opposite direction to its bound:
-    `#!python Type[Super[int]]` is a sub-hint of `#!python Type[Super[bool]]`,
-    because the classes above `#!python int` are among the classes above
-    `#!python bool`. `#!python Type[Exact[C]]` sits below both
+    `#!python Type[Super[numbers.Integral]]` is a sub-hint of
+    `#!python Type[Super[int]]`, because the classes above
+    `#!python numbers.Integral` are among the classes above
+    `#!python int`. `#!python Type[Exact[C]]` sits below both
     `#!python Type[C]` and `#!python Type[Super[C]]`, while
     `#!python Type[C]` and `#!python Type[Super[C]]` are not ordered
     against each other in either direction. A `Super` anywhere other than

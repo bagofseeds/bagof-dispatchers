@@ -155,15 +155,15 @@ such as `bool` being a subclass of `int`:
 ```pycon
 >>> from bagof.dispatchers import dispatch, Exact
 >>> @dispatch
-... def label(x: int) -> str:
+... def label(x: Exact[int]) -> str:
 ...     return "an integer"
 >>> @dispatch
-... def label(x: Exact[bool]) -> str:
-...     return "a boolean"
+... def label(x: object) -> str:
+...     return "something else"
 >>> label(5)
 'an integer'
 >>> label(True)
-'a boolean'
+'something else'
 ```
 
 `priority` breaks a tie between two overloads that are, and are meant to
