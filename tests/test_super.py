@@ -12,6 +12,7 @@ import typing_extensions as tx
 # local
 from bagof.dispatchers import (
     AmbiguousMethodError,
+    Between,
     Exact,
     Function,
     Hint,
@@ -29,11 +30,11 @@ from bagof.dispatchers.core import (
     normalise_hint,
     resolve_hint,
 )
+from bagof.dispatchers.core._bounds import bounds_of
 from bagof.dispatchers.core._exact import is_exact
 from bagof.dispatchers.core._super import (
     SUPER,
     bare_super_message,
-    bounds_of,
     is_bare_super,
     is_super,
     super_target,
@@ -129,6 +130,26 @@ def test_exact_and_super_cannot_combine(build: tx.Any) -> None:
     assert "cannot be combined" in message
     assert "Type[Exact[C]]" in message
     assert "Type[Super[C]]" in message
+
+
+@pytest.mark.parametrize(
+    "build, outer",
+    [
+        (lambda: Super[Between[Dog, Animal]], "Super"),
+        (lambda: SuperType[Between[Dog, Animal]], "Super"),
+        (lambda: SuperHint[Between[Dog, Animal]], "Super"),
+        (lambda: Exact[Between[Dog, Animal]], "Exact"),
+    ],
+)
+def test_super_and_exact_cannot_take_between(
+    build: tx.Callable[[], tx.Any], outer: str
+) -> None:
+    with pytest.raises(TypeError) as info:
+        build()
+    message = str(info.value)
+    assert message.startswith(f"{outer}[...] cannot take Between[Dog, Animal]")
+    assert "cannot be nested" in message
+    assert "Type[Between[L, U]]" in message
 
 
 def test_combination_message_names_the_inner_form() -> None:

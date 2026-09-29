@@ -30,12 +30,18 @@ SUPER = _SuperMarker()
 def _render_target(hint: tx.Any) -> str:
     """Spell a hint the way an error message names it.
 
-    A class is named by its `__name__`, and any other hint by its string
-    form with the `typing.` and `typing_extensions.` prefixes removed, so
-    that a message reads `Super[int]` or `Super[List[int]]`.
+    A class is named by its `__name__`, a forward reference by the name
+    it was written with, and any other hint by its string form with the
+    `typing.` and `typing_extensions.` prefixes removed, so that a message
+    reads `Super[int]` or `Super[List[int]]`.
     """
     if isinstance(hint, type):
         return hint.__name__
+    if isinstance(hint, str):
+        return hint
+    forward = getattr(hint, "__forward_arg__", None)
+    if isinstance(forward, str):
+        return forward
     text = str(hint)
     return text.replace("typing_extensions.", "").replace("typing.", "")
 
@@ -91,6 +97,9 @@ else:
         together with every hint above it, such as
         `#!python numbers.Integral`, `#!python Union[int, str]`, and
         `#!python Any`, but not `#!python bool`, which sits below it.
+        `Super[C]` is therefore the range that runs from `C` up to the top
+        of the order, and [`Between`][bagof.dispatchers.Between] names
+        both ends of such a range when the top should be bounded as well.
 
         Which spellings are available therefore depends on where the hint
         appears. On an ordinary value parameter, a hint can be written as
@@ -127,7 +136,8 @@ else:
         method settles every call the two share.
 
         `Super` and `Exact` cannot be combined, in either order, because
-        an exact type has nothing above it to bound. A type checker reads
+        an exact type has nothing above it to bound, and neither of them
+        can be combined with `Between`. A type checker reads
         `Super[C]` as `#!python Union[C, Any]`, which accepts every call
         the runtime accepts.
 
@@ -152,6 +162,11 @@ else:
                 )
             if is_exact(item):
                 raise TypeError(combination_message("Super", item))
+            # Imported here because `_bounds` imports this module.
+            from ._bounds import is_between, nesting_message
+
+            if is_between(item):
+                raise TypeError(nesting_message("Super", item))
             if is_super(item):
                 # `Super[Super[C]]` bounds from below by the same `C`.
                 return item
@@ -284,30 +299,3 @@ def bare_super_message(hint: tx.Any) -> str:
         f"to accept the hint {shown} or any hint above it."
     )
 
-
-def bounds_of(arg: tx.Any, top: tx.Any) -> tx.Tuple[tx.Any, tx.Any]:
-    """Read the argument of a `Type` or `Hint` form as a closed interval.
-
-    The values of `#!python Type[X]` are classes and the values of
-    `#!python Hint[X]` are hints, and each argument describes which of
-    them are accepted as the interval between a lower and an upper
-    bound, returned as `(lower, upper)`. A plain argument `X` accepts
-    everything from the bottom `Never` up to `X`. A `Super[C]` argument
-    accepts everything from `C` up to `top`, which is `object` for a
-    `Type` argument, since every class is below it, and `Any` for a
-    `Hint` argument, since every hint is below that. An `Exact[C]`
-    argument read this way is the single point `(C, C)`, which is only
-    correct when it is the narrower side of a comparison; as the wider
-    side, an exact argument is never known to contain a lower bound, and
-    the caller decides that case before reading any interval.
-
-    A `TypeVar` argument is not read through its bound here. On the wider
-    side it stays a plain upper bound, which the relation already orders
-    correctly, and on the narrower side the caller reads the bound first.
-    """
-    if is_super(arg):
-        return super_target(arg), top
-    if is_exact(arg):
-        target = exact_target(arg)
-        return target, target
-    return tx.Never, arg

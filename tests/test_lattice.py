@@ -3,6 +3,7 @@
 # stdlib
 import collections.abc
 import dataclasses
+import numbers
 import sys
 import typing
 import warnings
@@ -12,7 +13,7 @@ import pytest
 import typing_extensions as tx
 
 # locals
-from bagof.dispatchers import Exact, Hint, Super
+from bagof.dispatchers import Between, Exact, Hint, Super
 from bagof.dispatchers._lattice import (
     equivalent,
     is_value_dependent,
@@ -358,6 +359,10 @@ CORPUS = [
     tx.Type[Super[bool]],
     Hint[Super[int]],
     Hint[Super[bool]],
+    # Intervals inside `Type` and `Hint` (0.3.0): ordered by inclusion.
+    tx.Type[Between[_Dog, _Animal]],
+    tx.Type[Between[_Puppy, _Dog]],
+    Hint[Between[bool, numbers.Integral]],
     # Any / None, and the bottom on its own -- below every hint above,
     # `Exact[C]` included (#54)
     tx.Any,
@@ -396,6 +401,10 @@ def _lhs(c: tx.Any) -> tx.Any:
     return Hint[Super[c]]
 
 
+def _ltb(lower: tx.Any, upper: tx.Any) -> tx.Any:
+    return tx.Type[Between[lower, upper]]
+
+
 @pytest.mark.parametrize(
     "a, b, expected",
     [
@@ -417,6 +426,11 @@ def _lhs(c: tx.Any) -> tx.Any:
         (tx.Type[_Animal], tx.Optional[_lts(_Dog)], True),
         (tx.Type[_Animal], tx.TypeVar("_TVS", bound=_lts(_Dog)), True),
         (tx.Type[_Puppy], tx.Optional[_lts(_Dog)], False),
+        # An interval overlaps wherever one of its ends lies in the other.
+        (_ltb(_Dog, _Animal), tx.Type[_Dog], True),
+        (_ltb(_Dog, _Animal), tx.Type[_Puppy], False),
+        (_ltb(_Dog, _Animal), _lts(_Animal), True),
+        (Hint[Between[bool, int]], _lhs(numbers.Integral), False),
     ],
     ids=repr,
 )

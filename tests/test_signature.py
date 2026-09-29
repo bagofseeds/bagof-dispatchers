@@ -13,7 +13,7 @@ import typing_extensions as tx
 
 # locals
 import bagof.dispatchers._signature as sigmod
-from bagof.dispatchers import Exact
+from bagof.dispatchers import Between, Exact
 from bagof.dispatchers._signature import Binding, Parameter, Signature
 
 # --- Parameter ---------------------------------------------------------
@@ -1289,6 +1289,24 @@ def test_same_as_distinguishes_exact_from_plain() -> None:
     a = Signature.from_callable(exact)
     b = Signature.from_callable(plain)
     assert not a.same_as(b)
+
+
+def test_same_as_reads_the_lower_bound_of_an_interval() -> None:
+    """Two spellings of one interval are `same_as`; other intervals are not."""
+
+    def typing_list(k: tx.Type[Between[tx.List[int], object]]) -> None: ...
+
+    def other(k: tx.Type[Between[tx.List[str], object]]) -> None: ...
+
+    a = Signature.from_callable(typing_list)
+    assert a.same_as(Signature.from_callable(typing_list))
+    assert not a.same_as(Signature.from_callable(other))
+    if sys.version_info >= (3, 9):
+        builtin = eval("tx.Type[Between[list[int], object]]")
+        assert a.same_as(Signature.from_hints(k=builtin))
+        assert sigmod._structural_hint_eq(
+            Between[tx.List[int], object], eval("Between[list[int], object]")
+        )
 
 
 def test_same_as_matches_identical_generic_spellings() -> None:

@@ -205,7 +205,10 @@ entry marks a result worth double-checking against intuition.
 | `Type[Exact[Dog]\] ≤ Type[Super[Dog]\]`, `Type[Exact[Dog]\] ≤ Type[Dog]` | True / True | *(0.3.0)* the single class `Dog` belongs to both, so the exact form sits below the plain form and the lower bound alike (§4.2) |
 | `Type[Dog] ≤ Type[Super[Dog]\]`, `Type[Super[Dog]\] ≤ Type[Dog]` | **False** / **False** | *(0.3.0)* incomparable: each accepts a class the other refuses (a subclass of `Dog`, and `object`), although both accept `Dog`; registering both warns (§5) |
 | `Type[Super[Dog]\] ≤ Type[object]`, `Hint[Super[int]\] ≤ Hint` | True / True | *(0.3.0)* every class is below `object` and every hint below `Any`, so a lower bound sits below the top of its form |
-| `issubhint(Super[int], int)`, `ishintstance(1, Super[int])` | `TypeError` | *(0.3.0)* a lower bound is valid only as the immediate argument of `Type` or `Hint`; anywhere else it would bound a value from below, which cannot be checked (§4.2) |
+| `Type[Between[Dog, Animal]\] ≤ Type[Animal]`, `Type[Between[Dog, Animal]\] ≤ Type[Dog]` | True / **False** | *(0.3.0)* `Between[L, U]` inside `Type` accepts the classes from `L` up to `U`; the classes from `Dog` up to `Animal` all lie below `Animal`, but `Animal` itself is not below `Dog` (§4.2) |
+| `Type[Exact[Dog]\] ≤ Type[Between[Dog, Animal]\]` | True | *(0.3.0)* the single class `Dog` lies between `Dog` and `Animal` (§4.2) |
+| `Between[int, bool]` | `TypeError` | *(0.3.0)* an empty interval is refused when it is written, and the message suggests `Between[bool, int]` (§4.2) |
+| `issubhint(Super[int], int)`, `ishintstance(1, Between[bool, int])` | `TypeError` | *(0.3.0)* a lower bound or an interval is valid only as the immediate argument of `Type` or `Hint`; anywhere else it would bound a value from below, which cannot be checked (§4.2) |
 | `issubhint(1, int)`, `issubhint(1, 1)`, `issubhint(int, 1)` | `TypeError` | *(0.2.0)* a non-hint on either side is a caller error, reported for the left argument first, the way `issubclass` rejects a non-class; a non-hint no longer reads as `Any` |
 
 The value-level check, `ishintstance`, does not look at the values held
@@ -244,7 +247,12 @@ Type[Super[Dog]\]` while `Puppy`, `int`, and the instance `Dog()` are not.
 A hint `v` is `in Hint[Super[X]\]` when `X ≤ v`, so `numbers.Integral`,
 `object`, `Any`, a free `TypeVar`, and `Union[int, str]` are
 `in Hint[Super[int]\]`, while `bool`, `Literal[1]`, `str`, and the value `1`
-are not.
+are not. An interval asks for both bounds at once. A class `v` is `in
+Type[Between[L, U]\]` when `L ≤ v` and `v ≤ U`, so `Dog` and `Animal` are
+`in Type[Between[Dog, Animal]\]` while `Puppy` and `object` are not, and a
+hint is `in Hint[Between[L, U]\]` under the same condition, so `bool`,
+`int`, and `numbers.Integral` are `in Hint[Between[bool, Integral]\]` while
+`object` and `Any` are not.
 
 ### 2.2 Binding and selection (name-aware, normative)
 
@@ -1170,7 +1178,7 @@ that were degenerate before: `type[Any]` now accepts every class,
 `type[Union[…]\]` accepts a class in the union, and `type[T]` for a free
 TypeVar accepts every class.
 
-### 4.2 Lower bounds: `Super[C]` inside `Type` and `Hint`
+### 4.2 Bounds: `Super[C]` and `Between[L, U]` inside `Type` and `Hint`
 
 *(0.3.0)* An ordinary argument to `Type[…]` or `Hint[…]` is an upper bound:
 `Type[Animal]` accepts `Animal` and the classes below it. `Super[C]` supplies
@@ -1182,11 +1190,25 @@ hint `int` and every hint that `int` is a sub-hint of. It is spelled
 `SuperHint[X]` are aliases that expand to exactly `Type[Super[C]\]` and
 `Hint[Super[X]\]`.
 
+`Between[L, U]` supplies both bounds at once. `Type[Between[Dog, Animal]\]`
+accepts the classes from `Dog` up to `Animal`, both included, and
+`Hint[Between[bool, Integral]\]` accepts the hints from `bool` up to
+`numbers.Integral`. It is spelled `bagof.dispatchers.Between[L, U]` and
+implemented as `tx.Annotated[U, LOWER(L)]`, the upper bound annotated with
+a private marker that carries the lower one. There are no `BetweenType` or
+`BetweenHint` aliases, since `Type[Between[Dog, Animal]\]` already reads
+naturally.
+
 The relation reads the argument of a `Type` or `Hint` form as a closed
 interval of the classes, or hints, it accepts. A plain argument `X` is the
-interval from the bottom `Never` up to `X`, and `Super[C]` is the interval
-from `C` up to the top of the form, which is `object` inside `Type` and
-`Any` inside `Hint`. One form is below another when its interval lies
+interval from the bottom `Never` up to `X`, `Super[C]` is the interval from
+`C` up to the top of the form, which is `object` inside `Type` and `Any`
+inside `Hint`, and `Between[L, U]` is the interval from `L` up to `U`.
+`Type[X]` is therefore the same as `Type[Between[Never, X]\]`, and
+`Type[Super[C]\]` the same as `Type[Between[C, object]\]`. `Exact[C]` stays
+outside this family: it names the one hint `C` structurally, which is
+narrower than `Between[C, C]`, the interval of every hint equivalent to
+`C`. One form is below another when its interval lies
 inside the other's, meaning that its lower bound is higher and its upper
 bound is lower. The rules that follow from that reading are these:
 
@@ -1197,6 +1219,7 @@ bound is lower. The rules that follow from that reading are these:
 | `Type[X] ≤ Type[Super[C]\]` | False | a subclass of `X` can always be defined that is not above `C` |
 | `Type[Super[C]\] ≤ Type[X]` | iff `object ≤ X` | the interval reaches `object`, so only a top contains it |
 | `Type[Super[C]\] ≤ Type[Exact[X]\]` | False | conservative: an interval above `C` is never taken to be a single class |
+| `Type[Between[L1, U1]\] ≤ Type[Between[L2, U2]\]` | iff `L2 ≤ L1` and `U1 ≤ U2` | the first interval lies inside the second; every row above is a special case of this one |
 
 `Hint` follows the same table with `Any` in place of `object`. Every rule is
 an inclusion of intervals, so the relation stays a preorder, and it stays
@@ -1204,21 +1227,39 @@ sound: when `A ≤ B`, every class or hint in `A` is also in `B`. Values are
 matched against the same interval (§2.1), which keeps the two levels in
 agreement.
 
+An interval must not be empty. `Between[L, U]` requires `L ≤ U`, and an
+empty one is refused when it is written, with a message that suggests
+`Between[U, L]` when that spelling is not empty. `Between[Any, U]` is
+refused with a message pointing to `Between[Never, U]`, the interval with
+no lower bound, which inside `Type` or `Hint` means the same as plain `U`.
+An upper bound written as a forward reference is checked once it resolves,
+when the method is registered or when its signature is first used, and the
+refusal then names the parameter. A lower bound cannot itself be a quoted
+forward reference, because it is carried as `Annotated` metadata, which
+`get_type_hints` never resolves; quoting the whole annotation works as
+usual. The degenerate intervals are legal: `Between[C, C]` holds the hints
+equivalent to `C`, and `Between[Never, Never]`, `Between[Never, Any]`, and
+`Between[Any, Any]` mean what their bounds say.
+
 A lower bound is valid only as the immediate argument of `Type` or `Hint`.
 On an ordinary value parameter it would bound a value from below, but a
 value has one concrete class, and code written for the instances of a class
 must also accept the instances of its subclasses, so a lower bound on a
-value cannot be checked. Registration therefore refuses `Super` anywhere
-else, whether on its own, inside a union or a container, or as a `TypeVar`'s
-bound, with an error naming the parameter and suggesting
-`Type[Super[C]\]` or `Hint[Super[C]\]`. The relation refuses the same
-hints with the same message, so `issubhint`, `ishintstance`, and
-`resolve_hint` never read `Super[C]` silently as `C`. An unsubscripted
-`Super`, `SuperType`, or `SuperHint` is refused too, since an unbounded
-lower bound would only repeat what `type` or `Hint` already says.
-`Super[Type[C]\]` is normalised to `Type[Super[C]\]`, `Super[Super[C]\]`
-collapses to `Super[C]`, and `Super` and `Exact` cannot be combined in
-either order, because an exact type leaves nothing above it to bound.
+value cannot be checked. Registration therefore refuses `Super` and
+`Between` anywhere else, whether on their own, inside a union or a
+container, or as a `TypeVar`'s bound, with an error naming the parameter
+and suggesting `Type[Super[C]\]` or `Hint[Super[C]\]`, or the matching
+`Between` spelling. The relation refuses the same hints with the same
+message, so `issubhint`, `ishintstance`, and `resolve_hint` never read
+`Super[C]` silently as `C`, or `Between[L, U]` as `U`. An unsubscripted
+`Super`, `SuperType`, `SuperHint`, or `Between` is refused too, since an
+unbounded form would only repeat what `type` or `Hint` already says.
+`Super[Type[C]\]` is normalised to `Type[Super[C]\]` and
+`Super[Super[C]\]` collapses to `Super[C]`, while `Between` has no outer
+spelling, so `Between[Type[A], Type[B]\]` is refused as a misplaced bound.
+`Super` and `Exact` cannot be combined in either order, because an exact
+type leaves nothing above it to bound, and neither can be combined with
+`Between`, nor can `Between` take one of them as a bound.
 
 The degenerate bounds need no special case. `Type[Super[Never]\]` accepts
 every class, like `type`. `Type[Super[object]\]` accepts only `object`.
@@ -1233,7 +1274,12 @@ spelling: it uses its type variable, which a checker requires of a generic
 alias, and `Type[Union[C, Any]\]` accepts every class object, so a checker
 never rejects a call that the runtime accepts. The aliases are declared
 with a \[[PEP 613]\] `TypeAlias` annotation, which both mypy and pyright
-read.
+read. `Between[L, U]` is `Union[L, U, Any]` for the same reason. Checked
+with mypy 1.19.1 and pyright 1.1.408, neither rejects a call with `Dog`,
+`Animal`, `object`, or `Puppy` on a `Type[Between[Dog, Animal]\]`
+parameter, nor one with `Animal`, `object`, `Dog`, `Puppy`, or `int` on a
+`Type[Super[Dog]\]` parameter: both over-accept, and neither rejects a call
+that dispatch accepts.
 
 Three things are deliberately left out. There is no option to flip the
 direction in which `Type` orders its argument; a lower bound is written
@@ -1317,7 +1363,8 @@ shared value per argument then matches both, and neither method is more
 specific. Two hints ordered against each other always share the narrower
 one's values. A lower bound adds pairs that share values without being
 ordered: `Type[Animal]` and `Type[Super[Dog]\]` are incomparable, yet both
-accept `Dog` and `Animal`. Such a pair is recognised by reading each
+accept `Dog` and `Animal`, and `Type[Dog]` and
+`Type[Between[Dog, Animal]\]` both accept `Dog`. Such a pair is recognised by reading each
 argument as an interval (§4.2) and asking whether an end of one interval
 lies in both, where inside `Type` that end must also be a class, since only
 a class can be passed there. The test is sufficient rather than complete,
@@ -1422,8 +1469,8 @@ area(Circle(1))                      # sees shapes.py's method
 The package exposes two namespaces with disjoint object sets.
 `bagof.dispatchers` (its `__all__`, and the intended public API) holds
 `dispatch`, `Dispatcher`, `Function`, `Method`, `Signature`, `Parameter`,
-`Exact`, `Hint`, `Super`, `SuperType`, `SuperHint`, `DispatchError`,
-`NoMethodError`, and `AmbiguousMethodError`. `bagof.dispatchers.core` (also its own `__all__`)
+`Exact`, `Hint`, `Super`, `SuperType`, `SuperHint`, `Between`,
+`DispatchError`, `NoMethodError`, and `AmbiguousMethodError`. `bagof.dispatchers.core` (also its own `__all__`)
 holds the relation and introspection helpers that the rest of the family
 reuses: `issubhint`, `ishintstance`, `ishint`, `resolve_hint`,
 `safe_get_origin`, `safe_get_args`, `get_origin_uw`, `get_args_uw`,
@@ -1437,9 +1484,9 @@ directly, but they belong conceptually to the dispatch surface. `ishint`,
 which reports whether an object is a type hint at all, is a `.core` helper
 only, since it is a building block rather than part of the dispatch API.
 *(0.2.0)* `Hint` and `ishint` are new in this release. *(0.3.0)* `Super`,
-`SuperType`, and `SuperHint` are new in this release; like `Exact` and
-`Hint`, they are documented once, under the top-level API, and understood
-directly by the relation in `.core`.
+`SuperType`, `SuperHint`, and `Between` are new in this release; like
+`Exact` and `Hint`, they are documented once, under the top-level API, and
+understood directly by the relation in `.core`.
 
 Key objects:
 
@@ -1627,9 +1674,9 @@ positional-only`.
 
 The top-level package is dispatch-only. `__init__.py` re-exports exactly
 `dispatch`, `Dispatcher`, `Function`, `Method`, `Signature`, `Parameter`,
-`Exact`, `Hint`, `Super`, `SuperType`, `SuperHint`, and the three error
-types. `_lattice.py` holds `equivalent()`, `overlaps()` (§5), TypeVar
-solving, and the value-dependence classifier described in §6. This
+`Exact`, `Hint`, `Super`, `SuperType`, `SuperHint`, `Between`, and the
+three error types. `_lattice.py` holds `equivalent()`, `overlaps()` (§5),
+TypeVar solving, and the value-dependence classifier described in §6. This
 is dispatch-internal code that builds on `core._relation`, while the actual
 value check (`ishintstance`) is always called directly from `core`, never
 wrapped. `_signature.py` holds `Signature`, `Parameter`, `Binding`, and the
@@ -1652,9 +1699,12 @@ special-form detection described in §11, `TypedDict` markers, and the
 `core/_exact.py` holds `Exact`, its `EXACT` sentinel, and the helpers that
 read it; these are also re-exported at the top level. *(0.3.0)*
 `core/_super.py` holds `Super`, `SuperType`, `SuperHint`, their `SUPER`
-sentinel, the interval reading of a `Type` or `Hint` argument (§4.2), and
-the message that refuses a lower bound outside those forms; the three
-public names are re-exported at the top level. `core/_introspect.py` holds
+sentinel, and the message that refuses a lower bound outside those forms;
+the three public names are re-exported at the top level. *(0.3.0)*
+`core/_bounds.py` holds `Between` and its `LOWER` marker, the interval
+reading of a `Type` or `Hint` argument (§4.2), and the refusals shared by
+every bound written where it cannot stand, including the empty-interval
+message; `Between` is re-exported at the top level. `core/_introspect.py` holds
 the general-purpose introspection helpers (`safe_get_origin`/
 `safe_get_args`, `get_origin_uw`/`get_args_uw`, `unwrap`, `normalise_hint`,
 alias and `NewType` resolution, `issubclassable`, `issubscriptable`, the
@@ -1831,6 +1881,16 @@ Each case below is covered by a dedicated test.
   `Super[C]`, and an unsubscripted `Super`, `SuperType`, or `SuperHint`,
   are refused at registration with the parameter named, and by the
   relation with the same message.
+- *(0.3.0)* `Between[L, U]` is valid only as the immediate argument of
+  `Type` or `Hint` (§4.2). `Between[C, C]` is legal and holds the hints
+  equivalent to `C`, which is wider than `Exact[C]`, so
+  `Type[Exact[C]\] ≤ Type[Between[C, C]\]` but not the reverse. The
+  degenerate `Between[Never, Never]`, `Between[Never, Any]`, and
+  `Between[Any, Any]` are legal, while `Between[Any, U]` for any other `U`
+  is refused as empty, with a message pointing to `Between[Never, U]`.
+  `Exact`, `Super`, and `Between` cannot be nested inside one another in
+  any order. There is no outer form: `Between[Type[A], Type[B]\]` is not
+  rewritten and is refused as a misplaced bound.
 - *(0.3.0)* `Type[C]` and `Type[Super[D]\]` with `D ≤ C` are incomparable
   yet share the classes between `D` and `C`, so registering both warns, and
   a call with one of those classes is ambiguous unless `priority` or an

@@ -98,11 +98,31 @@ The call with `bool` shows what the lower bound adds. `bool` is a sub-hint
 of `int`, so an ordinary `Hint[int]` overload would take it, but it is not
 above `int`, so `Hint[Super[int]]` leaves it to the catch-all.
 
+`Hint[Between[L, U]]` bounds the hint from both sides, accepting the
+hints from `L` up to `U` with both ends included.
+`Hint[Between[bool, Integral]]` therefore matches `bool`, `int` and
+`numbers.Integral`, while `object` and `Any`, which lie above
+`numbers.Integral`, are left out, and so is the unrelated `str`:
+
+```pycon
+>>> from bagof.dispatchers import Between
+>>> @dispatch
+... def narrow(h: Hint[Between[bool, Integral]]) -> str:
+...     return "from bool up to Integral"
+>>> @dispatch
+... def narrow(h: Hint[Any]) -> str:
+...     return "some other hint"
+>>> narrow(int)
+'from bool up to Integral'
+>>> narrow(object)
+'some other hint'
+```
+
 A lower bound does not replace the catch-all. `Hint[Super[int]]` still
 leaves out every hint that is not above `int`, so the fallback for hint
 dispatch remains `Hint[Any]`, described next. The page on
-[exact types](exact-types.md) sets out how `Super` behaves inside `Type`
-as well.
+[exact types](exact-types.md) sets out how `Super` and `Between` behave
+inside `Type` as well.
 
 ## Writing a catch-all
 

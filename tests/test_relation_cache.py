@@ -17,7 +17,7 @@ import typing_extensions as tx
 
 # local
 import bagof.dispatchers.core._relation as rel
-from bagof.dispatchers import Exact, Super
+from bagof.dispatchers import Between, Exact, Super
 from bagof.dispatchers.core import issubhint
 
 _key = rel._relation_key
@@ -54,6 +54,20 @@ def test_a_lower_bound_keys_its_own_entry() -> None:
     above = _key(tx.Type[Super[int]], tx.Type[int])
     assert rel._RELATION_CACHE[above] is False
     assert rel._RELATION_CACHE[_key(tx.Type[int], tx.Type[int])] is True
+
+
+def test_an_interval_keys_its_own_entry() -> None:
+    # `Type[Between[bool, int]]`, `Type[Super[int]]` and `Type[int]` are three
+    # different hints, so each is cached under its own key.
+    rel.clear_relation_cache()
+    interval = tx.Type[Between[bool, int]]
+    assert issubhint(interval, tx.Type[int]) is True
+    assert issubhint(tx.Type[Super[int]], tx.Type[int]) is False
+    assert issubhint(tx.Type[int], tx.Type[int]) is True
+    above = _key(tx.Type[Super[int]], tx.Type[int])
+    assert rel._RELATION_CACHE[_key(interval, tx.Type[int])] is True
+    assert rel._RELATION_CACHE[above] is False
+    assert _key(interval, tx.Type[int]) != _key(tx.Type[int], tx.Type[int])
 
 
 def test_cache_stores_the_result() -> None:

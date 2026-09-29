@@ -342,7 +342,10 @@ def normalise_hint(hint: tx.Any) -> tx.Any:
     [`Type`][typing.Type] or [`Hint`][bagof.dispatchers.Hint] is rewritten
     to carry the marker on the inner type instead, so that
     `#!python Exact[Type[int]]` becomes `#!python Type[Exact[int]]` and
-    `#!python Super[Hint[int]]` becomes `#!python Hint[Super[int]]`.
+    `#!python Super[Hint[int]]` becomes `#!python Hint[Super[int]]`. A
+    [`Between`][bagof.dispatchers.Between] has no such outer spelling, so
+    one written around a whole `Type` or `Hint` is left as it is, to be
+    refused wherever the hint is read.
 
     These steps repeat until the hint stops changing, so an alias that
     expands into a qualified `NewType` is resolved all the way through

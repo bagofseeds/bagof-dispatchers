@@ -59,7 +59,7 @@ exactly the same thing; it is normalised to the inner spelling
 `Type[Exact[int]]`, which is the form to prefer when writing a
 signature.
 
-## Lower bounds: `Super` inside `Type` and `Hint`
+## Bounds: `Super` and `Between` inside `Type` and `Hint`
 
 A `Type[C]` parameter accepts the class `C` and every class derived from
 it, which is an upper bound on the class passed in. `Super[C]` places a
@@ -69,24 +69,37 @@ a class and relies on every instance of `C` being an instance of that class
 as well, such as a function that checks whether a container declared to
 hold instances of the class it was given can also hold a `C`.
 
-`Super` belongs inside `Type[...]` or `Hint[...]`, where the value passed
-is itself a class or a hint. On an ordinary value parameter it has nothing
-to bound, because a value has one concrete class, and code written for the
-instances of a class must also accept the instances of its subclasses. The
-spellings available at each level are therefore these:
+`Between[L, U]` places both bounds at once. `Type[Between[Dog, Animal]]`
+accepts the classes `Dog` and `Animal`, together with any class that sits
+between them in the hierarchy, derived from `Animal` and itself a base of
+`Dog`. It refuses `Puppy`, which lies below the lower bound, and `object`,
+which lies above the upper bound. Every spelling inside the brackets
+describes a range of this kind: a plain `Type[C]` is the same as
+`Type[Between[Never, C]]`, since it accepts `C` and every class below it,
+and `Type[Super[C]]` is the same as `Type[Between[C, object]]`. `Exact[C]`
+stays apart from these ranges, because it names the one class `C` and
+nothing that is merely equivalent to it.
 
-| Where                      | Spelling         | Accepts                                  |
-|----------------------------|------------------|------------------------------------------|
-| On a value parameter       | `C`              | an instance of `C` or of a subclass      |
-| On a value parameter       | `Exact[C]`       | an instance whose type is exactly `C`    |
-| On a `Type[...]` parameter | `Type[C]`        | the class `C` or a subclass of it        |
-| On a `Type[...]` parameter | `Type[Exact[C]]` | the class `C` alone                      |
-| On a `Type[...]` parameter | `Type[Super[C]]` | the class `C` or a class it derives from |
-| On a `Hint[...]` parameter | `Hint[X]`        | the hint `X` or a sub-hint of it         |
-| On a `Hint[...]` parameter | `Hint[Exact[X]]` | the hint `X` alone                       |
-| On a `Hint[...]` parameter | `Hint[Super[X]]` | the hint `X` or a hint above it          |
+`Super` and `Between` belong inside `Type[...]` or `Hint[...]`, where the
+value passed is itself a class or a hint. On an ordinary value parameter
+they have nothing to bound, because a value has one concrete class, and
+code written for the instances of a class must also accept the instances of
+its subclasses. The spellings available at each level are therefore these:
 
-The three `Type` forms combine the way the table suggests.
+| Where                      | Spelling              | Accepts                                        |
+|----------------------------|-----------------------|------------------------------------------------|
+| On a value parameter       | `C`                   | an instance of `C` or of a subclass            |
+| On a value parameter       | `Exact[C]`            | an instance whose type is exactly `C`          |
+| On a `Type[...]` parameter | `Type[C]`             | the class `C` or a subclass of it              |
+| On a `Type[...]` parameter | `Type[Exact[C]]`      | the class `C` alone                            |
+| On a `Type[...]` parameter | `Type[Super[C]]`      | the class `C` or a class it derives from       |
+| On a `Type[...]` parameter | `Type[Between[L, U]]` | a class from `L` up to `U`, both ends included |
+| On a `Hint[...]` parameter | `Hint[X]`             | the hint `X` or a sub-hint of it               |
+| On a `Hint[...]` parameter | `Hint[Exact[X]]`      | the hint `X` alone                             |
+| On a `Hint[...]` parameter | `Hint[Super[X]]`      | the hint `X` or a hint above it                |
+| On a `Hint[...]` parameter | `Hint[Between[L, U]]` | a hint from `L` up to `U`, both ends included  |
+
+The `Type` forms combine the way the table suggests.
 `Type[Exact[Dog]]` is more specific than both `Type[Dog]` and
 `Type[Super[Dog]]`, since the single class `Dog` belongs to each of them,
 so an exact overload wins wherever it applies:
@@ -114,6 +127,24 @@ so an exact overload wins wherever it applies:
 'exactly Dog'
 >>> relate(Puppy)
 'Puppy or a subclass'
+```
+
+One range is more specific than another when it lies inside it. The
+classes from `Dog` up to `Animal` all lie above `Dog`, so an overload for
+`Type[Between[Dog, Animal]]` takes `Animal` from the `Type[Super[Dog]]`
+overload, while `object`, which lies above `Animal`, stays where it was:
+
+```pycon
+>>> from bagof.dispatchers import Between
+>>> @dispatch
+... def relate(cls: Type[Between[Dog, Animal]]) -> str:
+...     return "between Dog and Animal"
+>>> relate(Animal)
+'between Dog and Animal'
+>>> relate(object)
+'Dog or one of its bases'
+>>> relate(Dog)
+'exactly Dog'
 ```
 
 A plain `Type[Animal]` and a `Type[Super[Dog]]` are not ordered against
@@ -152,6 +183,14 @@ def feed(cls: Type[Animal]) -> str: ...
 def feed_ancestor(cls: Type[Super[Dog]]) -> str: ...
 ```
 
+A range and a plain `Type` form can overlap in the same way.
+`Type[Dog]` and `Type[Between[Dog, Animal]]` are not ordered against each
+other, since `Puppy` belongs only to the first and `Animal` only to the
+second, yet both accept the class `Dog`. Registering overloads for both
+therefore warns that a call with `Dog` is ambiguous, and the same two
+remedies apply: an overload for `Type[Exact[Dog]]` settles that one call,
+and a `priority` on either overload settles every call the two share.
+
 `SuperType[C]` is a shorter spelling of `Type[Super[C]]`, and
 `SuperHint[X]` is a shorter spelling of `Hint[Super[X]]`. Each always
 needs its bound, since an unbounded lower bound would accept every class or
@@ -164,12 +203,34 @@ expands to the `Type` form it stands for:
 True
 ```
 
+The lower bound of a range must be a sub-hint of its upper bound. A range
+with no classes in it is refused as soon as it is written, and when the
+bounds are merely the wrong way round, the message suggests the reversed
+spelling:
+
+```pycon
+>>> Type[Between[Animal, Dog]]
+Traceback (most recent call last):
+    ...
+TypeError: Between[Animal, Dog] is empty: Animal is not a sub-hint of Dog, so no hint lies between them. Did you mean Between[Dog, Animal]?
+```
+
+`Between[Any, C]` is refused as well, because `Any` is the top of the
+order, and no class or hint below `C` also lies above `Any`. A range with
+no lower bound is written `Between[Never, C]`, which inside `Type[...]` or
+`Hint[...]` means the same as plain `C`. A lower bound cannot be a quoted
+forward reference, because nothing would ever resolve it; quoting the
+whole annotation, as in `'Type[Between[Dog, Animal]]'`, works as usual.
+
 Written around the whole form, `Super[Type[Dog]]` means the same as
-`Type[Super[Dog]]` and is normalised to it. `Super` and `Exact` cannot be
-combined, since an exact class leaves nothing above it to bound. `Super`
-on an ordinary value parameter, or anywhere other than directly inside
+`Type[Super[Dog]]` and is normalised to it. `Between` has no such outer
+spelling and is always written inside the brackets. `Exact`, `Super` and
+`Between` cannot be nested inside one another, since each of them already
+describes the whole argument of `Type` or `Hint`. `Super` or `Between` on
+an ordinary value parameter, or anywhere other than directly inside
 `Type[...]` or `Hint[...]`, is refused when the overload is registered,
 with an error naming the parameter and the spelling to use instead. A
-static type checker reads `Super[C]` as `Union[C, Any]`, so it accepts
-every class passed to a `Type[Super[C]]` parameter and never rejects a
+static type checker reads `Super[C]` as `Union[C, Any]` and
+`Between[L, U]` as `Union[L, U, Any]`, so it accepts every class passed to
+a `Type[Super[C]]` or `Type[Between[L, U]]` parameter and never rejects a
 call that dispatch itself would accept.

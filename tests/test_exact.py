@@ -222,6 +222,19 @@ def test_exact_refuses_a_lower_bound() -> None:
     assert "Type[Exact[C]]" in message and "Type[Super[C]]" in message
 
 
+def test_exact_refuses_an_interval() -> None:
+    from bagof.dispatchers import Between
+
+    with pytest.raises(TypeError) as info:
+        Exact[Between[bool, int]]
+    message = str(info.value)
+    assert message.startswith("Exact[...] cannot take Between[bool, int]")
+    assert "Type[Exact[C]]" in message and "Type[Between[L, U]]" in message
+    # Written around `Type`, the same refusal arrives through normalisation.
+    with pytest.raises(TypeError, match="cannot be nested"):
+        normalise_hint(Exact[tx.Type[Between[bool, int]]])
+
+
 def test_outer_exact_normalises_to_inner() -> None:
     assert normalise_hint(Exact[tx.Type[int]]) == tx.Type[Exact[int]]
     assert normalise_hint(Exact[tx.Type]) == Exact[type]

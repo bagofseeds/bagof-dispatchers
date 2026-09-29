@@ -73,8 +73,10 @@ else:
         Inside those brackets, [`Super`][bagof.dispatchers.Super] is the
         mirror image of `Exact`: where `#!python Type[Exact[int]]` accepts
         the class `#!python int` alone, `#!python Type[Super[int]]` accepts
-        `#!python int` together with every class above it. The two cannot
-        be combined, since an exact type leaves nothing above it to bound.
+        `#!python int` together with every class above it, and
+        [`Between`][bagof.dispatchers.Between] accepts the classes between
+        two bounds. Neither can be combined with `Exact`, since an exact
+        type leaves nothing above or below it to bound.
 
         !!! example
             ```pycon
@@ -89,11 +91,14 @@ else:
                 raise TypeError(
                     f"Exact[...] takes a type hint, got {item!r}."
                 )
-            # Imported here because `_super` imports this module.
+            # Imported here because `_super` and `_bounds` import this module.
+            from ._bounds import is_between, nesting_message
             from ._super import combination_message, is_super
 
             if is_super(item):
                 raise TypeError(combination_message("Exact", item))
+            if is_between(item):
+                raise TypeError(nesting_message("Exact", item))
             try:
                 return tx.Annotated[item, EXACT]
             except TypeError:
