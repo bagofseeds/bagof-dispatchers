@@ -73,6 +73,7 @@ from .core import (
     normalise_hint,
     safe_get_origin,
 )
+from .core._bounds import holds_bound
 from .core._compat import SameObject as _SameObject
 from .core._compat import is_plausible_hint
 from .core._exact import exact_target, is_exact
@@ -519,6 +520,14 @@ class Function:
         changes which methods a hint query is considered to reach; it
         changes neither the sub-hint relation itself nor the specificity
         order between methods.
+
+        No such convenience exists for [`Super`][bagof.dispatchers.Super]
+        or [`Between`][bagof.dispatchers.Between]. A plain `C` query
+        stands for the instances of every subclass of `C` as well, which
+        a lower bound does not accept, so a method for
+        `#!python Super[Dog]` is reached by a query such as
+        `#!python Exact[Animal]` or `#!python Between[Dog, Animal]`, and
+        not by `Animal`.
 
         Parameters
         ----------
@@ -1269,9 +1278,12 @@ class Function:
         the tie.
 
         An argument that one of the competing methods matched through
-        [`Exact`][bagof.dispatchers.Exact] is spelled
-        `#!python Exact[...]` in the suggestion too, so the suggested
-        signature would outrank that competitor as well, not just the
+        [`Exact`][bagof.dispatchers.Exact], or through a
+        [`Super`][bagof.dispatchers.Super] or
+        [`Between`][bagof.dispatchers.Between] bound, is spelled
+        `#!python Exact[...]` in the suggestion too. The plain class is not
+        below such a competitor, while the exact class is, so the
+        suggested signature outranks that competitor as well as the
         others. That check runs over every method in `maximal`, including
         one that lost only on `priority`: a new method at the default
         priority has to be strictly more specific than such a method to
@@ -1310,10 +1322,14 @@ class Function:
             base = value_type.__name__
             for index in maximal:
                 landed = plan.bindable[index][2].get(key)
-                if (
-                    landed is not None
-                    and is_exact(landed)
-                    and equivalent(exact_target(landed), value_type)
+                # Only `Exact[...]` is below a competitor matched through
+                # `Exact` or through a bound.
+                if landed is not None and (
+                    holds_bound(landed)
+                    or (
+                        is_exact(landed)
+                        and equivalent(exact_target(landed), value_type)
+                    )
                 ):
                     return f"Exact[{base}]"
             return base

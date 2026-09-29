@@ -128,7 +128,7 @@ A lower bound does not replace the catch-all. `Hint[Super[int]]` still
 leaves out every hint that is not above `int`, so the fallback for hint
 dispatch remains `Hint[Any]`, described next. The page on
 [exact types](exact-types.md) sets out how `Super` and `Between` behave
-inside `Type` as well.
+on values and inside `Type` as well.
 
 ## Writing a catch-all
 
