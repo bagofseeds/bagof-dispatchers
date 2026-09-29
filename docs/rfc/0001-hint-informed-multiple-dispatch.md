@@ -1562,11 +1562,17 @@ Possible fix, define
 ```
 
 The suggested fix is the signature built from the call's own classes
-(substituting `Exact[...]` wherever a candidate already used it), always
-applicable to the call that triggered the error, and always strictly more
-specific than every one of the listed candidates. This is a simpler,
-always-correct stand-in for `Julia`'s own type-intersection suggestion, which
-can itself be more specific than necessary.
+(substituting `Exact[...]` wherever a candidate already used it), so it is
+always applicable to the call that triggered the error. A signature built this
+way is not always more specific than the candidates, however. When the tied
+methods take `List[int]` and `List[str]`, for example, the class of the
+argument is `list`, which sits above both hints rather than below them, and a
+method defined for `list` would not settle the tie. The message therefore
+includes the fix only when the suggested signature is strictly more specific
+than every method in the most-specific set, including any method that lost
+only on priority, and ends after the list of candidates otherwise. This is a
+simpler stand-in for `Julia`'s own type-intersection suggestion, which can
+itself be more specific than necessary.
 
 A failed match is reported the same way, marking the offending arguments
 with `!`:
