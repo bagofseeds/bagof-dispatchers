@@ -19,12 +19,14 @@ marks a parameter that must match a type precisely, so that an
 implementation written for a base class does not also catch its
 subclasses. [`Super`][] is its mirror image inside
 [`Type`][typing.Type] and [`Hint`][]: it accepts a class or a hint
-together with everything above it, rather than everything below. The
-subtype relation over hints, and the lower-level introspection it is
-built from, live separately in `bagof.dispatchers.core`, since the rest
-of the `bagof` family depends on that comparison without needing
-dispatch itself. The reasoning behind the model is written up in the
-design RFC under `docs/rfc/`.
+together with everything above it, rather than everything below.
+[`Between`][], written in the same place, accepts the classes or hints
+that lie between a lower and an upper bound. The subtype relation over
+hints, and the lower-level introspection it is built from, live
+separately in `bagof.dispatchers.core`, since the rest of the `bagof`
+family depends on that comparison without needing dispatch itself. The
+reasoning behind the model is written up in the design RFC under
+`docs/rfc/`.
 """
 
 # local
@@ -33,6 +35,7 @@ from ._errors import AmbiguousMethodError, DispatchError, NoMethodError
 from ._function import Function
 from ._method import Method
 from ._signature import Parameter, Signature
+from .core._bounds import Between
 from .core._exact import Exact
 from .core._hint import Hint
 from .core._super import Super, SuperHint, SuperType
@@ -52,4 +55,5 @@ __all__ = [
     "Super",
     "SuperType",
     "SuperHint",
+    "Between",
 ]

@@ -32,6 +32,8 @@ import warnings
 # dependencies
 import typing_extensions as tx
 
+from ._bounds import bare_bound_message, is_bare_bound
+
 # local
 from ._compat import UnknownHintWarning, ishint
 from ._exact import exact_target, is_exact
@@ -44,7 +46,6 @@ from ._introspect import (
 )
 from ._relation import issubhint
 from ._sentinels import UNSET
-from ._super import bare_super_message, is_bare_super
 
 __all__ = ["resolve_hint"]
 
@@ -117,11 +118,11 @@ def resolve_hint(
     """
     hint = normalise_hint(hint)
 
-    # A lower bound means something only as the argument of `Type` or `Hint`.
+    # A bound means something only as the argument of `Type` or `Hint`.
     # Refuse one standing on its own here, so the error blames the query:
     # left to the matching loop below, it would be reported against each key.
-    if is_bare_super(hint):
-        raise TypeError(bare_super_message(hint))
+    if is_bare_bound(hint):
+        raise TypeError(bare_bound_message(hint))
 
     # An exact key -- the query written as one of the keys -- always wins,
     # before any relation is read. This is the only way a `Union`, `Literal`

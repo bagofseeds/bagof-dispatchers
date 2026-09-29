@@ -53,6 +53,7 @@ from .core import (
     normalise_hint,
     unwrap,
 )
+from .core._bounds import bounds_of, is_bound
 from .core._compat import UNION_TYPES, is_typeddict_marker
 from .core._exact import is_exact
 from .core._hint import hint_arg, is_hint_form
@@ -71,7 +72,6 @@ from .core._relation import (
     _TupleShape,
     _typevar_upper,
 )
-from .core._super import bounds_of, is_super
 
 # --- equivalence -------------------------------------------------------
 
@@ -108,18 +108,25 @@ def overlaps(a: tx.Any, b: tx.Any) -> bool:
     ambiguity check relies on. A lower bound breaks that shortcut: the
     hints `#!python Type[Animal]` and `#!python Type[Super[Dog]]` are not
     ordered either way, yet the class `Dog` belongs to both, so a call
-    with it cannot choose between methods written with them. This
-    function recognises such a pair. Both hints must be `Type` forms or
-    both `Hint` forms, at least one argument must be a
-    [`Super`][bagof.dispatchers.Super] bound, and neither may be
+    with it cannot choose between methods written with them, and
+    `#!python Type[Dog]` and `#!python Type[Between[Dog, Animal]]` share
+    `Dog` in the same way. This function recognises such a pair. Both
+    hints must be `Type` forms or both `Hint` forms, at least one argument
+    must be a [`Super`][bagof.dispatchers.Super] or a
+    [`Between`][bagof.dispatchers.Between] bound, and neither may be
     [`Exact`][bagof.dispatchers.Exact], whose pairs the order already
     decides. Each argument is then read as an interval by
-    [`bounds_of`][], and the two hints share a value when an end of one
-    interval lies in both. Inside `Type`, that end must also be a class,
-    since only a class can be passed there. The test is therefore a
+    [`bounds_of`][], and the two hints share a value when some candidate
+    lies in both intervals. The candidates are the ends of the two
+    intervals and, inside `Type`, every class on the MRO of a lower end
+    that is a class, since a class shared by both intervals lies above
+    both lower ends. Inside `Type`, a candidate must also be a class,
+    because only a class can be passed there. The test is therefore a
     sufficient condition: when it reports an overlap, a value in both
     really exists, which is the direction a warning needs. When the
-    bounds involved are classes, it also finds every overlap there is.
+    bounds involved are classes of a nominal hierarchy, in which no class
+    is made a subclass through `register` or `__subclasshook__`, it also
+    finds every overlap there is.
 
     A parametrised union on either side overlaps the other hint when one
     of its members does, which covers a parameter written as
@@ -156,15 +163,23 @@ def overlaps(a: tx.Any, b: tx.Any) -> bool:
         arg_a, arg_b = hint_arg(a), hint_arg(b)
     else:
         return False
-    if not (is_super(arg_a) or is_super(arg_b)):
+    if not (is_bound(arg_a) or is_bound(arg_b)):
         return False
     if is_exact(arg_a) or is_exact(arg_b):
         return False
     first, second = bounds_of(arg_a, top), bounds_of(arg_b, top)
-    for end in first + second:
+    candidates = list(first + second)
+    if top is object:
+        # A class shared by both intervals lies above both lower ends, so
+        # in a nominal hierarchy it is on the MRO of each lower end that is
+        # a class. Each candidate is still checked against both intervals.
+        for lower in (first[0], second[0]):
+            if isinstance(lower, type):
+                candidates.extend(lower.__mro__)
+    for end in candidates:
         if top is object and not isinstance(end, type):
             continue
-        if _between(end, first) and _between(end, second):
+        if _within(end, first) and _within(end, second):
             return True
     return False
 
@@ -175,7 +190,7 @@ def _type_arg(hint: tx.Any) -> tx.Any:
     return args[0] if args else tx.Any
 
 
-def _between(end: tx.Any, bounds: tx.Tuple[tx.Any, tx.Any]) -> bool:
+def _within(end: tx.Any, bounds: tx.Tuple[tx.Any, tx.Any]) -> bool:
     """Report whether `end` lies between a `(lower, upper)` pair of hints."""
     lower, upper = bounds
     return issubhint(lower, end) and issubhint(end, upper)

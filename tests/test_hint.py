@@ -1,11 +1,13 @@
 """Tests for `Hint[X]`: construction, helpers, and dispatching on hints."""
 
 # dependencies
+import numbers
+
 import pytest
 import typing_extensions as tx
 
 # local
-from bagof.dispatchers import Exact, Function, Hint, Super, SuperHint
+from bagof.dispatchers import Between, Exact, Function, Hint, Super, SuperHint
 from bagof.dispatchers.core import ishint, ishintstance, issubhint
 from bagof.dispatchers.core._hint import hint_arg, is_hint_form
 
@@ -230,9 +232,14 @@ def test_dispatch_on_hints() -> None:
     def _above_object(h: object) -> str:
         return "above-object"
 
+    # Narrower than `Hint[int]` and shared with no other method.
+    @f.register((Hint[Between[bool, int]],))
+    def _bool_to_int(h: object) -> str:
+        return "bool-to-int"
+
     assert f(object) == "above-object"
-    assert f(int) == "int"
-    assert f(bool) == "int"
+    assert f(int) == "bool-to-int"
+    assert f(bool) == "bool-to-int"
     assert f(tx.Union[int, str]) == "union"
     assert f(tx.Union) == "bare-union"
     assert f(str) == "any"
@@ -251,6 +258,28 @@ def test_value_level_hint_of_super() -> None:
     assert ishintstance(tx.Optional[int], Hint[Super[bool]]) is True
     assert ishintstance(str, Hint[Super[bool]]) is False
     assert ishintstance(tx.Literal[True], Hint[Super[bool]]) is False
+
+
+def test_value_level_hint_of_between() -> None:
+    # `Hint[Between[L, U]]` matches the hints from `L` up to `U`.
+    hint = Hint[Between[bool, numbers.Integral]]
+    assert ishintstance(bool, hint) is True
+    assert ishintstance(int, hint) is True
+    assert ishintstance(numbers.Integral, hint) is True
+    assert ishintstance(object, hint) is False
+    assert ishintstance(tx.Any, hint) is False
+    assert ishintstance(tx.Never, hint) is False
+    assert ishintstance(str, hint) is False
+
+
+def test_hint_level_hint_of_between() -> None:
+    hint = Hint[Between[bool, numbers.Integral]]
+    assert issubhint(Hint[Between[bool, int]], hint) is True
+    assert issubhint(hint, Hint[Between[bool, int]]) is False
+    assert issubhint(hint, Hint[Super[bool]]) is True
+    assert issubhint(hint, Hint[numbers.Integral]) is True
+    assert issubhint(Hint[int], hint) is False
+    assert issubhint(Hint[Exact[int]], hint) is True
 
 
 def test_hint_level_hint_of_super() -> None:

@@ -60,8 +60,8 @@ from ._signature import (
     Signature,
     _catch_all_or_any,
     _is_plain_typevar,
-    _reject_bare_super,
     _reject_malformed_typeddict,
+    _reject_misplaced_bound,
     _reject_variadic_param,
     _render_hint,
 )
@@ -2232,7 +2232,7 @@ def _overlay_hint(
     normalised = normalise_hint(hint)
     if not allow_variadic:
         _reject_variadic_param(target, normalised, fn)
-    _reject_bare_super(target, normalised, fn)
+    _reject_misplaced_bound(target, normalised, fn)
     _reject_malformed_typeddict(target, normalised, fn)
     plausible = is_plausible_hint(normalised) or is_plausible_hint(
         safe_get_origin(normalised)

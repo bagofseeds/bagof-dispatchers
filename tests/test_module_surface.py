@@ -28,6 +28,7 @@ _TOP_LEVEL = [
     "Super",
     "SuperType",
     "SuperHint",
+    "Between",
 ]
 
 
@@ -79,6 +80,13 @@ def test_super_is_one_object() -> None:
     assert pkg.Super is _super.Super
     assert pkg.SuperType is _super.SuperType
     assert pkg.SuperHint is _super.SuperHint
+
+
+def test_between_is_one_object() -> None:
+    """`Between` reached either way is the same object."""
+    from bagof.dispatchers.core import _bounds
+
+    assert pkg.Between is _bounds.Between
 
 
 def test_public_names_come_from_private_modules() -> None:
