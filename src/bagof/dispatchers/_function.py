@@ -1702,17 +1702,12 @@ def _strictly_below(
     suggestion is strictly more specific when every suggested hint is a
     sub-hint of the corresponding landed hint and at least one landed hint
     is not, in turn, a sub-hint of the suggested one. This is the same
-    per-argument comparison that orders methods during dispatch. An
-    argument for which the method records no landed hint places no
-    constraint on the suggestion, as if the method had declared
-    [`object`][] there.
+    per-argument comparison that orders methods during dispatch. Every
+    suggested argument has a landed hint, because the method has already
+    bound the same call.
     """
     strict = False
     for key, hint in suggested.items():
-        if key not in landed:
-            if not issubhint(object, hint):
-                strict = True
-            continue
         there = landed[key]
         if not issubhint(hint, there):
             return False
