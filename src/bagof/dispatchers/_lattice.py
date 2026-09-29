@@ -5,9 +5,12 @@ both need more than a raw yes-or-no subtype check, so neither talks to
 [`issubhint`][] or
 [`ishintstance`][bagof.dispatchers.core.ishintstance] directly. Instead
 they go through the small, pure functions collected here, sitting one
-layer above the subtype relation. For selection there are three
+layer above the subtype relation. For selection there are four
 questions: whether two hints accept exactly the same values and so can
-be treated as interchangeable ([`equivalent`][]); where a value's class
+be treated as interchangeable ([`equivalent`][]); whether two hints
+that are not ordered against each other still share a value, which
+makes a pair of methods written with them ambiguous
+([`overlaps`][]); where a value's class
 falls in its own MRO relative to another hint, used as a tie-break
 ([`mro_index`][bagof.dispatchers.core.mro_index], defined in `core`
 itself so that [`resolve_hint`][bagof.dispatchers.core.resolve_hint] can
@@ -52,7 +55,7 @@ from .core import (
 )
 from .core._compat import UNION_TYPES, is_typeddict_marker
 from .core._exact import is_exact
-from .core._hint import is_hint_form
+from .core._hint import hint_arg, is_hint_form
 from .core._introspect import _reads_declared_arguments, is_typeddict
 from .core._relation import (
     _callable_param_shape,
@@ -68,6 +71,7 @@ from .core._relation import (
     _TupleShape,
     _typevar_upper,
 )
+from .core._super import bounds_of, is_super
 
 # --- equivalence -------------------------------------------------------
 
@@ -94,6 +98,74 @@ def equivalent(a: tx.Any, b: tx.Any) -> bool:
     """
     a, b = normalise_hint(a), normalise_hint(b)
     return issubhint(a, b) and issubhint(b, a)
+
+
+def overlaps(a: tx.Any, b: tx.Any) -> bool:
+    """Report whether two unordered `Type` or `Hint` hints share a value.
+
+    Two hints that are ordered against each other always share the
+    values of the narrower one, which is what the registration-time
+    ambiguity check relies on. A lower bound breaks that shortcut: the
+    hints `#!python Type[Animal]` and `#!python Type[Super[Dog]]` are not
+    ordered either way, yet the class `Dog` belongs to both, so a call
+    with it cannot choose between methods written with them. This
+    function recognises such a pair. Both hints must be `Type` forms or
+    both `Hint` forms, at least one argument must be a
+    [`Super`][bagof.dispatchers.Super] bound, and neither may be
+    [`Exact`][bagof.dispatchers.Exact], whose pairs the order already
+    decides. Each argument is then read as an interval by
+    [`bounds_of`][], and the two hints share a value when an end of one
+    interval lies in both. Inside `Type`, that end must also be a class,
+    since only a class can be passed there. The test is therefore a
+    sufficient condition: when it reports an overlap, a value in both
+    really exists, which is the direction a warning needs. When the
+    bounds involved are classes, it also finds every overlap there is.
+
+    !!! example
+        ```pycon
+        >>> from typing import Type
+        >>> from bagof.dispatchers import Super
+        >>> class Animal: pass
+        >>> class Dog(Animal): pass
+        >>> overlaps(Type[Animal], Type[Super[Dog]])
+        True
+        >>> overlaps(Type[int], Type[Super[Dog]])
+        False
+        ```
+    """
+    a = unwrap(normalise_hint(a), tx.Annotated)
+    b = unwrap(normalise_hint(b), tx.Annotated)
+    if get_origin_uw(a) is type and get_origin_uw(b) is type:
+        top = object  # type: tx.Any
+        arg_a, arg_b = _type_arg(a), _type_arg(b)
+    elif is_hint_form(a) and is_hint_form(b):
+        top = tx.Any
+        arg_a, arg_b = hint_arg(a), hint_arg(b)
+    else:
+        return False
+    if not (is_super(arg_a) or is_super(arg_b)):
+        return False
+    if is_exact(arg_a) or is_exact(arg_b):
+        return False
+    first, second = bounds_of(arg_a, top), bounds_of(arg_b, top)
+    for end in first + second:
+        if top is object and not isinstance(end, type):
+            continue
+        if _between(end, first) and _between(end, second):
+            return True
+    return False
+
+
+def _type_arg(hint: tx.Any) -> tx.Any:
+    """Return the argument of a `Type` form, or `Any` for a bare one."""
+    args = get_args_uw(hint)
+    return args[0] if args else tx.Any
+
+
+def _between(end: tx.Any, bounds: tx.Tuple[tx.Any, tx.Any]) -> bool:
+    """Report whether `end` lies between a `(lower, upper)` pair of hints."""
+    lower, upper = bounds
+    return issubhint(lower, end) and issubhint(end, upper)
 
 
 # `mro_index` now lives in `core` (`bagof.dispatchers.core.mro_index`) so that

@@ -17,7 +17,7 @@ import typing_extensions as tx
 
 # local
 import bagof.dispatchers.core._relation as rel
-from bagof.dispatchers import Exact
+from bagof.dispatchers import Exact, Super
 from bagof.dispatchers.core import issubhint
 
 _key = rel._relation_key
@@ -41,6 +41,19 @@ def test_a_repeated_query_is_a_cache_hit() -> None:
     # The body ran once; the second call was served from the cache.
     assert calls.count((bool, int)) == 1
     assert _key(bool, int) in rel._RELATION_CACHE
+
+
+def test_a_lower_bound_keys_its_own_entry() -> None:
+    # `Type[Super[int]]` and `Type[int]` are different hints with different
+    # answers, so each is cached under its own key.
+    rel.clear_relation_cache()
+    assert issubhint(tx.Type[Super[int]], tx.Type[object]) is True
+    assert issubhint(tx.Type[int], tx.Type[object]) is True
+    assert issubhint(tx.Type[Super[int]], tx.Type[int]) is False
+    assert issubhint(tx.Type[int], tx.Type[int]) is True
+    above = _key(tx.Type[Super[int]], tx.Type[int])
+    assert rel._RELATION_CACHE[above] is False
+    assert rel._RELATION_CACHE[_key(tx.Type[int], tx.Type[int])] is True
 
 
 def test_cache_stores_the_result() -> None:

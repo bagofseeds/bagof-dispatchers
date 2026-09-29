@@ -12,10 +12,11 @@ import pytest
 import typing_extensions as tx
 
 # locals
-from bagof.dispatchers import Exact, Hint
+from bagof.dispatchers import Exact, Hint, Super
 from bagof.dispatchers._lattice import (
     equivalent,
     is_value_dependent,
+    overlaps,
     solve_typevar,
     typevar_consistent,
 )
@@ -34,6 +35,10 @@ class _Animal:
 
 
 class _Dog(_Animal):
+    pass
+
+
+class _Puppy(_Dog):
     pass
 
 
@@ -346,6 +351,13 @@ CORPUS = [
     Hint[bool],
     Hint[tx.Any],
     Hint[Exact[int]],
+    # Lower bounds inside `Type` and `Hint` (0.3.0): ordered contravariantly
+    # by their bound, above the matching `Exact` form, and apart from a plain
+    # argument.
+    tx.Type[Super[int]],
+    tx.Type[Super[bool]],
+    Hint[Super[int]],
+    Hint[Super[bool]],
     # Any / None, and the bottom on its own -- below every hint above,
     # `Exact[C]` included (#54)
     tx.Any,
@@ -367,6 +379,46 @@ def _no_unknown_hint_warnings() -> tx.Iterator[None]:
     with warnings.catch_warnings():
         warnings.simplefilter("error", UnknownHintWarning)
         yield
+
+
+# --- overlap between unordered Type and Hint forms (0.3.0) ------------
+
+
+def _lts(c: tx.Any) -> tx.Any:
+    return tx.Type[Super[c]]
+
+
+def _lte(c: tx.Any) -> tx.Any:
+    return tx.Type[Exact[c]]
+
+
+def _lhs(c: tx.Any) -> tx.Any:
+    return Hint[Super[c]]
+
+
+@pytest.mark.parametrize(
+    "a, b, expected",
+    [
+        (tx.Type[_Animal], _lts(_Dog), True),
+        (tx.Type[_Puppy], _lts(_Dog), False),
+        (_lts(_Dog), _lts(int), True),  # `object` is above both
+        (Hint[int], _lhs(bool), True),
+        (Hint[str], _lhs(bool), False),
+        (int, _lts(int), False),
+        (tx.Type[_Animal], Hint[Super[_Dog]], False),
+        (tx.Type[_Animal], tx.Type[_Dog], False),  # no lower bound involved
+        (_lte(_Dog), _lts(_Dog), False),  # the order decides an `Exact` pair
+        (tx.Type[_Animal], _lts(tx.Any), False),  # an empty interval
+        # The only shared end is a union, which no class value can be.
+        (tx.Type[tx.Union[_Dog, int]], _lts(tx.Union[_Dog, int]), False),
+        (tx.Annotated[tx.Type[_Animal], "m"], _lts(_Dog), True),
+        (tx.Type, _lts(_Dog), True),  # ordered too, and `_Dog` is in both
+    ],
+    ids=repr,
+)
+def test_overlaps(a: tx.Any, b: tx.Any, expected: bool) -> None:
+    assert overlaps(a, b) is expected
+    assert overlaps(b, a) is expected
 
 
 # --- equivalence laws --------------------------------------------------

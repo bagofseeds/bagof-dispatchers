@@ -40,6 +40,12 @@ class Hint(tx.Generic[_T_co]):
     `#!python int`, not `#!python bool`, and `#!python Hint[Exact[tx.Union]]`
     matches only the bare `#!python Union` form.
 
+    The argument may instead be [`Super`][bagof.dispatchers.Super]`[X]`,
+    which turns the bound around: `#!python Hint[Super[bool]]` matches
+    the hint `#!python bool` and every hint above it, such as
+    `#!python int`, `#!python object`, and `#!python Any`, but not
+    `#!python str`.
+
     `Hint` is a marker used only in annotations and is never
     instantiated. A bare `#!python Hint`, written with no argument, is
     read as `#!python Hint[Any]`, the hint matched by every type hint.

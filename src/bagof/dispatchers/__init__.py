@@ -17,11 +17,14 @@ to such a function. [`Dispatcher`][] is the object underneath it, for
 building one directly rather than through the decorator. [`Exact`][]
 marks a parameter that must match a type precisely, so that an
 implementation written for a base class does not also catch its
-subclasses. The subtype relation over hints, and the lower-level
-introspection it is built from, live separately in
-`bagof.dispatchers.core`, since the rest of the `bagof` family depends
-on that comparison without needing dispatch itself. The reasoning
-behind the model is written up in the design RFC under `docs/rfc/`.
+subclasses. [`Super`][] is its mirror image inside
+[`Type`][typing.Type] and [`Hint`][]: it accepts a class or a hint
+together with everything above it, rather than everything below. The
+subtype relation over hints, and the lower-level introspection it is
+built from, live separately in `bagof.dispatchers.core`, since the rest
+of the `bagof` family depends on that comparison without needing
+dispatch itself. The reasoning behind the model is written up in the
+design RFC under `docs/rfc/`.
 """
 
 # local
@@ -32,6 +35,7 @@ from ._method import Method
 from ._signature import Parameter, Signature
 from .core._exact import Exact
 from .core._hint import Hint
+from .core._super import Super, SuperHint, SuperType
 
 __all__ = [
     "dispatch",
@@ -45,4 +49,7 @@ __all__ = [
     "AmbiguousMethodError",
     "Exact",
     "Hint",
+    "Super",
+    "SuperType",
+    "SuperHint",
 ]

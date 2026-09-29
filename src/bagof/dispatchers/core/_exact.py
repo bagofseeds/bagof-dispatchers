@@ -70,6 +70,12 @@ else:
         normalised to the inner spelling `#!python Type[Exact[int]]`, which
         is the form to prefer.
 
+        Inside those brackets, [`Super`][bagof.dispatchers.Super] is the
+        mirror image of `Exact`: where `#!python Type[Exact[int]]` accepts
+        the class `#!python int` alone, `#!python Type[Super[int]]` accepts
+        `#!python int` together with every class above it. The two cannot
+        be combined, since an exact type leaves nothing above it to bound.
+
         !!! example
             ```pycon
             >>> from bagof.dispatchers import Exact
@@ -83,6 +89,11 @@ else:
                 raise TypeError(
                     f"Exact[...] takes a type hint, got {item!r}."
                 )
+            # Imported here because `_super` imports this module.
+            from ._super import combination_message, is_super
+
+            if is_super(item):
+                raise TypeError(combination_message("Exact", item))
             try:
                 return tx.Annotated[item, EXACT]
             except TypeError:

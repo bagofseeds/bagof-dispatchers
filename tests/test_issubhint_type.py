@@ -5,7 +5,7 @@ import pytest
 import typing_extensions as tx
 
 # locals
-from bagof.dispatchers import Exact
+from bagof.dispatchers import Exact, Super
 from bagof.dispatchers.core import ishintstance, issubhint
 from bagof.dispatchers.core._relation import _issubtype
 
@@ -27,6 +27,17 @@ TYPE_CASES = [
     # `Annotated` is transparent on both sides.
     (tx.Annotated[tx.Type[bool], "meta"], tx.Type[int], True),
     (tx.Type[bool], tx.Annotated[tx.Type[int], "meta"], True),
+    # A lower bound is ordered contravariantly by its bound (0.3.0) ...
+    (tx.Type[Super[int]], tx.Type[Super[bool]], True),
+    (tx.Type[Super[bool]], tx.Type[Super[int]], False),
+    # ... sits above the exact class it names ...
+    (tx.Type[Exact[bool]], tx.Type[Super[bool]], True),
+    (tx.Type[Super[bool]], tx.Type[Exact[bool]], False),
+    # ... and is apart from a plain argument, below only the top class.
+    (tx.Type[bool], tx.Type[Super[bool]], False),
+    (tx.Type[Super[bool]], tx.Type[int], False),
+    (tx.Type[Super[bool]], tx.Type[object], True),
+    (tx.Type[Super[bool]], tx.Type, True),
 ]
 
 
@@ -87,6 +98,15 @@ def test_issubhint_type_any_and_union() -> None:
     assert issubhint(tx.Type[int], tx.Type[tx.Any]) is True
     assert issubhint(tx.Type[int], tx.Type[tx.Union[int, str]]) is True
     assert issubhint(tx.Type[bytes], tx.Type[tx.Union[int, str]]) is False
+
+
+def test_ishintstance_type_super() -> None:
+    # `Type[Super[C]]` matches the class `C` and every class above it.
+    assert ishintstance(bool, tx.Type[Super[bool]]) is True
+    assert ishintstance(int, tx.Type[Super[bool]]) is True
+    assert ishintstance(object, tx.Type[Super[bool]]) is True
+    assert ishintstance(str, tx.Type[Super[bool]]) is False
+    assert ishintstance(True, tx.Type[Super[bool]]) is False
 
 
 def test_issubhint_type_exact_leaf() -> None:
