@@ -1511,6 +1511,30 @@ Key objects:
   default-filled dispatched parameter as if the caller had written its
   default value out explicitly, the same rule `bagof.magic._polymorph`
   already uses (§8.2), and is off by default.
+- *(0.3.0)* **`Function`** also reports what selection sees for a call
+  without acting on it. `candidates(*args, **kwargs) -> Tuple[Method, ...]`
+  returns every method that accepts the call, most specific first, and
+  `bestcandidates(*args, **kwargs) -> Tuple[Method, ...]` returns the
+  methods that survive every tie-break of §2.2 and §3. That is one method
+  when `dispatch` would succeed, the tied methods when `dispatch` would
+  raise `AmbiguousMethodError` (whose `candidates` attribute holds the same
+  tuple), and no method at all when nothing applies. `itercandidates` and
+  `iterbestcandidates` return the same sequences as iterators, while
+  `resolve_candidates(*hints, **named_hints)` and
+  `resolve_bestcandidates(*hints, **named_hints)` are the hint-level
+  counterparts, reaching exactly the methods `resolve` reaches. None of the
+  six raises `NoMethodError` or `AmbiguousMethodError`. The order of
+  `candidates` is built in layers: the best candidates come first, then
+  each layer holds the methods that nothing still unplaced is strictly
+  more specific than, ordered by descending priority and then by
+  registration order. A method therefore always follows every method that
+  is strictly more specific than it, but the relative position of two
+  incomparable methods is not a claim about specificity. The same
+  question is answered by [CLOS]'s `compute-applicable-methods`, which
+  returns the applicable methods sorted by precedence, by [Julia]'s
+  `methods(f, types)`, and by [`multipledispatch`]'s
+  `Dispatcher.dispatch_iter`, which yields the matching implementations
+  in order of specificity.
 - **`Method`** exposes `signature`, `function`, `priority`, `__call__`, and
   `__repr__`.
 - **`Parameter(name, hint, kind, default)`** is frozen; `kind` mirrors
