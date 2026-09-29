@@ -202,6 +202,52 @@ def test_possible_fix_uses_exact_where_a_candidate_did() -> None:
     assert "Exact[int]" in str(info.value)
 
 
+def test_possible_fix_omitted_when_it_would_not_settle_the_tie() -> None:
+    """No fix is suggested when the call's class sits above the candidates."""
+    f = Function("h")
+
+    def of_ints(xs: typing.List[int]) -> int:
+        return 1
+
+    def of_strs(xs: typing.List[str]) -> int:
+        return 2
+
+    _quiet(f, of_ints, of_strs)
+    with pytest.raises(AmbiguousMethodError) as info:
+        f([1])
+    message = str(info.value)
+    assert "h(list) is ambiguous" in message
+    assert "Candidates:" in message
+    assert "of_ints(xs: List[int])" in message
+    assert "of_strs(xs: List[str])" in message
+    assert "Possible fix" not in message
+
+
+def test_possible_fix_kept_when_it_settles_the_tie() -> None:
+    """A fix strictly below every candidate is still suggested."""
+    f = Function("f")
+
+    def exact_first(x: Exact[int], y: object) -> int:
+        return 1
+
+    def by_second(x: object, y: float) -> int:
+        return 2
+
+    _quiet(f, exact_first, by_second)
+    with pytest.raises(AmbiguousMethodError) as info:
+        f(3, 2.0)
+    message = str(info.value)
+    assert "Possible fix, define" in message
+    assert "f(x: Exact[int], y: float)" in message
+
+
+def test_render_ambiguous_without_fix() -> None:
+    """The ambiguity template ends after the candidates when no fix exists."""
+    text = render_ambiguous("f(int, int)", ["a @ x:1", "b @ x:2"], None)
+    assert text.endswith("  b @ x:2")
+    assert "Possible fix" not in text
+
+
 def test_ambiguous_never_shows_values() -> None:
     """The ambiguity message shows types, never values."""
     f = Function("f")

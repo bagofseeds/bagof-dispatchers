@@ -75,7 +75,7 @@ from .core import (
 )
 from .core._compat import SameObject as _SameObject
 from .core._compat import is_plausible_hint
-from .core._exact import exact_target, is_exact
+from .core._exact import Exact, exact_target, is_exact
 from .core._introspect import _PEP585_ALIAS
 from .core._relation import (
     _may_record_parametrisation,
@@ -1241,7 +1241,8 @@ class Function:
         tie-break (`survivors`), not the methods those tie-breaks already
         eliminated. `maximal`, the whole most-specific set, is consulted
         only for the "possible fix" signature, which has to outrank the
-        eliminated methods as well as the tied ones.
+        eliminated methods as well as the tied ones. When no signature
+        built from the call can do so, the message leaves the fix out.
         """
         call_desc = self._call_desc(args, kwargs, values)
         candidates = [plan.bindable[index][0] for index in survivors]
@@ -1264,36 +1265,50 @@ class Function:
         args: tx.Sequence[tx.Any],
         kwargs: tx.Mapping[str, tx.Any],
         values: bool,
-    ) -> str:
+    ) -> tx.Optional[str]:
         """Build a signature from the call's own types that would settle
-        the tie.
+        the tie, or return [`None`][] when no such signature exists.
 
         An argument that one of the competing methods matched through
         [`Exact`][bagof.dispatchers.Exact] is spelled
         `#!python Exact[...]` in the suggestion too, so the suggested
         signature would outrank that competitor as well, not just the
-        others. That check runs over every method in `maximal`, including
-        one that lost only on `priority`: a new method at the default
-        priority has to be strictly more specific than such a method to
-        beat it, because priority is compared only between methods that
-        are equally specific. The parameter names come from the first
-        method still tied.
+        others. The parameter names come from the first method still
+        tied.
+
+        A signature built this way does not always settle the tie. When
+        the tied methods are parametrised generics such as
+        `#!python List[int]` and `#!python List[str]`, the class of the
+        argument is `#!python list`, which sits above both of them rather
+        than below. The suggestion is therefore returned only when it is
+        strictly more specific than every method in `maximal`, in the
+        same sense that dispatch uses to order methods. Every suggested
+        hint has to be a sub-hint of the hint that the same argument
+        landed on in that method, and at least one of those landed hints
+        must not, in turn, be a sub-hint of the suggested one. The check
+        covers every method in `maximal`, including one that lost only
+        on `priority`, because a new method at the default priority has
+        to be strictly more specific than such a method to beat it:
+        priority is compared only between methods that are equally
+        specific.
         """
         prototype = plan.bindable[survivors[0]][1]
-        parts: tx.List[str] = []
+        keyed: tx.List[tx.Tuple[tx.Any, str, tx.Any]] = []
         for index, value in enumerate(args):
             name = prototype.slots.get(index)
             label = name if isinstance(name, str) else f"a{index}"
-            parts.append(
-                f"{label}: "
-                f"{self._fix_hint(index, plan, maximal, value, values)}"
-            )
+            keyed.append((index, label, value))
         for keyword in sorted(kwargs):
-            value = kwargs[keyword]
-            parts.append(
-                f"{keyword}: "
-                f"{self._fix_hint(keyword, plan, maximal, value, values)}"
-            )
+            keyed.append((keyword, keyword, kwargs[keyword]))
+        parts: tx.List[str] = []
+        suggested: tx.Dict[tx.Any, tx.Any] = {}
+        for key, label, value in keyed:
+            hint, rendered = self._fix_hint(key, plan, maximal, value, values)
+            suggested[key] = hint
+            parts.append(f"{label}: {rendered}")
+        for index in maximal:
+            if not _strictly_below(suggested, plan.bindable[index][2]):
+                return None
         return f"{self.name}({', '.join(parts)})"
 
     def _fix_hint(
@@ -1303,8 +1318,17 @@ class Function:
         maximal: tx.List[int],
         value: tx.Any,
         values: bool,
-    ) -> str:
-        """Render the hint for one argument of a "possible fix" signature."""
+    ) -> tx.Tuple[tx.Any, str]:
+        """Choose the hint for one argument of a "possible fix" signature.
+
+        The result pairs the hint itself, which `_possible_fix` compares
+        against the competing methods, with the text that the
+        message shows for it. For a call by value, the hint is the
+        argument's class, wrapped in [`Exact`][bagof.dispatchers.Exact]
+        when a competing method matched that argument through `Exact`.
+        For a call by hint, as made by `resolve`, the hint is the queried
+        hint itself.
+        """
         if values:
             value_type = type(value)
             base = value_type.__name__
@@ -1315,9 +1339,9 @@ class Function:
                     and is_exact(landed)
                     and equivalent(exact_target(landed), value_type)
                 ):
-                    return f"Exact[{base}]"
-            return base
-        return _render_hint(value)
+                    return Exact[value_type], f"Exact[{base}]"
+            return value_type, base
+        return value, _render_hint(value)
 
     def _call_desc(
         self,
@@ -1649,6 +1673,36 @@ def _full_shape(signature: Signature) -> tx.Tuple[int, tx.Tuple[str, ...]]:
         else:
             positional += 1
     return (positional, tuple(sorted(keyword_only)))
+
+
+def _strictly_below(
+    suggested: tx.Mapping[tx.Any, tx.Any],
+    landed: tx.Mapping[tx.Any, tx.Any],
+) -> bool:
+    """Report whether a suggested signature is strictly more specific than
+    one method's landed hints.
+
+    Both mappings are keyed by argument, as in `_Plan.bindable`. The
+    suggestion is strictly more specific when every suggested hint is a
+    sub-hint of the corresponding landed hint and at least one landed hint
+    is not, in turn, a sub-hint of the suggested one. This is the same
+    per-argument comparison that orders methods during dispatch. An
+    argument for which the method records no landed hint places no
+    constraint on the suggestion, as if the method had declared
+    [`object`][] there.
+    """
+    strict = False
+    for key, hint in suggested.items():
+        if key not in landed:
+            if not issubhint(object, hint):
+                strict = True
+            continue
+        there = landed[key]
+        if not issubhint(hint, there):
+            return False
+        if not issubhint(there, hint):
+            strict = True
+    return strict
 
 
 def _landed_hints(

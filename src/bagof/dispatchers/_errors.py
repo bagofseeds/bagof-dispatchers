@@ -153,7 +153,7 @@ def render_no_method(
 def render_ambiguous(
     call_desc: str,
     candidates: tx.Sequence[str],
-    possible_fix: str,
+    possible_fix: tx.Optional[str],
 ) -> str:
     """Compose the text of an [`AmbiguousMethodError`][] message.
 
@@ -167,12 +167,15 @@ def render_ambiguous(
         in the order they should appear.
     possible_fix
         A signature that, if a method were defined with it, would be
-        specific enough to settle the ambiguity.
+        specific enough to settle the ambiguity. When no such signature
+        can be built from the call, this is [`None`][], and the message
+        ends after the list of candidates.
     """
     parts = [f"{call_desc} is ambiguous.", "Candidates:"]
     parts.extend(f"  {line}" for line in candidates)
-    parts.append("Possible fix, define")
-    parts.append(f"  {possible_fix}")
+    if possible_fix is not None:
+        parts.append("Possible fix, define")
+        parts.append(f"  {possible_fix}")
     return "\n".join(parts)
 
 
