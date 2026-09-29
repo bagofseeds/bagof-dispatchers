@@ -90,6 +90,14 @@ class AmbiguousMethodError(DispatchError):
     that arbitrary choice and raises instead, listing the competing
     methods and suggesting a signature specific enough to take
     precedence over both.
+
+    The competing methods are the ones still tied after every tie-break
+    that dispatch applies, so a method that was equally specific but
+    lost on `priority`, for example, is not among them. The error's
+    `candidates` attribute holds these methods in registration order,
+    which is the same tuple that
+    [`Function.bestcandidates`][bagof.dispatchers.Function.bestcandidates]
+    returns for the same call.
     """
 
 

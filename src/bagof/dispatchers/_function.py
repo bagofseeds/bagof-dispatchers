@@ -526,37 +526,29 @@ class Function:
             Returned instead of raising [`NoMethodError`][] when no
             method applies to the given hints.
         ambiguity
-            What to do when two methods are equally specific.
-            `#!python "raise"`, the default, raises
+            What to do when two or more methods are still tied after
+            every tie-break. `#!python "raise"`, the default, raises
             [`AmbiguousMethodError`][]. `#!python "warn"` instead takes
-            whichever method was registered first and warns about the
-            choice. `#!python "ignore"` makes that same choice silently.
+            whichever of the tied methods was registered first and warns
+            about the choice. `#!python "ignore"` makes that same choice
+            silently. A method that already lost a tie-break, such as one
+            with a lower `priority`, is never taken.
         """
-        with self._lock:
-            cache = self._ensure()
-            shape = Signature.shape(hints, named_hints)
-            plan = cache.shape_plans.get(shape)
-            if plan is None:
-                plan = self._build_plan(shape, cache)
-        applicable = [
-            index
-            for index, (method, _, _) in enumerate(plan.bindable)
-            if method.signature.applies_to_hints(hints, named_hints)
-        ]
+        plan = self._hint_plan(hints, named_hints)
+        applicable = _applicable_to_hints(plan, hints, named_hints)
         if not applicable:
             if default is not UNSET:
                 return default
             raise self._no_method(hints, named_hints, values=False)
         maximal = _maximal(applicable, plan)
-        winner = self._break_ties(
+        survivors = self._break_ties(
             maximal, plan, hints, named_hints, values=False
         )
-        if winner is None:
+        if len(survivors) > 1:
             if ambiguity == "raise":
                 raise self._ambiguous(
-                    maximal, plan, hints, named_hints, values=False
+                    survivors, maximal, plan, hints, named_hints, values=False
                 )
-            winner = min(maximal)
             if ambiguity == "warn":
                 warnings.warn(
                     f"{self._call_desc(hints, named_hints, values=False)} is "
@@ -565,7 +557,296 @@ class Function:
                     RuntimeWarning,
                     stacklevel=2,
                 )
-        return plan.bindable[winner][0]
+        return plan.bindable[survivors[0]][0]
+
+    # -- candidates -----------------------------------------------------
+
+    def candidates(
+        self, *args: tx.Any, **kwargs: tx.Any
+    ) -> tx.Tuple[Method, ...]:
+        """List every method that accepts this call, most specific first.
+
+        Where [`dispatch`][] narrows a call down to the one method it
+        selects, `candidates` reports every registered method whose
+        signature accepts the arguments given, ordered from the most
+        specific to the least specific. The methods that
+        [`bestcandidates`][] returns for the same call always come first,
+        so the method that `dispatch` would select, when there is one, is
+        the first element.
+
+        After the best candidates, the order is built in layers. The
+        first layer holds the applicable methods that no other
+        applicable method is more specific than. The second layer holds
+        the methods that become most specific once the first layer is
+        set aside, and so on until every applicable method has been
+        placed. Within a layer, the methods that are not among the best
+        candidates are ordered by descending `priority` and then by
+        registration order. A method therefore always follows every
+        method that is strictly more specific than it for this call. Two
+        methods that are incomparable, with neither more specific than
+        the other, can appear in either order, and their relative
+        position is not a claim about specificity.
+
+        A call that no method accepts gives an empty tuple rather than
+        raising [`NoMethodError`][], and an ambiguous call lists its tied
+        methods first rather than raising [`AmbiguousMethodError`][].
+
+        !!! example
+            ```pycon
+            >>> class Animal: pass
+            >>> class Dog(Animal): pass
+            >>> speak = Function("speak")
+            >>> @speak.register
+            ... def anything(x: object) -> str: return "..."
+            >>> @speak.register
+            ... def animal(x: Animal) -> str: return "hello"
+            >>> @speak.register
+            ... def dog(x: Dog) -> str: return "woof"
+            >>> [m.name for m in speak.candidates(Dog())]
+            ['dog', 'animal', 'anything']
+            >>> [m.name for m in speak.candidates(Animal())]
+            ['animal', 'anything']
+            >>> Function("empty").candidates(Dog())
+            ()
+            ```
+
+        Returns
+        -------
+        tuple of Method
+            The applicable methods, most specific first.
+        """
+        return tuple(self.itercandidates(*args, **kwargs))
+
+    def itercandidates(
+        self, *args: tx.Any, **kwargs: tx.Any
+    ) -> tx.Iterator[Method]:
+        """Iterate over the methods that accept this call, most specific first.
+
+        The iterator yields the same methods, in the same order, as
+        [`candidates`][] returns for the same call. Which methods accept
+        the call is worked out when `itercandidates` is called, so a
+        method registered while the iteration is under way does not
+        appear in it. Only the ordering of the less specific methods is
+        deferred until the iteration reaches them, which saves that work
+        when only the first few methods are wanted.
+        """
+        plan, applicable, best = self._value_candidates(args, kwargs)
+        return _in_specificity_order(plan, applicable, best)
+
+    def bestcandidates(
+        self, *args: tx.Any, **kwargs: tx.Any
+    ) -> tx.Tuple[Method, ...]:
+        """List the methods left standing once every tie-break is applied.
+
+        `bestcandidates` runs the same selection as [`dispatch`][] but
+        reports its outcome instead of acting on it. Among the methods
+        that accept the call, it keeps the most specific ones and then
+        applies the tie-breaks that `dispatch` applies, in the same
+        order: an explicit `priority`, the argument's own MRO, how
+        tightly each signature fits the call, and repeated `TypeVar`s.
+        The methods that remain are returned in registration order.
+
+        The length of the result tells which way `dispatch` would go. A
+        single method is the one that `dispatch` returns. Several methods
+        are the ones still tied, which `dispatch` reports by raising
+        [`AmbiguousMethodError`][]; the error's `candidates` attribute
+        holds exactly these methods, in the same order. An empty tuple
+        means that no method accepts the call at all, the case in which
+        `dispatch` raises [`NoMethodError`][]. `bestcandidates` itself
+        raises neither error.
+
+        !!! example
+            ```pycon
+            >>> class Animal: pass
+            >>> class Dog(Animal): pass
+            >>> meet = Function("meet")
+            >>> with warnings.catch_warnings():
+            ...     warnings.simplefilter("ignore")  # the pair can clash
+            ...     @meet.register
+            ...     def dog_first(a: Dog, b: Animal) -> str: return "first"
+            ...     @meet.register
+            ...     def dog_second(a: Animal, b: Dog) -> str: return "second"
+            >>> [m.name for m in meet.bestcandidates(Dog(), Dog())]
+            ['dog_first', 'dog_second']
+            >>> [m.name for m in meet.bestcandidates(Dog(), Animal())]
+            ['dog_first']
+            >>> meet.bestcandidates(Animal(), Animal())
+            ()
+            ```
+
+        Returns
+        -------
+        tuple of Method
+            The single selected method, the methods still tied, or no
+            method at all.
+        """
+        plan, _, best = self._value_candidates(args, kwargs)
+        return tuple(plan.bindable[index][0] for index in best)
+
+    def iterbestcandidates(
+        self, *args: tx.Any, **kwargs: tx.Any
+    ) -> tx.Iterator[Method]:
+        """Iterate over the methods left standing once every tie-break is
+        applied.
+
+        The iterator yields the same methods, in the same order, as
+        [`bestcandidates`][] returns for the same call, and the selection
+        behind it is made in full when `iterbestcandidates` is called.
+        """
+        return iter(self.bestcandidates(*args, **kwargs))
+
+    def resolve_candidates(
+        self, *hints: tx.Any, **named_hints: tx.Any
+    ) -> tx.Tuple[Method, ...]:
+        """List every method that a call described by hints would reach.
+
+        `resolve_candidates` is to [`resolve`][] what [`candidates`][] is
+        to [`dispatch`][]. Each argument is given as a type hint rather
+        than a value, and the result lists every method that `resolve`
+        would consider for those hints, most specific first. Those
+        methods include any that `resolve` reaches through its lookup
+        convenience, by which a plain `C` query reaches a method whose
+        parameter is [`Exact`][bagof.dispatchers.Exact]`[C]`.
+
+        The order is built the same way as the order of `candidates`,
+        with the methods that [`resolve_bestcandidates`][] returns first.
+        A hint query has no argument values, so the tie-break on an
+        argument's own MRO plays no part, exactly as in `resolve`. A
+        query that no method accepts gives an empty tuple rather than
+        raising [`NoMethodError`][].
+
+        !!! example
+            ```pycon
+            >>> class Animal: pass
+            >>> class Dog(Animal): pass
+            >>> speak = Function("speak")
+            >>> @speak.register
+            ... def anything(x: object) -> str: return "..."
+            >>> @speak.register
+            ... def dog(x: Dog) -> str: return "woof"
+            >>> [m.name for m in speak.resolve_candidates(Dog)]
+            ['dog', 'anything']
+            >>> [m.name for m in speak.resolve_candidates(Animal)]
+            ['anything']
+            ```
+
+        Returns
+        -------
+        tuple of Method
+            The methods the hints reach, most specific first.
+        """
+        plan, applicable, best = self._hint_candidates(hints, named_hints)
+        return tuple(_in_specificity_order(plan, applicable, best))
+
+    def resolve_bestcandidates(
+        self, *hints: tx.Any, **named_hints: tx.Any
+    ) -> tx.Tuple[Method, ...]:
+        """List the methods left standing when hints are resolved.
+
+        `resolve_bestcandidates` is to [`resolve`][] what
+        [`bestcandidates`][] is to [`dispatch`][]: it runs the selection
+        that `resolve` runs for a call described by hints and reports the
+        methods that survive every tie-break, in registration order. A
+        single method is the one that `resolve` returns. Several methods
+        are the ones that `#!python resolve(..., ambiguity="raise")`
+        reports in [`AmbiguousMethodError`][], and the first of them is
+        the method that `#!python ambiguity="warn"` and
+        `#!python ambiguity="ignore"` take. An empty tuple means that no
+        method accepts the hints, the case in which `resolve` raises
+        [`NoMethodError`][] or returns its `default`.
+
+        !!! example
+            ```pycon
+            >>> class Animal: pass
+            >>> class Dog(Animal): pass
+            >>> meet = Function("meet")
+            >>> with warnings.catch_warnings():
+            ...     warnings.simplefilter("ignore")  # the pair can clash
+            ...     @meet.register
+            ...     def dog_first(a: Dog, b: Animal) -> str: return "first"
+            ...     @meet.register
+            ...     def dog_second(a: Animal, b: Dog) -> str: return "second"
+            >>> [m.name for m in meet.resolve_bestcandidates(Dog, Dog)]
+            ['dog_first', 'dog_second']
+            >>> [m.name for m in meet.resolve_bestcandidates(Dog, Animal)]
+            ['dog_first']
+            ```
+
+        Returns
+        -------
+        tuple of Method
+            The single selected method, the methods still tied, or no
+            method at all.
+        """
+        plan, _, best = self._hint_candidates(hints, named_hints)
+        return tuple(plan.bindable[index][0] for index in best)
+
+    def _value_candidates(
+        self, args: tx.Sequence[tx.Any], kwargs: tx.Mapping[str, tx.Any]
+    ) -> tx.Tuple[_Plan, tx.List[int], tx.List[int]]:
+        """Return the plan, the applicable methods and the tied-best ones
+        for a value call.
+
+        The work is done under the lock, as on the cache-miss path of
+        [`dispatch`][], and nothing is written to the call cache.
+        """
+        with self._lock:
+            cache = self._ensure()
+            shape = Signature.shape(args, kwargs)
+            plan = cache.shape_plans.get(shape)
+            if plan is None:
+                plan = self._build_plan(shape, cache)
+            applicable = _applicable_to_values(plan, args, kwargs)
+            best = self._best(applicable, plan, args, kwargs, values=True)
+            return plan, applicable, best
+
+    def _hint_candidates(
+        self,
+        hints: tx.Sequence[tx.Any],
+        named_hints: tx.Mapping[str, tx.Any],
+    ) -> tx.Tuple[_Plan, tx.List[int], tx.List[int]]:
+        """Return the plan, the applicable methods and the tied-best ones
+        for a hint query, with the same locking as [`resolve`][].
+        """
+        plan = self._hint_plan(hints, named_hints)
+        applicable = _applicable_to_hints(plan, hints, named_hints)
+        best = self._best(applicable, plan, hints, named_hints, values=False)
+        return plan, applicable, best
+
+    def _hint_plan(
+        self,
+        hints: tx.Sequence[tx.Any],
+        named_hints: tx.Mapping[str, tx.Any],
+    ) -> _Plan:
+        """Return the plan for a hint query's shape, building it under the
+        lock if it is not cached yet.
+        """
+        with self._lock:
+            cache = self._ensure()
+            shape = Signature.shape(hints, named_hints)
+            plan = cache.shape_plans.get(shape)
+            if plan is None:
+                plan = self._build_plan(shape, cache)
+            return plan
+
+    def _best(
+        self,
+        applicable: tx.List[int],
+        plan: _Plan,
+        args: tx.Sequence[tx.Any],
+        kwargs: tx.Mapping[str, tx.Any],
+        values: bool,
+    ) -> tx.List[int]:
+        """Run the full selection over `applicable`, keeping the survivors.
+
+        The result is empty when nothing applies, a single index when the
+        selection has a winner, and the still-tied indices otherwise.
+        """
+        if not applicable:
+            return []
+        return self._break_ties(
+            _maximal(applicable, plan), plan, args, kwargs, values
+        )
 
     def __get__(
         self, instance: tx.Any, owner: tx.Optional[type] = None
@@ -726,18 +1007,16 @@ class Function:
         plan: _Plan,
     ) -> Method:
         """Find the most specific method that accepts this value call."""
-        applicable = [
-            index
-            for index, (method, _, _) in enumerate(plan.bindable)
-            if method.signature.applies_to_values(args, kwargs)
-        ]
+        applicable = _applicable_to_values(plan, args, kwargs)
         if not applicable:
             raise self._no_method(args, kwargs, values=True)
         maximal = _maximal(applicable, plan)
-        winner = self._break_ties(maximal, plan, args, kwargs, values=True)
-        if winner is None:
-            raise self._ambiguous(maximal, plan, args, kwargs, values=True)
-        return plan.bindable[winner][0]
+        survivors = self._break_ties(maximal, plan, args, kwargs, values=True)
+        if len(survivors) > 1:
+            raise self._ambiguous(
+                survivors, maximal, plan, args, kwargs, values=True
+            )
+        return plan.bindable[survivors[0]][0]
 
     def _break_ties(
         self,
@@ -746,8 +1025,8 @@ class Function:
         args: tx.Sequence[tx.Any],
         kwargs: tx.Mapping[str, tx.Any],
         values: bool,
-    ) -> tx.Optional[int]:
-        """Narrow a set of equally specific methods to one, or to `None`.
+    ) -> tx.List[int]:
+        """Narrow a set of equally specific methods down to the survivors.
 
         The tie-breaks below are tried one after another, in the order
         RFC 0001 §2.2 and §3 lay out. Explicit `priority` is tried
@@ -757,12 +1036,17 @@ class Function:
         the signature absorbing fewer arguments into catch-alls and
         relying on fewer defaults wins. Last is the repeated-`TypeVar`
         refinement, where a method whose repeated `TypeVar`s tie
-        strictly more argument pairs together than another's wins. If
-        more than one candidate survives every one of these steps, the
-        tie is genuine, and `#!python None` reports it as such.
+        strictly more argument pairs together than another's wins.
+
+        The methods left standing after every step are returned in
+        their original order, which is registration order. A single
+        survivor is the winner; more than one means the tie is genuine,
+        and those survivors are the methods an ambiguity is reported
+        between. Each step keeps at least one method, so the result is
+        never empty.
         """
         if len(candidates) == 1:
-            return candidates[0]
+            return candidates
         best_priority = max(
             plan.bindable[index][0].priority for index in candidates
         )
@@ -772,7 +1056,7 @@ class Function:
             if plan.bindable[index][0].priority == best_priority
         ]
         if len(candidates) == 1:
-            return candidates[0]
+            return candidates
         if values:
             candidates = [
                 index
@@ -786,7 +1070,7 @@ class Function:
                 )
             ]
             if len(candidates) == 1:
-                return candidates[0]
+                return candidates
         tightness = {
             index: _tightness(
                 plan.bindable[index][1], plan.bindable[index][0].signature
@@ -798,7 +1082,7 @@ class Function:
             index for index in candidates if tightness[index] == best
         ]
         if len(candidates) == 1:
-            return candidates[0]
+            return candidates
         # Last, the repeated-TypeVar refinement (RFC 0001 §3): among methods
         # still tied, one whose repeated TypeVars constrain strictly more
         # arguments to a single consistent type is more specific. Drop any
@@ -814,9 +1098,7 @@ class Function:
                 for other in candidates
             )
         ]
-        if len(candidates) == 1:
-            return candidates[0]
-        return None
+        return candidates
 
     def _group_dominates(
         self, plan: _Plan, winner: int, loser: int
@@ -946,17 +1228,27 @@ class Function:
 
     def _ambiguous(
         self,
+        survivors: tx.List[int],
         maximal: tx.List[int],
         plan: _Plan,
         args: tx.Sequence[tx.Any],
         kwargs: tx.Mapping[str, tx.Any],
         values: bool,
     ) -> AmbiguousMethodError:
-        """Build an [`AmbiguousMethodError`][] for a tie between methods."""
+        """Build an [`AmbiguousMethodError`][] for a tie between methods.
+
+        The error names only the methods that are still tied after every
+        tie-break (`survivors`), not the methods those tie-breaks already
+        eliminated. `maximal`, the whole most-specific set, is consulted
+        only for the "possible fix" signature, which has to outrank the
+        eliminated methods as well as the tied ones.
+        """
         call_desc = self._call_desc(args, kwargs, values)
-        candidates = [plan.bindable[index][0] for index in maximal]
+        candidates = [plan.bindable[index][0] for index in survivors]
         lines = [method.describe() for method in candidates]
-        fix = self._possible_fix(maximal, plan, args, kwargs, values)
+        fix = self._possible_fix(
+            survivors, maximal, plan, args, kwargs, values
+        )
         return AmbiguousMethodError(
             _errors.render_ambiguous(call_desc, lines, fix),
             function=self.name,
@@ -966,6 +1258,7 @@ class Function:
 
     def _possible_fix(
         self,
+        survivors: tx.List[int],
         maximal: tx.List[int],
         plan: _Plan,
         args: tx.Sequence[tx.Any],
@@ -979,9 +1272,14 @@ class Function:
         [`Exact`][bagof.dispatchers.Exact] is spelled
         `#!python Exact[...]` in the suggestion too, so the suggested
         signature would outrank that competitor as well, not just the
-        others.
+        others. That check runs over every method in `maximal`, including
+        one that lost only on `priority`: a new method at the default
+        priority has to be strictly more specific than such a method to
+        beat it, because priority is compared only between methods that
+        are equally specific. The parameter names come from the first
+        method still tied.
         """
-        prototype = plan.bindable[maximal[0]][1]
+        prototype = plan.bindable[survivors[0]][1]
         parts: tx.List[str] = []
         for index, value in enumerate(args):
             name = prototype.slots.get(index)
@@ -1070,6 +1368,56 @@ class _BoundFunction:
             type(self._instance), *hints, **kwargs
         )
 
+    def candidates(
+        self, *args: tx.Any, **kwargs: tx.Any
+    ) -> tx.Tuple[Method, ...]:
+        """List the methods that accept `self` and these arguments."""
+        return self._function.candidates(self._instance, *args, **kwargs)
+
+    def itercandidates(
+        self, *args: tx.Any, **kwargs: tx.Any
+    ) -> tx.Iterator[Method]:
+        """Iterate over the methods that accept `self` and these
+        arguments.
+        """
+        return self._function.itercandidates(self._instance, *args, **kwargs)
+
+    def bestcandidates(
+        self, *args: tx.Any, **kwargs: tx.Any
+    ) -> tx.Tuple[Method, ...]:
+        """List the tied-best methods for `self` and these arguments."""
+        return self._function.bestcandidates(self._instance, *args, **kwargs)
+
+    def iterbestcandidates(
+        self, *args: tx.Any, **kwargs: tx.Any
+    ) -> tx.Iterator[Method]:
+        """Iterate over the tied-best methods for `self` and these
+        arguments.
+        """
+        return self._function.iterbestcandidates(
+            self._instance, *args, **kwargs
+        )
+
+    def resolve_candidates(
+        self, *hints: tx.Any, **named_hints: tx.Any
+    ) -> tx.Tuple[Method, ...]:
+        """List the methods the hints reach, with the type of `self` as
+        argument 0.
+        """
+        return self._function.resolve_candidates(
+            type(self._instance), *hints, **named_hints
+        )
+
+    def resolve_bestcandidates(
+        self, *hints: tx.Any, **named_hints: tx.Any
+    ) -> tx.Tuple[Method, ...]:
+        """List the tied-best methods for the hints, with the type of
+        `self` as argument 0.
+        """
+        return self._function.resolve_bestcandidates(
+            type(self._instance), *hints, **named_hints
+        )
+
     def __repr__(self) -> str:
         return (
             f"<bound {self._function.name} of {self._instance!r}>"
@@ -1098,6 +1446,63 @@ def _maximal(applicable: tx.List[int], plan: _Plan) -> tx.List[int]:
             for other in applicable
         )
     ]
+
+
+def _applicable_to_values(
+    plan: _Plan,
+    args: tx.Sequence[tx.Any],
+    kwargs: tx.Mapping[str, tx.Any],
+) -> tx.List[int]:
+    """The indices of the plan's methods that accept this value call."""
+    return [
+        index
+        for index, (method, _, _) in enumerate(plan.bindable)
+        if method.signature.applies_to_values(args, kwargs)
+    ]
+
+
+def _applicable_to_hints(
+    plan: _Plan,
+    hints: tx.Sequence[tx.Any],
+    named_hints: tx.Mapping[str, tx.Any],
+) -> tx.List[int]:
+    """The indices of the plan's methods that accept this hint query."""
+    return [
+        index
+        for index, (method, _, _) in enumerate(plan.bindable)
+        if method.signature.applies_to_hints(hints, named_hints)
+    ]
+
+
+def _in_specificity_order(
+    plan: _Plan, applicable: tx.List[int], best: tx.List[int]
+) -> tx.Iterator[Method]:
+    """Yield the applicable methods, most specific first.
+
+    The methods in `best` come first, in their own order. The remaining
+    methods follow in layers: each layer is the set of methods that no
+    other method still waiting to be placed is strictly more specific
+    than, and within a layer the methods are ordered by descending
+    priority and then by registration order. The first layer is taken
+    from all of `applicable`, so a method that only a best candidate
+    beats is not promoted into it.
+    """
+    for index in best:
+        yield plan.bindable[index][0]
+    placed = set(best)
+    remaining = list(applicable)
+    while remaining:
+        # Specificity is a preorder, so some remaining method is always
+        # maximal; falling back to all of them only guarantees that the
+        # loop ends even if a hint relation were ever inconsistent.
+        layer = _maximal(remaining, plan) or remaining
+        layer_set = set(layer)
+        for index in sorted(
+            layer, key=lambda i: (-plan.bindable[i][0].priority, i)
+        ):
+            if index not in placed:
+                yield plan.bindable[index][0]
+        remaining = [index for index in remaining if index not in layer_set]
 
 
 def _tightness(
