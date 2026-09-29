@@ -455,7 +455,7 @@ def test_pep585_spellings() -> None:
 
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 695 is 3.12+")
 def test_pep695_generic() -> None:
-    namespace = {}  # type: tx.Dict[str, tx.Any]
+    namespace: tx.Dict[str, tx.Any] = {}
     exec(  # noqa: S102 -- the syntax does not parse before 3.12
         "class Box[T]: pass\nclass IntBox(Box[int]): pass\n", namespace
     )
@@ -669,7 +669,7 @@ def test_only_generic_instances_are_asked_for_a_record() -> None:
     class Box(tx.Generic[T]):
         pass
 
-    probed = []  # type: tx.List[str]
+    probed: tx.List[str] = []
 
     class Proxy:
         def __getattr__(self, name: str) -> tx.Any:
@@ -763,7 +763,7 @@ def test_a_frozen_dataclass_generic_records_nothing() -> None:
 def test_self_inside_init_declares_nothing_yet() -> None:
     """The record is written only after `__init__` returns."""
     T = tx.TypeVar("T")
-    seen = []  # type: tx.List[bool]
+    seen: tx.List[bool] = []
 
     class Box(tx.Generic[T]):
         def __init__(self) -> None:
@@ -1217,7 +1217,7 @@ def test_an_unpacked_record_keys_apart_from_a_packed_one() -> None:
 @_PEP585
 def test_pep585_plain_subclasses_are_not_probed() -> None:
     """Only a class written against a PEP 585 alias is asked for a record."""
-    probed = []  # type: tx.List[str]
+    probed: tx.List[str] = []
 
     class Probe(list):  # type: ignore[type-arg]
         def __getattr__(self, name: str) -> tx.Any:
@@ -1560,7 +1560,7 @@ def _ladder(depth: int, left: tx.Any, right: tx.Any) -> tx.List[type]:
     class G0(tx.Generic[T]):
         pass
 
-    ladder = [G0]  # type: tx.List[type]
+    ladder: tx.List[type] = [G0]
     for i in range(1, depth + 1):
         below = ladder[-1]
         a = types.new_class(f"A{i}", (below[left(T)],))
@@ -1607,7 +1607,7 @@ def test_a_ladder_of_distinct_arguments_stops_at_the_first_answer(
     ladder = _ladder(
         depth, lambda t: tx.Tuple[t, int], lambda t: tx.Tuple[t, str]
     )
-    first = int  # type: tx.Any
+    first: tx.Any = int
     for _ in range(depth):
         first = tx.Tuple[first, int]
     walked = _count_walked(monkeypatch)

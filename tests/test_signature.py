@@ -181,7 +181,7 @@ def test_return_annotation_ignored() -> None:
 
 def _make_deferred_function() -> tx.Tuple[tx.Any, dict]:
     """A function whose annotation names a class not yet in its globals."""
-    namespace = {}  # type: dict
+    namespace: dict = {}
     exec("def f(x: 'Later'): pass", namespace)
     return namespace["f"], namespace
 
@@ -274,7 +274,7 @@ def _call_shapes() -> tx.List[tx.Tuple[tx.Tuple[int, ...], dict]]:
         {"unknown": 9},
         {"x": 1, "extra": 9},
     ]
-    shapes = []  # type: tx.List[tx.Tuple[tx.Tuple[int, ...], dict]]
+    shapes: tx.List[tx.Tuple[tx.Tuple[int, ...], dict]] = []
     for count in arg_counts:
         args = tuple(range(10, 10 + count))
         for kwargs in keyword_sets:
@@ -313,7 +313,7 @@ def _my_arguments(
         ),
         None,
     )
-    arguments = {}  # type: dict
+    arguments: dict = {}
     for key, landed in binding.slots.items():
         if landed is Parameter.VAR_POSITIONAL:
             continue
@@ -946,7 +946,7 @@ def test_from_callable_typeerror_non_forward_resolves(
 
 def test_settle_resolves_variadic_hints() -> None:
     """Settling a deferred signature resolves its `*args`/`**kwargs` hints."""
-    namespace = {}  # type: dict
+    namespace: dict = {}
     exec(
         "def f(x: 'Later', *args: 'Later', **kw: 'Later'): pass",
         namespace,

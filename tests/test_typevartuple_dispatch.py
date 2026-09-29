@@ -378,7 +378,7 @@ def test_overlay_bare_typevartuple_on_star_args_is_rejected() -> None:
 def test_deferred_typevartuple_parameter_is_rejected() -> None:
     # A forward reference that only resolves to a `TypeVarTuple` on first use
     # is refused there, the same as one written outright.
-    namespace = {}  # type: dict
+    namespace: dict = {}
     exec("def f(x: 'TT'): pass", namespace)
     sig = Signature.from_callable(namespace["f"])
     assert sig._deferred

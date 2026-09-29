@@ -79,7 +79,7 @@ def test_alias_of_alias_is_followed() -> None:
 )
 def test_native_pep695_alias() -> None:
     # exec-guarded so collection still works on 3.8.
-    namespace = {}  # type: dict
+    namespace: dict = {}
     exec(
         "type MyStr = str\n"
         "type Box[T] = list[T]\n",
@@ -105,7 +105,7 @@ def test_native_pep695_alias() -> None:
     sys.version_info < (3, 12), reason="native PEP 695 `type` needs 3.12+"
 )
 def test_native_recursive_alias_stops() -> None:
-    namespace = {}  # type: dict
+    namespace: dict = {}
     exec("type Tree = int | list[Tree]\n", namespace)
     Tree = namespace["Tree"]
     # Resolving must terminate rather than loop on the self-reference.
@@ -118,7 +118,7 @@ def test_duck_typed_recursive_alias_stops() -> None:
     # whose value points back at itself is a cycle on every version, not just
     # native PEP 695. Resolving must terminate and leave the hint in place.
     class Cyclic:
-        __type_params__ = ()  # type: tuple
+        __type_params__: tuple = ()
 
     self_cycle = Cyclic()
     self_cycle.__value__ = self_cycle

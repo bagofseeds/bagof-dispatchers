@@ -173,7 +173,7 @@ def _ref_applies(
     """Applicability: each argument an instance, repeated `TypeVar`s solved."""
     if not all(ishintstance(v, h) for v, h in zip(call, spec.hints)):
         return False
-    groups = {}  # type: typing.Dict[int, typing.Tuple[typing.Any, list]]
+    groups: typing.Dict[int, typing.Tuple[typing.Any, list]] = {}
     for pos, hint in enumerate(spec.hints):
         if isinstance(hint, tx.TypeVar):
             groups.setdefault(id(hint), (hint, []))[1].append(type(call[pos]))
@@ -304,7 +304,7 @@ def _reference_select(
 def _make_impl(arity: int, tag: int) -> typing.Callable[..., int]:
     """A function of `arity` positional parameters that returns `tag`."""
     params = ", ".join(f"a{index}" for index in range(arity))
-    namespace = {}  # type: typing.Dict[str, typing.Any]
+    namespace: typing.Dict[str, typing.Any] = {}
     exec(f"def impl({params}): return {tag!r}", namespace)  # noqa: S102
     return namespace["impl"]
 
@@ -348,7 +348,7 @@ def _scenarios(
     while made < count:
         arity = rng.randint(1, 3)
         n_methods = rng.randint(2, 4)
-        specs = []  # type: typing.List[_Spec]
+        specs: typing.List[_Spec] = []
         seen = set()  # dedupe identical spellings (which would replace)
         for _ in range(n_methods):
             hints = tuple(rng.choice(alphabet) for _ in range(arity))
@@ -385,7 +385,7 @@ def _typevar_family_scenarios(
     while made < count:
         arity = rng.randint(2, 3)
         n_methods = rng.randint(2, 4)
-        specs = []  # type: typing.List[_Spec]
+        specs: typing.List[_Spec] = []
         seen = set()  # dedupe identical spellings (which would replace)
         for _ in range(n_methods):
             hints = tuple(rng.choice(_TYPEVAR_FAMILY) for _ in range(arity))

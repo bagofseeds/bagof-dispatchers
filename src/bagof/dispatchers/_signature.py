@@ -434,7 +434,7 @@ class Signature:
             ('scale',)
             ```
         """
-        params = {}  # type: tx.Dict[str, Parameter]
+        params: tx.Dict[str, Parameter] = {}
         for index, hint in enumerate(hints):
             name = f"_{index}"
             normalised = normalise_hint(hint)
@@ -463,7 +463,7 @@ class Signature:
         """Assemble a signature from an [`inspect.Signature`][] and its
         hints.
         """
-        params = {}  # type: tx.Dict[str, Parameter]
+        params: tx.Dict[str, Parameter] = {}
         varargs = None
         varkw = None
         varargs_name = None
@@ -538,7 +538,7 @@ class Signature:
             raise NameError(
                 f"cannot resolve the type hints of {name}: {error}"
             ) from error
-        new_params = {}  # type: tx.Dict[str, Parameter]
+        new_params: tx.Dict[str, Parameter] = {}
         for name, param in self._parameters.items():
             hint = normalise_hint(hints.get(name, tx.Any))
             # A forward reference that resolved to a `ParamSpec`/`Concatenate`
@@ -658,14 +658,14 @@ class Signature:
             True
             ```
         """
-        slots = {}  # type: tx.Dict[tx.Any, tx.Any]
-        extra_positional = []  # type: tx.List[int]
+        slots: tx.Dict[tx.Any, tx.Any] = {}
+        extra_positional: tx.List[int] = []
         remaining = dict(kwargs)
-        defaulted = set()  # type: tx.Set[str]
+        defaulted: tx.Set[str] = set()
 
         parameters = iter(self._canonical)
         arg_vals = enumerate(args)
-        parameters_ex = ()  # type: tx.Tuple[tx.Any, ...]
+        parameters_ex: tx.Tuple[tx.Any, ...] = ()
 
         while True:
             try:
@@ -774,7 +774,7 @@ class Signature:
         binding = self.bind(args, kwargs)
         if binding is None:
             return False
-        groups = {}  # type: tx.Dict[int, tx.Tuple[tx.Any, tx.List[tx.Any]]]
+        groups: tx.Dict[int, tx.Tuple[tx.Any, tx.List[tx.Any]]] = {}
         for key, hint in self._iter_arguments(binding):
             value = args[key] if isinstance(key, int) else kwargs[key]
             # A `Callable` value is matched shallowly -- its own signature is
@@ -814,9 +814,9 @@ class Signature:
         binding = self.bind(hints, named_hints)
         if binding is None:
             return False
-        groups = {}  # type: tx.Dict[int, tx.Tuple[tx.Any, tx.List[tx.Any]]]
-        pgroups = {}  # type: tx.Dict[int, tx.List[tx.Any]]
-        tgroups = {}  # type: tx.Dict[int, tx.List[_TupleShape]]
+        groups: tx.Dict[int, tx.Tuple[tx.Any, tx.List[tx.Any]]] = {}
+        pgroups: tx.Dict[int, tx.List[tx.Any]] = {}
+        tgroups: tx.Dict[int, tx.List[_TupleShape]] = {}
         for key, hint in self._iter_arguments(binding):
             query = hints[key] if isinstance(key, int) else named_hints[key]
             if not _hint_query_accepts(query, hint):
@@ -934,7 +934,7 @@ class Signature:
 
     def _hints_by_key(self, binding: Binding) -> tx.Dict[tx.Any, tx.Any]:
         """Map each bound argument's key to the parameter hint it landed in."""
-        result = {}  # type: tx.Dict[tx.Any, tx.Any]
+        result: tx.Dict[tx.Any, tx.Any] = {}
         for key, landed in binding.slots.items():
             if landed is _VAR_POSITIONAL:
                 result[key] = self._catch_all_hint(self._varargs)
@@ -1493,7 +1493,7 @@ def _top_level_typeddicts(hint: tx.Any) -> tx.List[tx.Any]:
     """
     hint = unwrap(normalise_hint(hint))
     if safe_get_origin(hint) in UNION_TYPES:
-        found = []  # type: tx.List[tx.Any]
+        found: tx.List[tx.Any] = []
         for member in tx.get_args(hint):
             found.extend(_top_level_typeddicts(member))
         return found
@@ -1742,7 +1742,7 @@ def _render_parameters(
     `Parameter.VAR_POSITIONAL` or `Parameter.VAR_KEYWORD`.
     """
     marked = frozenset(highlight) if highlight else frozenset()
-    out = []  # type: tx.List[str]
+    out: tx.List[str] = []
     positional_only = [
         p for p in sig._parameters.values() if p.kind is _POSITIONAL_ONLY
     ]

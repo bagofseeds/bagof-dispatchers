@@ -56,7 +56,7 @@ def test_typevar_variance_bound_is_invariant(typevar: tx.Any) -> None:
 def test_typevar_variance_infer_variance_is_invariant() -> None:
     # A PEP 695 auto-variance typevar's variance is unknowable at runtime, so
     # it is read as invariant.
-    namespace = {}  # type: tx.Dict[str, tx.Any]
+    namespace: tx.Dict[str, tx.Any] = {}
     exec("class Box[T]: pass", namespace)
     typevar = namespace["Box"].__type_params__[0]
     assert getattr(typevar, "__infer_variance__", False) is True
@@ -184,7 +184,7 @@ def _live_stdlib_variance() -> tx.Dict[tx.Any, tx.Tuple[str, ...]]:
     the result by the runtime origin, exactly as the vendored table is keyed.
     Only meaningful where the aliases still expose `__parameters__` (3.8).
     """
-    table = {}  # type: tx.Dict[tx.Any, tx.Tuple[str, ...]]
+    table: tx.Dict[tx.Any, tx.Tuple[str, ...]] = {}
     for name in _STDLIB_NAMES:
         alias = getattr(typing, name)
         params = alias.__parameters__

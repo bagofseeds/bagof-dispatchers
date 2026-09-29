@@ -72,7 +72,7 @@ def spellings(name: tx.Any) -> tx.Tuple[tx.Any, ...]:
         True
         ```
     """
-    found = ()  # type: tx.Tuple[tx.Any, ...]
+    found: tx.Tuple[tx.Any, ...] = ()
     for module in (tx, typing):
         obj = getattr(module, name, None)
         if obj is not None and not any(obj is each for each in found):

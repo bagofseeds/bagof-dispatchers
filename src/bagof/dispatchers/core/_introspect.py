@@ -216,7 +216,7 @@ def _resolve_alias(hint: tx.Any, seen: tx.Tuple[tx.Any, ...]) -> tx.Any:
     origin = tx.get_origin(hint)
     if _is_type_alias_type(origin):
         alias = origin
-        sub_args = tx.get_args(hint)  # type: tx.Tuple[tx.Any, ...]
+        sub_args: tx.Tuple[tx.Any, ...] = tx.get_args(hint)
     elif _is_type_alias_type(hint):
         alias = hint
         sub_args = ()
@@ -249,7 +249,7 @@ def resolve_newtype(hint: tx.Any) -> tx.Any:
     down to it. A hint that is not a `NewType` at all comes back
     unchanged.
     """
-    seen = ()  # type: tx.Tuple[tx.Any, ...]
+    seen: tx.Tuple[tx.Any, ...] = ()
     while _is_newtype(hint):
         if any(hint is each for each in seen):  # pragma: no cover
             break
@@ -505,7 +505,7 @@ def _resolve_fields_individually(cls: tx.Any) -> tx.Dict[str, tx.Any]:
     """
     module = sys.modules.get(getattr(cls, "__module__", None))
     globalns = getattr(module, "__dict__", {})
-    hints = {}  # type: tx.Dict[str, tx.Any]
+    hints: tx.Dict[str, tx.Any] = {}
     for key, raw in getattr(cls, "__annotations__", {}).items():
         hints[key] = _resolve_one_annotation(raw, globalns)
     return hints
@@ -526,7 +526,7 @@ def _resolve_one_annotation(
     the class.
     """
     if isinstance(raw, tx.ForwardRef):
-        source = raw.__forward_arg__  # type: tx.Any
+        source: tx.Any = raw.__forward_arg__
     elif isinstance(raw, str):
         source = raw
     else:
@@ -824,7 +824,7 @@ def _typevar_variance(tv: tx.Any) -> str:
 # `Tuple` and `Callable` are deliberately absent: they carry no
 # `__parameters__` and are ordered by their own dedicated paths (tuple shape,
 # and contravariant parameters with a covariant return) in `_relation.py`.
-_STDLIB_VARIANCE = {
+_STDLIB_VARIANCE: tx.Dict[tx.Any, tx.Tuple[str, ...]] = {
     list: (_INVARIANT,),
     set: (_INVARIANT,),
     frozenset: (_COVARIANT,),
@@ -855,7 +855,7 @@ _STDLIB_VARIANCE = {
     abc.AsyncIterable: (_COVARIANT,),
     abc.AsyncIterator: (_COVARIANT,),
     abc.AsyncGenerator: (_COVARIANT, _CONTRAVARIANT),
-}  # type: tx.Dict[tx.Any, tx.Tuple[str, ...]]
+}
 
 
 # The runtime type of a PEP 585 alias (`#!python list[T]`, `#!python
@@ -905,7 +905,7 @@ def _class_parameters(cls: type) -> tx.Tuple[tx.Any, ...]:
     params = getattr(cls, "__parameters__", None)
     if isinstance(params, tuple):
         return params
-    collected = []  # type: tx.List[tx.Any]
+    collected: tx.List[tx.Any] = []
     for base in _own_orig_bases(cls):
         if not _is_pep585_alias(base):
             continue

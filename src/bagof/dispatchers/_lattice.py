@@ -149,7 +149,7 @@ def overlaps(a: tx.Any, b: tx.Any) -> bool:
     if get_origin_uw(b) in UNION_TYPES and get_args_uw(b):
         return any(overlaps(a, member) for member in get_args_uw(b))
     if get_origin_uw(a) is type and get_origin_uw(b) is type:
-        top = object  # type: tx.Any
+        top: tx.Any = object
         arg_a, arg_b = _type_arg(a), _type_arg(b)
     elif is_hint_form(a) and is_hint_form(b):
         top = tx.Any
@@ -718,7 +718,7 @@ def instance_members(hint: tx.Any) -> tx.Tuple[str, ...]:
     args = get_args_uw(hint)
     origin = get_origin_uw(hint)
     if origin in UNION_TYPES and args:
-        names = set()  # type: tx.Set[str]
+        names: tx.Set[str] = set()
         for arg in args:
             names.update(instance_members(arg))
         return tuple(sorted(names))

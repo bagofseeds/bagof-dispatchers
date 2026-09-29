@@ -123,7 +123,7 @@ def test_method_location() -> None:
 
 def test_method_repr_deferred_uses_raw_annotation() -> None:
     """A deferred forward reference renders by name, without resolving."""
-    namespace = {}  # type: dict
+    namespace: dict = {}
     exec("def f(x: 'Later'): pass", namespace)
     method = Method(namespace["f"])
     body = repr(method).split(" @ ")[0]
@@ -196,7 +196,7 @@ def test_method_register_class_from_fileless_main(
 
     fake_main = types.ModuleType("__main__")  # no __file__
     monkeypatch.setitem(sys.modules, "__main__", fake_main)
-    namespace = {"__name__": "__main__"}  # type: typing.Dict[str, typing.Any]
+    namespace: typing.Dict[str, typing.Any] = {"__name__": "__main__"}
     exec(  # noqa: S102 -- the point is a class defined outside any source file
         "class C:\n    def __init__(self, x: int) -> None: ...",
         namespace,
