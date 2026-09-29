@@ -41,6 +41,7 @@ from ._compat import (
 from ._exact import Exact, exact_target, is_exact
 from ._hint import Hint
 from ._sentinels import UNSET
+from ._super import Super, is_super, super_target
 
 
 def _looks_like_class(x: tx.Any) -> bool:
@@ -301,6 +302,28 @@ def _lower_exact(hint: tx.Any) -> tx.Any:
     return hint
 
 
+def _lower_super(hint: tx.Any) -> tx.Any:
+    """Rewrite an outer `Super` around `Type` or `Hint` as an inner one.
+
+    A lower bound is only meaningful as the argument of a `Type` or `Hint`
+    form, but it can also be written around the whole form. This rewrites
+    that outer spelling to the inner one, so that `#!python Super[Type[int]]`
+    becomes `#!python Type[Super[int]]` and `#!python Super[Hint[int]]`
+    becomes `#!python Hint[Super[int]]`. Unlike `Exact`, a `Super` around a
+    bare `Type`, `type` or `Hint` is not rewritten, because it names no
+    bound: it stays as written and is refused wherever a hint is read. Any
+    other `Super` hint also comes back unchanged.
+    """
+    target = super_target(hint)
+    origin = tx.get_origin(target)
+    args = tx.get_args(target)
+    if origin is type and args:
+        return tx.Type[Super[args[0]]]
+    if origin is Hint and args:
+        return Hint[Super[args[0]]]
+    return hint
+
+
 def normalise_hint(hint: tx.Any) -> tx.Any:
     """Put a hint into its canonical form.
 
@@ -313,11 +336,13 @@ def normalise_hint(hint: tx.Any) -> tx.Any:
     [`Final`][typing.Final], and [`ClassVar`][typing.ClassVar] are
     unwrapped down to the hint each one wraps. A bare, unsubscripted
     [`Optional`][typing.Optional] is read as a bare
-    [`Union`][typing.Union], since both stand for "some union", and an
-    [`Exact`][bagof.dispatchers.Exact] wrapping a whole
+    [`Union`][typing.Union], since both stand for "some union". An
+    [`Exact`][bagof.dispatchers.Exact] or a
+    [`Super`][bagof.dispatchers.Super] wrapping a whole
     [`Type`][typing.Type] or [`Hint`][bagof.dispatchers.Hint] is rewritten
-    to carry the `Exact` on the inner type instead, so that
-    `#!python Exact[Type[int]]` becomes `#!python Type[Exact[int]]`.
+    to carry the marker on the inner type instead, so that
+    `#!python Exact[Type[int]]` becomes `#!python Type[Exact[int]]` and
+    `#!python Super[Hint[int]]` becomes `#!python Hint[Super[int]]`.
 
     These steps repeat until the hint stops changing, so an alias that
     expands into a qualified `NewType` is resolved all the way through
@@ -344,6 +369,8 @@ def normalise_hint(hint: tx.Any) -> tx.Any:
             hint = NoneType
         if is_exact(hint):
             hint = _lower_exact(hint)
+        elif is_super(hint):
+            hint = _lower_super(hint)
         elif any(hint is form for form in _OPTIONAL_FORMS):
             # A bare `Optional`, with no argument, means the same as a bare
             # `Union`: both stand for "some union".

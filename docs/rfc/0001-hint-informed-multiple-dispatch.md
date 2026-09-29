@@ -201,6 +201,11 @@ entry marks a result worth double-checking against intuition.
 | `Annotated[int,'x'] ≤ Annotated` (bare), `int ≤ Annotated` (bare) | True / **False** | *(0.2.0)* a bare `Annotated` super-hint is now structural: only an `Annotated` form is below it, where before it was opaque and accepted everything |
 | `type[Exact[C]\] ≤ type[C]`, `type[C] ≤ type[Exact[C]\]`, `type[Any]` accepts every class | True / **False** / — | `Exact` inside a `type[...]` position is the same identity leaf it is on its own, and `type[...]` now reads its argument through the full relation, so `type[Any]`, `type[Union[…]\]` and `type[T]` all behave (§4) |
 | `Hint[bool] ≤ Hint[int]`, `int ≤ Hint[int]`, `Hint[int] ≤ object`, `Hint[Exact[int]\] ≤ Hint[int]` | True / **False** / **False** / True | *(0.2.0)* `Hint[X]` describes type hints, not values: only another `Hint` form is ordered against it, covariantly by its argument, so no ordinary hint sits below it. Above it sit `Any`, a free `TypeVar`, a union that has a `Hint` member, and a wider `Hint` form (up to `Hint ≡ Hint[Any]`), but no ordinary class such as `object`; `Exact` inside narrows to the exact hint (§4) |
+| `Type[Super[Animal]\] ≤ Type[Super[Dog]\]`, `Type[Super[Dog]\] ≤ Type[Super[Animal]\]` (`class Dog(Animal)`) | True / **False** | *(0.3.0)* `Super[C]` inside `Type` accepts `C` and every class above it; the classes above `Animal` are among those above `Dog`, so lower bounds are ordered contravariantly by their bound (§4.2) |
+| `Type[Exact[Dog]\] ≤ Type[Super[Dog]\]`, `Type[Exact[Dog]\] ≤ Type[Dog]` | True / True | *(0.3.0)* the single class `Dog` belongs to both, so the exact form sits below the plain form and the lower bound alike (§4.2) |
+| `Type[Dog] ≤ Type[Super[Dog]\]`, `Type[Super[Dog]\] ≤ Type[Dog]` | **False** / **False** | *(0.3.0)* incomparable: each accepts a class the other refuses (a subclass of `Dog`, and `object`), although both accept `Dog`; registering both warns (§5) |
+| `Type[Super[Dog]\] ≤ Type[object]`, `Hint[Super[int]\] ≤ Hint` | True / True | *(0.3.0)* every class is below `object` and every hint below `Any`, so a lower bound sits below the top of its form |
+| `issubhint(Super[int], int)`, `ishintstance(1, Super[int])` | `TypeError` | *(0.3.0)* a lower bound is valid only as the immediate argument of `Type` or `Hint`; anywhere else it would bound a value from below, which cannot be checked (§4.2) |
 | `issubhint(1, int)`, `issubhint(1, 1)`, `issubhint(int, 1)` | `TypeError` | *(0.2.0)* a non-hint on either side is a caller error, reported for the left argument first, the way `issubclass` rejects a non-class; a non-hint no longer reads as `Any` |
 
 The value-level check, `ishintstance`, does not look at the values held
@@ -232,6 +237,14 @@ hint at all. `Union[int, str] in Hint[Union]` is True, and `Union in
 Hint[Exact[Union]\]` is True while `Union[int, str] in Hint[Exact[Union]\]`
 is False. Because a `Hint` matches on the value rather than on its Python
 type, the call cache keys such an argument on the hint itself.
+
+*(0.3.0)* A lower bound turns the value-level match around. A class `v` is
+`in Type[Super[C]\]` when `C ≤ v`, so `Animal` and `object` are `in
+Type[Super[Dog]\]` while `Puppy`, `int`, and the instance `Dog()` are not.
+A hint `v` is `in Hint[Super[X]\]` when `X ≤ v`, so `numbers.Integral`,
+`object`, `Any`, a free `TypeVar`, and `Union[int, str]` are
+`in Hint[Super[int]\]`, while `bool`, `Literal[1]`, `str`, and the value `1`
+are not.
 
 ### 2.2 Binding and selection (name-aware, normative)
 
@@ -1117,12 +1130,12 @@ just under `C` in the order, which is what keeps `⊑` a proper preorder
 from bagof.dispatchers import dispatch, Exact
 
 @dispatch
-def describe(x: int) -> str:          # int and any subclass, bool included
+def describe(x: Exact[int]) -> str:  # exactly int, so not bool
     return "an integer"
 
 @dispatch
-def describe(x: Exact[bool]) -> str:  # exactly bool
-    return "a boolean"
+def describe(x: object) -> str:      # everything else, True included
+    return "something else"
 ```
 
 `Exact` answers the reverse of the usual dispatch need: an `int` overload
@@ -1156,6 +1169,78 @@ Reading `type[…]`'s argument through the full relation also fixes the forms
 that were degenerate before: `type[Any]` now accepts every class,
 `type[Union[…]\]` accepts a class in the union, and `type[T]` for a free
 TypeVar accepts every class.
+
+### 4.2 Lower bounds: `Super[C]` inside `Type` and `Hint`
+
+*(0.3.0)* An ordinary argument to `Type[…]` or `Hint[…]` is an upper bound:
+`Type[Animal]` accepts `Animal` and the classes below it. `Super[C]` supplies
+the missing lower bound. `Type[Super[Dog]\]` accepts the class `Dog` and
+every class that `Dog` derives from, and `Hint[Super[int]\]` accepts the
+hint `int` and every hint that `int` is a sub-hint of. It is spelled
+`bagof.dispatchers.Super[C]` and implemented, like `Exact`, as
+`tx.Annotated[C, SUPER]` behind a private sentinel. `SuperType[C]` and
+`SuperHint[X]` are aliases that expand to exactly `Type[Super[C]\]` and
+`Hint[Super[X]\]`.
+
+The relation reads the argument of a `Type` or `Hint` form as a closed
+interval of the classes, or hints, it accepts. A plain argument `X` is the
+interval from the bottom `Never` up to `X`, and `Super[C]` is the interval
+from `C` up to the top of the form, which is `object` inside `Type` and
+`Any` inside `Hint`. One form is below another when its interval lies
+inside the other's, meaning that its lower bound is higher and its upper
+bound is lower. The rules that follow from that reading are these:
+
+| Query | Result | Why |
+|---|---|---|
+| `Type[Super[D]\] ≤ Type[Super[C]\]` | iff `C ≤ D` | a higher lower bound leaves fewer classes above it |
+| `Type[Exact[X]\] ≤ Type[Super[C]\]` | iff `C ≤ X` | the one class `X` is in the interval when it is above `C` |
+| `Type[X] ≤ Type[Super[C]\]` | False | a subclass of `X` can always be defined that is not above `C` |
+| `Type[Super[C]\] ≤ Type[X]` | iff `object ≤ X` | the interval reaches `object`, so only a top contains it |
+| `Type[Super[C]\] ≤ Type[Exact[X]\]` | False | conservative: an interval above `C` is never taken to be a single class |
+
+`Hint` follows the same table with `Any` in place of `object`. Every rule is
+an inclusion of intervals, so the relation stays a preorder, and it stays
+sound: when `A ≤ B`, every class or hint in `A` is also in `B`. Values are
+matched against the same interval (§2.1), which keeps the two levels in
+agreement.
+
+A lower bound is valid only as the immediate argument of `Type` or `Hint`.
+On an ordinary value parameter it would bound a value from below, but a
+value has one concrete class, and code written for the instances of a class
+must also accept the instances of its subclasses, so a lower bound on a
+value cannot be checked. Registration therefore refuses `Super` anywhere
+else, whether on its own, inside a union or a container, or as a `TypeVar`'s
+bound, with an error naming the parameter and suggesting
+`Type[Super[C]\]` or `Hint[Super[C]\]`. The relation refuses the same
+hints with the same message, so `issubhint`, `ishintstance`, and
+`resolve_hint` never read `Super[C]` silently as `C`. An unsubscripted
+`Super`, `SuperType`, or `SuperHint` is refused too, since an unbounded
+lower bound would only repeat what `type` or `Hint` already says.
+`Super[Type[C]\]` is normalised to `Type[Super[C]\]`, `Super[Super[C]\]`
+collapses to `Super[C]`, and `Super` and `Exact` cannot be combined in
+either order, because an exact type leaves nothing above it to bound.
+
+The degenerate bounds need no special case. `Type[Super[Never]\]` accepts
+every class, like `type`. `Type[Super[object]\]` accepts only `object`.
+`Type[Super[Any]\]` accepts no class at all, because no class is above
+`Any`, while `Hint[Super[Any]\]` accepts the tops: `Any`, a free `TypeVar`,
+and an opaque form.
+
+To a type checker, `Super[C]` is `Union[C, Any]`. `Exact[C]` can present as
+plain `C`, but `Type[Super[Dog]\]` read as `Type[Dog]` would reject a call
+with `Animal` that dispatch accepts. `Union[C, Any]` is the sound generic
+spelling: it uses its type variable, which a checker requires of a generic
+alias, and `Type[Union[C, Any]\]` accepts every class object, so a checker
+never rejects a call that the runtime accepts. The aliases are declared
+with a \[[PEP 613]\] `TypeAlias` annotation, which both mypy and pyright
+read.
+
+Three things are deliberately left out. There is no option to flip the
+direction in which `Type` orders its argument; a lower bound is written
+where it is meant. There is no value-level `Super`, for the reason given
+above. And a contravariant `TypeVar` is read exactly as before (§2.3):
+`Super` bounds the argument of `Type` or `Hint`, and is not a spelling of a
+generic's contravariant parameter.
 
 ---
 
@@ -1225,6 +1310,23 @@ actual call. A value that declares its own parametrisation — an instance of
 `Child(List[int])`, or one built as `Box[int]()` or `GL[int]()` — picks the
 right one outright, and only a value that declares nothing at all is
 genuinely ambiguous between them.
+
+*(0.3.0)* A guaranteed ambiguity is recognised by checking that, at every
+argument, the two methods' hints share a value, since a call built from one
+shared value per argument then matches both, and neither method is more
+specific. Two hints ordered against each other always share the narrower
+one's values. A lower bound adds pairs that share values without being
+ordered: `Type[Animal]` and `Type[Super[Dog]\]` are incomparable, yet both
+accept `Dog` and `Animal`. Such a pair is recognised by reading each
+argument as an interval (§4.2) and asking whether an end of one interval
+lies in both, where inside `Type` that end must also be a class, since only
+a class can be passed there. The test is sufficient rather than complete,
+so a reported overlap always has a real call behind it, and it is only ever
+consulted for a pair that involves a lower bound, which leaves every other
+warning as it was. Registering `Type[Animal]` and `Type[Super[Dog]\]` side
+by side therefore warns. A method for `Type[Exact[Dog]\]` settles the call
+with `Dog`, but not the one with `Animal`, while a `priority` on either
+method settles both.
 
 ---
 
@@ -1320,8 +1422,8 @@ area(Circle(1))                      # sees shapes.py's method
 The package exposes two namespaces with disjoint object sets.
 `bagof.dispatchers` (its `__all__`, and the intended public API) holds
 `dispatch`, `Dispatcher`, `Function`, `Method`, `Signature`, `Parameter`,
-`Exact`, `Hint`, `DispatchError`, `NoMethodError`, and
-`AmbiguousMethodError`. `bagof.dispatchers.core` (also its own `__all__`)
+`Exact`, `Hint`, `Super`, `SuperType`, `SuperHint`, `DispatchError`,
+`NoMethodError`, and `AmbiguousMethodError`. `bagof.dispatchers.core` (also its own `__all__`)
 holds the relation and introspection helpers that the rest of the family
 reuses: `issubhint`, `ishintstance`, `ishint`, `resolve_hint`,
 `safe_get_origin`, `safe_get_args`, `get_origin_uw`, `get_args_uw`,
@@ -1334,7 +1436,10 @@ both namespaces need. `issubhint` and `ishintstance` understand them
 directly, but they belong conceptually to the dispatch surface. `ishint`,
 which reports whether an object is a type hint at all, is a `.core` helper
 only, since it is a building block rather than part of the dispatch API.
-*(0.2.0)* `Hint` and `ishint` are new in this release.
+*(0.2.0)* `Hint` and `ishint` are new in this release. *(0.3.0)* `Super`,
+`SuperType`, and `SuperHint` are new in this release; like `Exact` and
+`Hint`, they are documented once, under the top-level API, and understood
+directly by the relation in `.core`.
 
 Key objects:
 
@@ -1522,8 +1627,9 @@ positional-only`.
 
 The top-level package is dispatch-only. `__init__.py` re-exports exactly
 `dispatch`, `Dispatcher`, `Function`, `Method`, `Signature`, `Parameter`,
-`Exact`, `Hint`, and the three error types. `_lattice.py` holds `equivalent()`,
-TypeVar solving, and the value-dependence classifier described in §6. This
+`Exact`, `Hint`, `Super`, `SuperType`, `SuperHint`, and the three error
+types. `_lattice.py` holds `equivalent()`, `overlaps()` (§5), TypeVar
+solving, and the value-dependence classifier described in §6. This
 is dispatch-internal code that builds on `core._relation`, while the actual
 value check (`ishintstance`) is always called directly from `core`, never
 wrapped. `_signature.py` holds `Signature`, `Parameter`, `Binding`, and the
@@ -1544,7 +1650,11 @@ special-form detection described in §11, `TypedDict` markers, and the
 `spellings(name)` helper that reconciles `typing` against
 `typing_extensions`. `core/_sentinels.py` holds `Unset` and `UNSET`.
 `core/_exact.py` holds `Exact`, its `EXACT` sentinel, and the helpers that
-read it; these are also re-exported at the top level. `core/_introspect.py` holds
+read it; these are also re-exported at the top level. *(0.3.0)*
+`core/_super.py` holds `Super`, `SuperType`, `SuperHint`, their `SUPER`
+sentinel, the interval reading of a `Type` or `Hint` argument (§4.2), and
+the message that refuses a lower bound outside those forms; the three
+public names are re-exported at the top level. `core/_introspect.py` holds
 the general-purpose introspection helpers (`safe_get_origin`/
 `safe_get_args`, `get_origin_uw`/`get_args_uw`, `unwrap`, `normalise_hint`,
 alias and `NewType` resolution, `issubclassable`, `issubscriptable`, the
@@ -1711,6 +1821,20 @@ Each case below is covered by a dedicated test.
   merely something equivalent to it, so a free `TypeVar` does not match
   `Hint[Exact[Any]\]`. `Hint[X]` is value-dependent, and the outer form
   `Exact[Hint[X]\]` normalises to `Hint[Exact[X]\]`.
+- *(0.3.0)* `Super[C]` is a lower bound valid only as the immediate
+  argument of `Type` or `Hint` (§4.2). `Type[Super[Any]\]` accepts no
+  class, `Type[Super[object]\]` accepts only `object`, and
+  `Type[Super[Never]\]` accepts every class; `Hint[Super[Any]\]` accepts
+  only the tops. `Super[Super[C]\]` collapses to `Super[C]`, and
+  `Super[Type[C]\]` normalises to `Type[Super[C]\]`. `Super[Exact[C]\]`
+  and `Exact[Super[C]\]` are refused when they are written. A bare
+  `Super[C]`, and an unsubscripted `Super`, `SuperType`, or `SuperHint`,
+  are refused at registration with the parameter named, and by the
+  relation with the same message.
+- *(0.3.0)* `Type[C]` and `Type[Super[D]\]` with `D ≤ C` are incomparable
+  yet share the classes between `D` and `C`, so registering both warns, and
+  a call with one of those classes is ambiguous unless `priority` or an
+  `Exact` method settles it (§5).
 - *(0.2.0)* `issubhint` and `ishintstance` reject a non-hint the way
   `issubclass` and `isinstance` do: a non-hint on either side of
   `issubhint`, or as the hint argument of `ishintstance`, raises

@@ -52,6 +52,7 @@ from ._lattice import (
     instance_members,
     is_declaration_dependent,
     is_value_dependent,
+    overlaps,
 )
 from ._method import Method
 from ._signature import (
@@ -59,6 +60,7 @@ from ._signature import (
     Signature,
     _catch_all_or_any,
     _is_plain_typevar,
+    _reject_bare_super,
     _reject_malformed_typeddict,
     _reject_variadic_param,
     _render_hint,
@@ -1195,7 +1197,14 @@ def _pair_ambiguous_resolved(
         return False
     for key in first_landed:
         here, there = first_landed[key], second_landed[key]
-        if not (issubhint(here, there) or issubhint(there, here)):
+        # Some value must fit both hints at every argument. Two ordered hints
+        # share the narrower one's values; two hints a lower bound leaves
+        # unordered may still share one, which `overlaps` finds.
+        if not (
+            issubhint(here, there)
+            or issubhint(there, here)
+            or overlaps(here, there)
+        ):
             return False
     # The repeated-TypeVar tie-break (RFC 0001 §3) settles some otherwise-tied
     # pairs: when one method's repeated TypeVars constrain strictly more
@@ -1818,6 +1827,7 @@ def _overlay_hint(
     normalised = normalise_hint(hint)
     if not allow_variadic:
         _reject_variadic_param(target, normalised, fn)
+    _reject_bare_super(target, normalised, fn)
     _reject_malformed_typeddict(target, normalised, fn)
     plausible = is_plausible_hint(normalised) or is_plausible_hint(
         safe_get_origin(normalised)

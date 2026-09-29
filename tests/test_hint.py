@@ -5,7 +5,7 @@ import pytest
 import typing_extensions as tx
 
 # local
-from bagof.dispatchers import Exact, Function, Hint
+from bagof.dispatchers import Exact, Function, Hint, Super, SuperHint
 from bagof.dispatchers.core import ishint, ishintstance, issubhint
 from bagof.dispatchers.core._hint import hint_arg, is_hint_form
 
@@ -224,11 +224,44 @@ def test_dispatch_on_hints() -> None:
     def _any(h: object) -> str:
         return "any"
 
+    # The hints above `object` are `object` itself and the tops, which no
+    # other method here shares, so this one is selected for `object` alone.
+    @f.register((Hint[Super[object]],))
+    def _above_object(h: object) -> str:
+        return "above-object"
+
+    assert f(object) == "above-object"
     assert f(int) == "int"
     assert f(bool) == "int"
     assert f(tx.Union[int, str]) == "union"
     assert f(tx.Union) == "bare-union"
     assert f(str) == "any"
+
+
+def test_superhint_is_hint_of_super() -> None:
+    assert SuperHint[int] == Hint[Super[int]]
+    assert is_hint_form(SuperHint[int]) is True
+    assert hint_arg(SuperHint[int]) == Super[int]
+
+
+def test_value_level_hint_of_super() -> None:
+    # `Hint[Super[X]]` matches `X` and every hint above it.
+    assert ishintstance(bool, Hint[Super[bool]]) is True
+    assert ishintstance(int, Hint[Super[bool]]) is True
+    assert ishintstance(tx.Optional[int], Hint[Super[bool]]) is True
+    assert ishintstance(str, Hint[Super[bool]]) is False
+    assert ishintstance(tx.Literal[True], Hint[Super[bool]]) is False
+
+
+def test_hint_level_hint_of_super() -> None:
+    # Ordered contravariantly by the bound, above the exact hint, and apart
+    # from a plain argument.
+    assert issubhint(Hint[Super[int]], Hint[Super[bool]]) is True
+    assert issubhint(Hint[Super[bool]], Hint[Super[int]]) is False
+    assert issubhint(Hint[Exact[bool]], Hint[Super[bool]]) is True
+    assert issubhint(Hint[bool], Hint[Super[bool]]) is False
+    assert issubhint(Hint[Super[bool]], Hint[int]) is False
+    assert issubhint(Hint[Super[bool]], Hint) is True
 
 
 def test_resolve_non_hint_query_raises() -> None:

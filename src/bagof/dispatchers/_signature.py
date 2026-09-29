@@ -40,6 +40,7 @@ from .core import (
     get_args_uw,
     get_origin_uw,
     is_typeddict,
+    ishint,
     ishintstance,
     issubhint,
     normalise_hint,
@@ -48,13 +49,19 @@ from .core import (
 )
 from .core._compat import _UNPACK_FORMS, UNION_TYPES, spellings
 from .core._exact import exact_target, is_exact
-from .core._hint import Hint
+from .core._hint import Hint, is_hint_form
 from .core._introspect import _typing_spelling
 from .core._relation import (
     _is_subscripted_tuple,
     _is_unpacked_typevartuple,
     _malformed_typeddict_reason,
     _TupleShape,
+)
+from .core._super import (
+    bare_super_message,
+    is_bare_super,
+    is_super,
+    super_target,
 )
 
 __all__ = ["Parameter", "Signature", "Binding"]
@@ -431,12 +438,13 @@ class Signature:
         for index, hint in enumerate(hints):
             name = f"_{index}"
             normalised = normalise_hint(hint)
-            _reject_malformed_typeddict(
-                name, normalised, subject=f"positional hint {index}"
-            )
+            subject = f"positional hint {index}"
+            _reject_bare_super(name, normalised, subject=subject)
+            _reject_malformed_typeddict(name, normalised, subject=subject)
             params[name] = Parameter(name, normalised, _POSITIONAL_ONLY)
         for name, hint in named_hints.items():
             normalised = normalise_hint(hint)
+            _reject_bare_super(name, normalised)
             _reject_malformed_typeddict(name, normalised)
             params[name] = Parameter(
                 name, normalised, _POSITIONAL_OR_KEYWORD
@@ -466,13 +474,16 @@ class Signature:
                 varargs_name = name
                 varargs = _catch_all_or_any(hint)
                 _reject_variadic_param(name, varargs, fn, catch_all=True)
+                _reject_bare_super(name, hint, fn)
                 _reject_malformed_typeddict(name, hint, fn)
             elif param.kind is _VAR_KEYWORD:
                 varkw_name = name
                 varkw = _catch_all_or_any(hint)
+                _reject_bare_super(name, hint, fn)
                 _reject_malformed_typeddict(name, hint, fn)
             else:
                 _reject_variadic_param(name, hint, fn)
+                _reject_bare_super(name, hint, fn)
                 _reject_malformed_typeddict(name, hint, fn)
                 params[name] = Parameter(
                     name, hint, param.kind, param.default
@@ -533,8 +544,10 @@ class Signature:
             # A forward reference that resolved to a `ParamSpec`/`Concatenate`
             # is refused here, the same as one written outright.
             _reject_variadic_param(name, hint, self._fn)
-            # A forward reference that resolved to a malformed `TypedDict` is
-            # refused here too, now that the name has become readable.
+            # A forward reference that resolved to a malformed `TypedDict`, or
+            # to a lower bound outside `Type` or `Hint`, is refused here too,
+            # now that the name has become readable.
+            _reject_bare_super(name, hint, self._fn)
             _reject_malformed_typeddict(name, hint, self._fn)
             new_params[name] = Parameter(
                 name, hint, param.kind, param.default
@@ -546,12 +559,14 @@ class Signature:
             _reject_variadic_param(
                 self._varargs_name, self._varargs, self._fn, catch_all=True
             )
+            _reject_bare_super(self._varargs_name, resolved, self._fn)
             _reject_malformed_typeddict(
                 self._varargs_name, resolved, self._fn
             )
         if self._varkw_name is not None:
             resolved = normalise_hint(hints.get(self._varkw_name, tx.Any))
             self._varkw = _catch_all_or_any(resolved)
+            _reject_bare_super(self._varkw_name, resolved, self._fn)
             _reject_malformed_typeddict(self._varkw_name, resolved, self._fn)
         # Build the plan before clearing the deferred flag: a reader on a
         # free-threaded build (3.13t) must never see `_deferred` false while
@@ -1398,6 +1413,70 @@ def _reject_variadic_param(
         )
 
 
+def _bare_super_in(hint: tx.Any) -> tx.Any:
+    """Find a lower bound written outside `Type` or `Hint`, if `hint` has one.
+
+    A `Super[C]` is allowed only as the immediate argument of a `Type` or
+    a `Hint` form, so this walks `hint` and returns the first `Super[C]`,
+    or unsubscripted `Super`, `SuperType` or `SuperHint`, that stands
+    anywhere else: on its own, as a union member, inside a container's
+    arguments, or as a `TypeVar`'s bound or constraint. It returns
+    `#!python None` when there is none. A forward-reference string is
+    skipped, since it can only be checked once it resolves.
+    """
+    hint = normalise_hint(hint)
+    if is_bare_super(hint):
+        return hint
+    if isinstance(hint, tx.TypeVar):
+        bound = getattr(hint, "__bound__", None)
+        limits = getattr(hint, "__constraints__", ())
+        args = limits if bound is None else (bound,) + tuple(limits)
+    else:
+        args = get_args_uw(hint)
+        origin = get_origin_uw(hint)
+        if origin is type or is_hint_form(origin):
+            # The one place a lower bound may stand: read through it, so that
+            # only a `Super` inside its bound is reported.
+            args = tuple(
+                super_target(arg) if is_super(arg) else arg for arg in args
+            )
+    for arg in args:
+        # A `Callable`'s parameter list arrives as a plain list of hints.
+        for item in arg if isinstance(arg, list) else (arg,):
+            if isinstance(item, str) or not ishint(item):
+                continue
+            found = _bare_super_in(item)
+            if found is not None:
+                return found
+    return None
+
+
+def _reject_bare_super(
+    name: str,
+    hint: tx.Any,
+    fn: tx.Any = None,
+    subject: tx.Optional[str] = None,
+) -> None:
+    """Refuse a parameter whose hint puts a lower bound on a value.
+
+    `Super[C]` describes the classes or hints above `C`, so it is only
+    valid as the argument of `Type` or `Hint`, where the value passed is
+    itself a class or a hint. Anywhere else it would bound a value from
+    below, which cannot be checked, so registration refuses it with a
+    message naming the parameter and the spelling to write instead. The
+    relation refuses the same hints with the same message, which covers
+    callers that never register a method. `subject` overrides how the
+    parameter is named, as for [`_reject_malformed_typeddict`][].
+    """
+    offender = _bare_super_in(hint)
+    if offender is not None:
+        named = subject if subject is not None else repr(name)
+        where = ""
+        if fn is not None:
+            where = f" of {getattr(fn, '__name__', fn)}"
+        raise TypeError(f"{named}{where}: {bare_super_message(offender)}")
+
+
 def _top_level_typeddicts(hint: tx.Any) -> tx.List[tx.Any]:
     """Collect the `TypedDict`s a hint carries at its own top level.
 
@@ -1605,6 +1684,8 @@ def _render_hint(hint: tx.Any) -> str:
     # An `Exact[C]` reads back as `Exact[C]`, not its `Annotated` spelling.
     if is_exact(hint):
         return f"Exact[{_render_hint(exact_target(hint))}]"
+    if is_super(hint):
+        return f"Super[{_render_hint(super_target(hint))}]"
     # `Type[Exact[C]]` and `Hint[Exact[C]]` render their argument recursively,
     # so a nested `Exact` reads as `Exact[C]`, not `Annotated[C, EXACT]`.
     origin = get_origin_uw(hint)
@@ -1613,10 +1694,34 @@ def _render_hint(hint: tx.Any) -> str:
         return f"Type[{_render_hint(args[0])}]"
     if origin is Hint and args:
         return f"Hint[{_render_hint(args[0])}]"
+    if origin in UNION_TYPES and args:
+        return _render_union(hint, args)
     if isinstance(hint, type):
         return hint.__name__
     text = str(hint)
     return text.replace("typing_extensions.", "").replace("typing.", "")
+
+
+def _render_union(hint: tx.Any, args: tx.Tuple[tx.Any, ...]) -> str:
+    """Render a union with each member rendered by `_render_hint`.
+
+    The spelling follows the one the running interpreter gives the union,
+    whether `Optional[X]`, `Union[X, Y]` or `X | Y`, so that only the
+    members change: a `Super[C]` or `Exact[C]` among them reads back as
+    such rather than as its `Annotated` spelling.
+    """
+    text = str(hint).replace("typing_extensions.", "").replace("typing.", "")
+    members = [_render_hint(arg) for arg in args]
+    # Python 3.14 prints every union as `X | Y`, so the two spellings below
+    # are only produced, and only exercised by the tests, on earlier versions.
+    if text.startswith("Optional["):  # pragma: no cover  -- Python < 3.14
+        (member,) = [
+            m for arg, m in zip(args, members) if arg is not type(None)
+        ]
+        return f"Optional[{member}]"
+    if text.startswith("Union["):  # pragma: no cover  -- Python < 3.14
+        return f"Union[{', '.join(members)}]"
+    return " | ".join(members)
 
 
 def _render_parameters(

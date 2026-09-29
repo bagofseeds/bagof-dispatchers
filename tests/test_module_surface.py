@@ -25,6 +25,9 @@ _TOP_LEVEL = [
     "AmbiguousMethodError",
     "Exact",
     "Hint",
+    "Super",
+    "SuperType",
+    "SuperHint",
 ]
 
 
@@ -67,6 +70,15 @@ def test_exact_is_one_object() -> None:
     from bagof.dispatchers.core._exact import Exact as core_exact
 
     assert pkg.Exact is core_exact
+
+
+def test_super_is_one_object() -> None:
+    """`Super` and its aliases reached either way are the same objects."""
+    from bagof.dispatchers.core import _super
+
+    assert pkg.Super is _super.Super
+    assert pkg.SuperType is _super.SuperType
+    assert pkg.SuperHint is _super.SuperHint
 
 
 def test_public_names_come_from_private_modules() -> None:

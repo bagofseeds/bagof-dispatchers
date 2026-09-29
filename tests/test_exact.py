@@ -210,6 +210,18 @@ def test_exact_takes_only_a_hint() -> None:
         Exact[1]
 
 
+def test_exact_refuses_a_lower_bound() -> None:
+    # `Exact` and `Super` cannot be combined: an exact type leaves nothing
+    # above it to bound. The refusal names both spellings to use instead.
+    from bagof.dispatchers import Super
+
+    with pytest.raises(TypeError) as info:
+        Exact[Super[int]]
+    message = str(info.value)
+    assert message.startswith("Exact[...] cannot take Super[int]")
+    assert "Type[Exact[C]]" in message and "Type[Super[C]]" in message
+
+
 def test_outer_exact_normalises_to_inner() -> None:
     assert normalise_hint(Exact[tx.Type[int]]) == tx.Type[Exact[int]]
     assert normalise_hint(Exact[tx.Type]) == Exact[type]

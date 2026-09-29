@@ -58,6 +58,52 @@ than `Hint[Union]`, it wins. The match on `Exact` is by the exact hint, not
 by mere equivalence, so a free `TypeVar`, which accepts the same values as
 `Any` without being the hint `Any`, does not match `Hint[Exact[Any]]`.
 
+## Hints above a bound
+
+`Hint[Super[X]]` turns the match around. Instead of the hints below `X`,
+it accepts the hint `X` together with every hint that `X` is a sub-hint
+of. `Hint[Super[int]]` therefore matches `int`, `numbers.Integral`,
+`object` and `Any`, but it does not match `bool`, which sits below `int`,
+and it does not match the unrelated `str`. `SuperHint[X]` is a shorter
+spelling of the same hint. The exact hint is more specific than both of
+the other forms, so a `Hint[Exact[int]]` overload takes `int` itself while
+the lower bound takes everything above it:
+
+```pycon
+>>> from numbers import Integral
+>>> from typing import Any
+>>> from bagof.dispatchers import Super
+>>> @dispatch
+... def widen(h: Hint[Super[int]]) -> str:
+...     return "int or a wider hint"
+>>> @dispatch
+... def widen(h: Hint[Exact[int]]) -> str:
+...     return "exactly int"
+>>> @dispatch
+... def widen(h: Hint[Any]) -> str:
+...     return "some other hint"
+>>> widen(Integral)
+'int or a wider hint'
+>>> widen(Any)
+'int or a wider hint'
+>>> widen(int)
+'exactly int'
+>>> widen(bool)
+'some other hint'
+>>> widen(str)
+'some other hint'
+```
+
+The call with `bool` shows what the lower bound adds. `bool` is a sub-hint
+of `int`, so an ordinary `Hint[int]` overload would take it, but it is not
+above `int`, so `Hint[Super[int]]` leaves it to the catch-all.
+
+A lower bound does not replace the catch-all. `Hint[Super[int]]` still
+leaves out every hint that is not above `int`, so the fallback for hint
+dispatch remains `Hint[Any]`, described next. The page on
+[exact types](exact-types.md) sets out how `Super` behaves inside `Type`
+as well.
+
 ## Writing a catch-all
 
 Use `Hint[Any]`, not `object`, as the fallback overload for hint dispatch.

@@ -36,6 +36,10 @@ walks through registering overloads in more detail.
 - `Hint[X]` dispatches on a type hint passed as a value, matching the hints
   that are sub-hints of `X`, so a function handed a hint can branch on what
   the hint is. See [Dispatching on hints][hints-as-values].
+- `Super[C]`, written inside `Type[...]` or `Hint[...]`, is the mirror image
+  of `Exact`: it accepts `C` together with everything above it, so
+  `Type[Super[Dog]]` accepts the class `Dog` and each class it derives from.
+  See [Exact types][exact-types].
 - A call that matches no overload, or that matches two equally specific
   overloads, is always a clear error rather than a silent guess.
   `NoMethodError` is a `TypeError` carrying the closest candidates, and
