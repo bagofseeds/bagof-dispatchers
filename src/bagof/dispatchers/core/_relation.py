@@ -2861,16 +2861,19 @@ def _issubbounds(sub: tx.Any, sup: tx.Any, top: tx.Any) -> bool:
     plain `Type[X]` and `Type[Super[C]]` apart, since a subclass of `X`
     can always be defined that is not above `C`.
 
-    A few shapes are settled before any interval is read. A bottom `sub`
-    accepts nothing and so is below everything, while an `Exact[C]` `sup`
-    is never taken to be above a lower bound, which keeps the answer
-    conservative. An unmarked `sub` that is a union is below `sup` when
-    each of its members is, and an unmarked `TypeVar` is read as its
-    upper bound, the way the relation reads it everywhere else. A
-    `Super[C]` or `Exact[C]` `sub` is a single interval even when `C` is
-    a union.
+    A few shapes are settled before any interval is read. Inside `Type`,
+    a bottom `sub` holds no class and so is below everything. Inside
+    `Hint` the same shortcut would be unsound, because the hint `Never`
+    is itself a value of `Hint[Never]`. The intervals decide there
+    instead, so `Hint[Never]` is below `Hint[Super[C]]` only when `C` is
+    itself a bottom. An `Exact[C]` `sup` is never taken to be above a
+    lower bound, which keeps the answer conservative. An unmarked `sub`
+    that is a union is below `sup` when each of its members is, and an
+    unmarked `TypeVar` is read as its upper bound, the way the relation
+    reads it everywhere else. A `Super[C]` or `Exact[C]` `sub` is a
+    single interval even when `C` is a union.
     """
-    if _is_never(sub):
+    if top is object and _is_never(sub):
         return True
     if is_exact(sup):
         return False

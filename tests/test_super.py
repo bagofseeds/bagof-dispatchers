@@ -2,6 +2,7 @@
 
 # stdlib
 import itertools
+import sys
 import warnings
 
 # dependencies
@@ -21,6 +22,7 @@ from bagof.dispatchers import (
     SuperType,
     dispatch,
 )
+from bagof.dispatchers._signature import _render_hint
 from bagof.dispatchers.core import (
     ishintstance,
     issubhint,
@@ -542,10 +544,19 @@ def test_value_consistency_hint_super() -> None:
 
 
 def test_a_bottom_argument_is_below_every_lower_bound() -> None:
-    # `Type[Never]` and `Hint[Never]` accept nothing, so they are below all.
+    # `Type[Never]` holds no class, so it is below every `Type` form.
     assert issubhint(tx.Type[tx.Never], _ts(Dog)) is True
-    assert issubhint(Hint[tx.Never], _hs(bool)) is True
     assert issubhint(_ts(Dog), tx.Type[tx.Never]) is False
+
+
+def test_a_bottom_hint_argument_is_ordered_by_its_interval() -> None:
+    # The hint `Never` is itself a value of `Hint[Never]`, so the intervals
+    # decide: `Hint[Never]` is below `Hint[Super[C]]` only when `C` is too.
+    assert issubhint(Hint[tx.Never], _hs(bool)) is False
+    assert issubhint(Hint[tx.Never], _hs(tx.Never)) is True
+    assert ishintstance(tx.Never, Hint[tx.Never]) is True
+    assert ishintstance(tx.Never, _hs(bool)) is False
+    assert ishintstance(tx.Never, _hs(tx.Never)) is True
 
 
 def test_super_forms_are_ordered_against_a_bare_type() -> None:
@@ -658,6 +669,51 @@ def test_a_second_argument_keeps_the_overlap_meaningful() -> None:
             return "super"
 
 
+def test_an_optional_lower_bound_is_ambiguous_with_a_plain_type() -> None:
+    f = Function("f")
+
+    @f.register((tx.Type[Animal],))
+    def _plain(cls: object) -> str:
+        return "plain"
+
+    with pytest.warns(RuntimeWarning, match="ambiguous"):
+
+        @f.register((tx.Optional[tx.Type[Super[Dog]]],))
+        def _above(cls: object) -> str:
+            return "super"
+
+    with pytest.raises(AmbiguousMethodError) as caught:
+        f(Dog)
+    spelled = "Type[Super[Dog]]"
+    optional = _render_hint(tx.Optional[int]).replace("int", spelled)
+    assert optional in str(caught.value)
+    assert f(None) == "super"
+
+
+def test_a_bare_super_passed_to_a_hint_parameter_is_refused() -> None:
+    f = Function("f")
+
+    @f.register((Hint[tx.Any],))
+    def _any(h: object) -> str:
+        return "any"
+
+    with pytest.raises(TypeError, match=r"Super\[int\]"):
+        f(Super[int])
+
+
+def test_a_forward_reference_to_a_lower_bound_settles_later() -> None:
+    namespace = {"Type": tx.Type, "Super": Super}  # type: tx.Dict[str, tx.Any]
+    exec("def f(cls: 'Type[Super[Later]]'): return 'super'", namespace)
+    f = Function("f")
+    f.register(namespace["f"])
+    exec("class Later: pass\nclass Sooner(Later): pass", namespace)
+    later, sooner = namespace["Later"], namespace["Sooner"]
+    assert f(later) == "super"
+    assert f(object) == "super"
+    with pytest.raises(NoMethodError):
+        f(sooner)
+
+
 def test_dispatch_hint_super() -> None:
     f = Function("f")
 
@@ -703,6 +759,29 @@ def test_super_renders() -> None:
     text = method.describe()
     assert "Type[Super[int]]" in text
     assert "Hint[Super[bool]]" in text
+
+
+@pytest.mark.parametrize("marker", ["Super", "Exact"])
+def test_a_marked_form_renders_inside_a_union(marker: str) -> None:
+    form = {"Super": Super, "Exact": Exact}[marker]
+    spelled = f"Type[{marker}[Dog]]"
+    optional = _render_hint(tx.Optional[int]).replace("int", spelled)
+    union = _render_hint(tx.Union[int, str]).replace("int", spelled)
+    assert _render_hint(tx.Optional[tx.Type[form[Dog]]]) == optional
+    assert _render_hint(tx.Union[tx.Type[form[Dog]], str]) == union
+    f = Function("f")
+
+    @f.register((tx.Optional[tx.Type[form[Dog]]],))
+    def _above(cls: object) -> None: ...
+
+    (method,) = f.methods
+    assert optional in method.describe()
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="PEP 604 unions")
+def test_a_pep_604_union_renders_its_members() -> None:
+    union = eval("type[Super[Dog]] | None", {"Super": Super, "Dog": Dog})
+    assert _render_hint(union) == "Type[Super[Dog]] | NoneType"
 
 
 # --- registries --------------------------------------------------------

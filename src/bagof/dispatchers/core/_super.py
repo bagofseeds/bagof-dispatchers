@@ -99,8 +99,10 @@ else:
         refused on a value parameter because a value has a single concrete
         class, and a function written for the instances of some class must
         also accept the instances of its subclasses. A lower bound on a
-        value would contradict that substitution and could not be checked,
-        so registration refuses it and names the parameter.
+        value would contradict that expectation and could not be checked,
+        so registration refuses it and names the parameter. A bare
+        `Super[C]` is refused wherever a hint is read, including when it
+        is passed as a value to a `Hint[...]` parameter.
 
         `Super` is written inside the bracket, as in
         `#!python Type[Super[C]]`. Writing it around the whole form, as in

@@ -413,6 +413,10 @@ def _lhs(c: tx.Any) -> tx.Any:
         (tx.Type[tx.Union[_Dog, int]], _lts(tx.Union[_Dog, int]), False),
         (tx.Annotated[tx.Type[_Animal], "m"], _lts(_Dog), True),
         (tx.Type, _lts(_Dog), True),  # ordered too, and `_Dog` is in both
+        # A union is read through its members, and a `TypeVar` as its bound.
+        (tx.Type[_Animal], tx.Optional[_lts(_Dog)], True),
+        (tx.Type[_Animal], tx.TypeVar("_TVS", bound=_lts(_Dog)), True),
+        (tx.Type[_Puppy], tx.Optional[_lts(_Dog)], False),
     ],
     ids=repr,
 )

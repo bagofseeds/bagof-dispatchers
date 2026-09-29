@@ -61,9 +61,9 @@ A `Type[C]` parameter accepts the class `C` and every class derived from
 it, which is an upper bound on the class passed in. `Super[C]` places a
 lower bound instead: `Type[Super[C]]` accepts the class `C` and every class
 that `C` derives from, up to `object`. It suits a function that receives
-a class and relies on every instance of `C` also being an instance of that
-class, such as one that decides whether a `C` may be stored in a slot
-declared with the class it was given.
+a class and relies on every instance of `C` being an instance of that class
+as well, such as a function that checks whether a container declared to
+hold instances of the class it was given can also hold a `C`.
 
 `Super` belongs inside `Type[...]` or `Hint[...]`, where the value passed
 is itself a class or a hint. On an ordinary value parameter it has nothing
@@ -71,16 +71,16 @@ to bound, because a value has one concrete class, and code written for the
 instances of a class must also accept the instances of its subclasses. The
 spellings available at each level are therefore these:
 
-| Where                  | Spelling          | Accepts                                  |
-|------------------------|-------------------|------------------------------------------|
-| On a value parameter   | `C`               | an instance of `C` or of a subclass      |
-| On a value parameter   | `Exact[C]`        | an instance whose type is exactly `C`    |
-| Inside `Type[...]`     | `Type[C]`         | the class `C` or a subclass of it        |
-| Inside `Type[...]`     | `Type[Exact[C]]`  | the class `C` alone                      |
-| Inside `Type[...]`     | `Type[Super[C]]`  | the class `C` or a class it derives from |
-| Inside `Hint[...]`     | `Hint[X]`         | the hint `X` or a sub-hint of it         |
-| Inside `Hint[...]`     | `Hint[Exact[X]]`  | the hint `X` alone                       |
-| Inside `Hint[...]`     | `Hint[Super[X]]`  | the hint `X` or a hint above it          |
+| Where                      | Spelling         | Accepts                                  |
+|----------------------------|------------------|------------------------------------------|
+| On a value parameter       | `C`              | an instance of `C` or of a subclass      |
+| On a value parameter       | `Exact[C]`       | an instance whose type is exactly `C`    |
+| On a `Type[...]` parameter | `Type[C]`        | the class `C` or a subclass of it        |
+| On a `Type[...]` parameter | `Type[Exact[C]]` | the class `C` alone                      |
+| On a `Type[...]` parameter | `Type[Super[C]]` | the class `C` or a class it derives from |
+| On a `Hint[...]` parameter | `Hint[X]`        | the hint `X` or a sub-hint of it         |
+| On a `Hint[...]` parameter | `Hint[Exact[X]]` | the hint `X` alone                       |
+| On a `Hint[...]` parameter | `Hint[Super[X]]` | the hint `X` or a hint above it          |
 
 The three `Type` forms combine the way the table suggests.
 `Type[Exact[Dog]]` is more specific than both `Type[Dog]` and
@@ -118,23 +118,32 @@ below `Animal` but not above `Dog`, and `object` is above `Dog` but not
 below `Animal`. They do share the classes in between, `Dog` and `Animal`,
 so a call with either of those matches both overloads and neither is more
 specific. Registering the second of the two therefore warns about the
-ambiguity. An overload for `Type[Exact[Dog]]` settles the call with `Dog`
-itself, since it is more specific than both, but a call with `Animal`
-would still tie; giving one of the two overloads a higher `priority`
-settles every shared class at once:
+ambiguity.
+
+There are two ways to settle the tie. An overload for `Type[Exact[Dog]]`
+settles the call with `Dog` itself, since it is more specific than both,
+but a call with `Animal` still ties:
 
 ```python
 @dispatch
 def feed(cls: Type[Animal]) -> str: ...
 
-@dispatch  # RuntimeWarning: feed(Dog) and feed(Animal) match both overloads
+@dispatch  # warns: ambiguous with feed(cls: Type[Animal])
 def feed(cls: Type[Super[Dog]]) -> str: ...
 
-@dispatch  # settles feed(Dog), which now picks this overload
+@dispatch  # feed(Dog) now picks this overload; feed(Animal) still ties
 def feed(cls: Type[Exact[Dog]]) -> str: ...
+```
 
-# Alternatively, register the lower bound with a priority from the start,
-# so that it wins every call the two overloads share.
+The alternative is to give one of the two overloads a higher `priority`
+when it is registered, in place of the second overload above. The lower
+bound then wins every class the two share, so nothing warns and nothing
+ties:
+
+```python
+@dispatch
+def feed(cls: Type[Animal]) -> str: ...
+
 @feed.register(priority=1)
 def feed_ancestor(cls: Type[Super[Dog]]) -> str: ...
 ```
@@ -142,7 +151,8 @@ def feed_ancestor(cls: Type[Super[Dog]]) -> str: ...
 `SuperType[C]` is a shorter spelling of `Type[Super[C]]`, and
 `SuperHint[X]` is a shorter spelling of `Hint[Super[X]]`. Each always
 needs its bound, since an unbounded lower bound would accept every class or
-every hint, which plain `type` and `Hint` already express:
+every hint, which plain `type` and `Hint` already express. The alias
+expands to the `Type` form it stands for:
 
 ```pycon
 >>> from bagof.dispatchers import SuperType

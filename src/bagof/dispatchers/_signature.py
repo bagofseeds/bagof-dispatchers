@@ -1694,10 +1694,32 @@ def _render_hint(hint: tx.Any) -> str:
         return f"Type[{_render_hint(args[0])}]"
     if origin is Hint and args:
         return f"Hint[{_render_hint(args[0])}]"
+    if origin in UNION_TYPES and args:
+        return _render_union(hint, args)
     if isinstance(hint, type):
         return hint.__name__
     text = str(hint)
     return text.replace("typing_extensions.", "").replace("typing.", "")
+
+
+def _render_union(hint: tx.Any, args: tx.Tuple[tx.Any, ...]) -> str:
+    """Render a union with each member rendered by `_render_hint`.
+
+    The spelling follows the one the running interpreter gives the union,
+    whether `Optional[X]`, `Union[X, Y]` or `X | Y`, so that only the
+    members change: a `Super[C]` or `Exact[C]` among them reads back as
+    such rather than as its `Annotated` spelling.
+    """
+    text = str(hint).replace("typing_extensions.", "").replace("typing.", "")
+    members = [_render_hint(arg) for arg in args]
+    if text.startswith("Optional["):
+        (member,) = [
+            m for arg, m in zip(args, members) if arg is not type(None)
+        ]
+        return f"Optional[{member}]"
+    if text.startswith("Union["):
+        return f"Union[{', '.join(members)}]"
+    return " | ".join(members)
 
 
 def _render_parameters(

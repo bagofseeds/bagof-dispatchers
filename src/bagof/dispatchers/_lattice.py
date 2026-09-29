@@ -121,6 +121,11 @@ def overlaps(a: tx.Any, b: tx.Any) -> bool:
     really exists, which is the direction a warning needs. When the
     bounds involved are classes, it also finds every overlap there is.
 
+    A parametrised union on either side overlaps the other hint when one
+    of its members does, which covers a parameter written as
+    `#!python Optional[Type[Super[Dog]]]`. A `TypeVar` is read as its
+    upper bound, the way the relation reads it everywhere else.
+
     !!! example
         ```pycon
         >>> from typing import Type
@@ -135,6 +140,14 @@ def overlaps(a: tx.Any, b: tx.Any) -> bool:
     """
     a = unwrap(normalise_hint(a), tx.Annotated)
     b = unwrap(normalise_hint(b), tx.Annotated)
+    if isinstance(a, tx.TypeVar):
+        return overlaps(_typevar_upper(a), b)
+    if isinstance(b, tx.TypeVar):
+        return overlaps(a, _typevar_upper(b))
+    if get_origin_uw(a) in UNION_TYPES and get_args_uw(a):
+        return any(overlaps(member, b) for member in get_args_uw(a))
+    if get_origin_uw(b) in UNION_TYPES and get_args_uw(b):
+        return any(overlaps(a, member) for member in get_args_uw(b))
     if get_origin_uw(a) is type and get_origin_uw(b) is type:
         top = object  # type: tx.Any
         arg_a, arg_b = _type_arg(a), _type_arg(b)
