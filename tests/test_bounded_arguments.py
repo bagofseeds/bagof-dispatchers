@@ -351,6 +351,10 @@ def test_an_open_argument_reaches_a_base_as_the_range_it_stands_for() -> None:
             assert issubhint(W[open_], sup) is issubhint(W[bounded], sup)
     assert issubhint(W[tx.Any], Snk[int]) is False
     assert issubhint(W[tx.Any], Snk[N]) is True
+    # `Snk[T]` and `Snk[Any]` sit at the bottom of the contravariant order,
+    # so the family of every `W[Y]` is never below them.
+    assert issubhint(W[T], Snk[T]) is False
+    assert issubhint(W[tx.Any], Snk[tx.Any]) is False
     # The covariant reading is unchanged: the range's upper end.
     assert issubhint(Row[TB], tx.Sequence[int]) is True
     assert issubhint(Row[tx.Any], tx.Sequence[int]) is False
@@ -607,12 +611,21 @@ _REFUSED = [
     (
         L[tx.Union[S[int], str]],
         "Super[int] cannot be a member of a union, or the bound of a "
-        "TypeVar, inside a type argument of list: a bound there has to be "
-        "the whole argument, so that list can read it as the range of "
-        "arguments it accepts. Write Union[list[Super[int]], list[B]] in "
-        "place of list[Union[Super[int], B]], and list[Super[int]] in place "
-        "of list[T] with T bounded by Super[int].",
+        "TypeVar, inside a type argument of List: a bound there has to be "
+        "the whole argument, so that List can read it as the range of "
+        "arguments it accepts. Write Union[List[Super[int]], List[B]] in "
+        "place of List[Union[Super[int], B]], and List[Super[int]] in place "
+        "of List[T] with T bounded by Super[int].",
     ),
+    (
+        tx.AbstractSet[S[int]],
+        "Super[int] puts a lower bound on argument 1 of AbstractSet, whose "
+        "type parameter is covariant, so AbstractSet[Super[int]] would "
+        "accept every AbstractSet. Write AbstractSet without an argument to "
+        "accept every AbstractSet, or AbstractSet[int] to accept "
+        "AbstractSet[int] and the parametrisations below it.",
+    ),
+    (tx.FrozenSet[S[int]], "argument 1 of FrozenSet, whose type"),
     (L[T_S], "Super[int] cannot be a member of a union, or the bound of"),
     (Box[tx.Optional[S[int]]], "inside a type argument of Box"),
     (

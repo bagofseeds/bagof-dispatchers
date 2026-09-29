@@ -214,7 +214,7 @@ entry marks a result worth double-checking against intuition.
 | `List[int] ≤ List[Super[int]\]`, `List[Integral] ≤ List[Super[int]\]`, `List[bool] ≤ List[Super[int]\]`, `List[Super[Integral]\] ≤ List[Super[int]\]` | True / True / **False** / True | *(0.3.0)* the whole argument of an invariant slot may be a bound, which names a range of arguments; one parametrisation is below another when its range lies inside the other's (§4.3) |
 | `Sequence[Super[int]\]`, `Sequence[Between[Never, int]\] ≡ Sequence[int]` | `TypeError` / True | *(0.3.0)* a covariant slot already accepts every argument below the one written, so a lower bound there would be ignored and is refused, while an upper bound adds nothing and reads as the plain argument (§4.3) |
 | `Dict[str, Between[Never, int]\] ≤ Mapping[str, int]`, `Dict[str, Super[int]\] ≤ Mapping[str, int]` | True / **False** | *(0.3.0)* a range that reaches a covariant slot through the bases is read through its upper end (§4.3) |
-| `W[Any] ≤ Snk[int]`, `W[Any] ≤ Snk[Never]` (`class W(Snk[T])`, `Snk` contravariant) | **False** / True | *(0.3.0)* `Any` at `W`'s invariant slot stands for every argument, and it reaches `Snk`'s contravariant slot as that whole range rather than as the point `Any` (§2.3) |
+| `W[Any] ≤ Snk[int]`, `W[Any] ≤ Snk[Never]`, `W[T] ≤ Snk[T]`, `W[Any] ≤ Snk[Any]` (`class W(Snk[T])`, `Snk` contravariant) | **False** / True / **False** / **False** | *(0.3.0)* `Any` at `W`'s invariant slot stands for every argument, and it reaches `Snk`'s contravariant slot as that whole range rather than as the point `Any`; the family of every `W[Y]` is therefore below `Snk[X]` only when every `Snk[Y]` is, which never holds for `Snk[Any]` or `Snk[T]`, since both sit at the bottom of the contravariant order (§2.3) |
 | `issubhint(1, int)`, `issubhint(1, 1)`, `issubhint(int, 1)` | `TypeError` | *(0.2.0)* a non-hint on either side is a caller error, reported for the left argument first, the way `issubclass` rejects a non-class; a non-hint no longer reads as `Any` |
 
 The value-level check, `ishintstance`, does not look at the values held
@@ -1346,12 +1346,12 @@ so a bound inside a generic inside a `Callable` parameter, as in
 legal. Registration refuses each misplaced bound with an error naming the
 parameter and the spelling to write instead, and the relation refuses the
 same hints with the same messages. An unsubscripted `Super`, `SuperType`,
-`SuperHint`, or `Between` is refused too, since an unbounded form names nothing. `Super[Type[C]\]`
-is normalised to `Type[Super[C]\]` and `Super[Super[C]\]` collapses to
-`Super[C]`. `Exact`, `Super`, and `Between` cannot be nested inside one
-another in any order, even through a union or a `TypeVar`, because an
-exact type leaves nothing above it to bound and each form already
-describes the whole hint at its position.
+`SuperHint`, or `Between` is refused too, since an unbounded form names
+nothing. `Super[Type[C]\]` is normalised to `Type[Super[C]\]` and
+`Super[Super[C]\]` collapses to `Super[C]`. `Exact`, `Super`, and
+`Between` cannot be nested inside one another in any order, even through a
+union or a `TypeVar`, because an exact type leaves nothing above it to
+bound and each form already describes the whole hint at its position.
 
 The degenerate bounds need no special case. On a value, `Super[Never]`
 accepts exactly what `object` accepts, `Super[object]` accepts only an

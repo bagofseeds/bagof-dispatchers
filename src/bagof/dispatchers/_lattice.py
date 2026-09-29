@@ -142,6 +142,19 @@ def overlaps(a: tx.Any, b: tx.Any) -> bool:
     try, so `#!python Literal[1]` and `#!python Super[int]` are reported
     as not overlapping, although the value `1` belongs to both.
 
+    Two parametrised generics, one of them with a bound among its type
+    arguments, overlap when some parametrisation lies below both. Such a
+    parametrisation is looked for on the more derived of the two
+    origins. Each of its type arguments is replaced by an end of the
+    range that the argument names or, when the two origins are the same,
+    by the argument that the other hint gives at that position. Each
+    candidate is then checked against both hints by the relation itself,
+    so `#!python List[Between[Never, numbers.Integral]]` and
+    `#!python List[Super[int]]` are reported as overlapping through
+    `#!python List[int]`. Hints with no bound among their arguments are
+    never reported, which keeps `#!python List[int]` and
+    `#!python List[str]` apart.
+
     A parametrised union on either side overlaps the other hint when one
     of its members does, which covers a parameter written as
     `#!python Optional[Type[Super[Dog]]]`. A `TypeVar` is read as its

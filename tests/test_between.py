@@ -444,7 +444,7 @@ def _fn(annotation: tx.Any, kind: str = "x") -> tx.Any:
         (
             tx.Dict[str, tx.Optional[Between[bool, int]]],
             "Between[bool, int] cannot be a member of a union, or the bound "
-            "of a TypeVar, inside a type argument of dict",
+            "of a TypeVar, inside a type argument of Dict",
         ),
         (Between, "Between needs two bounds"),
         (tx.Type[Between], "Between needs two bounds"),

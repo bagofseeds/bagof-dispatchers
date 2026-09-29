@@ -235,12 +235,12 @@ else:
         every parametrisation below it, so
         `#!python Sequence[Between[Never, U]]` means the same as
         `#!python Sequence[U]` and is read that way, while a lower bound
-        there would change nothing and is refused with a message naming
-        `#!python Sequence[U]`. A contravariant
-        position is the mirror image, where an upper bound is refused. A
-        bound is also refused as an element of a `#!python Tuple` and in
-        the signature of a `#!python Callable`, whose positions have a
-        fixed variance of their own.
+        there would be ignored and is refused with a message naming
+        `#!python Sequence[U]`. A contravariant position is the mirror
+        image, where an upper bound is refused. A bound is also refused as
+        an element of a `#!python Tuple` and in the signature of a
+        `#!python Callable`, whose positions have a fixed variance of
+        their own.
 
         One interval is more specific than another when it lies inside
         it, so `#!python Between[Dog, Animal]` is more specific than
@@ -256,14 +256,17 @@ else:
         it is written, with a message that suggests the reversed spelling
         when that one is not empty. `#!python Between[Any, U]` is refused
         as well unless `U` is `Any` itself, because nothing else lies
-        above `Any`. The interval with no lower bound is spelled
+        above `Any`. A `TypeVar` written as an end of a bound is read as
+        its own bound, so an unbounded `T` there means `Any`.
+        `#!python Super[T]` then accepts no value, and
+        `#!python List[Super[T]]` accepts only a list that declares no
+        argument. The interval with no lower bound is spelled
         `#!python Between[Never, U]`. On a value and inside `Type` or
         `Hint` it means the same as plain `U`, while as the type argument
         of an invariant generic it accepts every argument up to `U`, where
-        plain `U` accepts `U` alone.
-        A lower bound cannot be a quoted forward reference, because
-        nothing would ever resolve it, but quoting the whole annotation
-        works as usual.
+        plain `U` accepts `U` alone. A lower bound cannot be a quoted
+        forward reference, because nothing would ever resolve it, but
+        quoting the whole annotation works as usual.
 
         `Exact`, `Super` and `Between` cannot be nested inside one
         another, even through a union or a `TypeVar`, and inside `Type`
@@ -588,8 +591,58 @@ def constraint_bound_message(bound: tx.Any) -> str:
     )
 
 
+# The `typing` alias of each standard generic class, such as `List` for
+# `list` and `AbstractSet` for `collections.abc.Set`. An error message names
+# a standard class by its alias, which every supported Python accepts, and
+# not by its runtime name, which reads as a different class (`Set`) or
+# cannot be subscripted on Python 3.8 (`list`).
+_TYPING_NAMES = {
+    getattr(tx, name).__origin__: name
+    for name in (
+        "AbstractSet",
+        "AsyncContextManager",
+        "AsyncGenerator",
+        "AsyncIterable",
+        "AsyncIterator",
+        "Awaitable",
+        "ChainMap",
+        "Collection",
+        "Container",
+        "ContextManager",
+        "Coroutine",
+        "Counter",
+        "DefaultDict",
+        "Deque",
+        "Dict",
+        "FrozenSet",
+        "Generator",
+        "ItemsView",
+        "Iterable",
+        "Iterator",
+        "KeysView",
+        "List",
+        "Mapping",
+        "MappingView",
+        "MutableMapping",
+        "MutableSequence",
+        "MutableSet",
+        "OrderedDict",
+        "Reversible",
+        "Sequence",
+        "Set",
+        "ValuesView",
+    )
+}
+
+
 def _origin_name(origin: tx.Any) -> str:
-    """Name a generic class the way an error message names it."""
+    """Name a generic class the way an error message names it.
+
+    A standard class is named by its `typing` alias, such as `List` or
+    `AbstractSet`, and any other class by its own name.
+    """
+    if isinstance(origin, type) and origin in _TYPING_NAMES:
+        return _TYPING_NAMES[origin]
     return getattr(origin, "__name__", None) or _render_target(origin)
 
 
@@ -650,7 +703,7 @@ def slot_bounds(arg: tx.Any) -> tx.Tuple[tx.Any, tx.Any]:
     than `C` itself. A constrained `TypeVar` accepts one of its
     constraints rather than a range, so the caller reads it before
     asking this. `arg` is expected in the form
-    [`normalise_hint`][bagof.dispatchers.core.normalise_hint] gives it.
+    [`normalise_hint`][] gives it.
     """
     if is_bound(arg):
         return bound_ends(arg)

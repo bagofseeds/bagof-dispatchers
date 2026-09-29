@@ -245,9 +245,9 @@ A covariant or contravariant position already widens its argument, which
 changes what a bound can add there. `Sequence[int]` accepts every
 parametrisation below it, so `Sequence[Between[Never, int]]` means exactly
 what `Sequence[int]` means, and it is accepted and read that way. A lower
-bound in the same position would change nothing, because the range from
-`int` upwards contains `Any`, and `Sequence[Any]` already accepts every
-sequence, so `Sequence[Super[int]]` is refused rather than silently read as
+bound in the same position would be ignored, because the range from `int`
+upwards reaches `Any`, and `Sequence[Any]` accepts every sequence.
+`Sequence[Super[int]]` is therefore refused rather than silently read as
 `Sequence[Any]`. A contravariant position is the mirror image. This follows
 Kotlin, whose use-site bounds behave the same way on a parameter that
 already declares its variance:
@@ -341,7 +341,24 @@ no match
 check the upper end of a two-sided bound in an invariant type argument, so
 it rejects a valid call whose argument lies below the upper end, while
 pyright accepts every call to such a parameter. Where mypy's error gets in
-the way, the function can be annotated with `List[Any]` and registered with
-the bounded hint instead, as in
-`feed.register((List[Between[Puppy, Animal]],))`, or the call can carry a
+the way, the method can be written with its parameter annotated
+`List[Any]`, which every checker accepts, and registered with the bounded
+hint instead. The method of `feed` below accepts a list declared to hold
+`Dog`, while a checker sees only its `List[Any]` annotation:
+
+```pycon
+>>> from bagof.dispatchers import Function
+>>> class Animal: pass
+>>> class Dog(Animal): pass
+>>> class Puppy(Dog): pass
+>>> class Dogs(tx.List[Dog]): pass
+>>> feed = Function("feed")
+>>> @feed.register((tx.List[Between[Puppy, Animal]],))
+... def _(pets: tx.List[tx.Any]) -> str:
+...     return "fed"
+>>> feed(Dogs())
+'fed'
+```
+
+Alternatively, a call that mypy rejects can carry a
 `# type: ignore[arg-type]` comment.
