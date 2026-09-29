@@ -1,4 +1,4 @@
-"""Tests for `Between[L, U]`, an interval inside `Type` and `Hint`."""
+"""Tests for `Between[L, U]`, an interval on a value, a class or a hint."""
 
 # stdlib
 import itertools
@@ -26,13 +26,13 @@ from bagof.dispatchers._signature import _render_hint, _structural_hint_eq
 from bagof.dispatchers.core import ishintstance, issubhint, resolve_hint
 from bagof.dispatchers.core._bounds import (
     _Lower,
-    bare_bound_message,
     between_bounds,
     bounds_of,
     empty_interval_message,
-    is_bare_bound,
     is_between,
     is_bound,
+    is_unbounded_form,
+    unbounded_form_message,
 )
 from bagof.dispatchers.core._exact import is_exact
 from bagof.dispatchers.core._super import _render_target, is_super
@@ -173,8 +173,7 @@ def test_empty_interval_is_refused() -> None:
     assert str(info.value) == (
         "Between[Any, int] is empty: Any is the top of the hint order, so "
         "nothing lies between Any and int. For no lower bound write "
-        "Between[Never, int], which inside Type[...] or Hint[...] means the "
-        "same as plain int."
+        "Between[Never, int], which means the same as plain int."
     )
     with pytest.raises(TypeError) as info:
         Between[int, str]
@@ -186,9 +185,31 @@ def test_empty_interval_is_refused() -> None:
         Between[Animal, Dog]
 
 
-def test_a_bound_inside_a_lower_bound_is_refused_when_written() -> None:
-    with pytest.raises(TypeError, match=r"^Super\[int\] is only valid"):
-        Between[tx.Optional[Super[int]], object]
+@pytest.mark.parametrize(
+    "build, needle",
+    [
+        (lambda: Between[tx.Optional[Super[int]], object], "Super[int]"),
+        (lambda: Between[tx.Never, tx.Optional[Super[int]]], "Super[int]"),
+        (lambda: Super[tx.Optional[Between[bool, int]]], "Between[bool, int]"),
+        (
+            lambda: Super[tx.TypeVar("_TS", bound=Super[int])],
+            "Super[int]",
+        ),
+    ],
+)
+def test_a_bound_inside_a_bound_is_refused_when_written(
+    build: tx.Callable[[], tx.Any], needle: str
+) -> None:
+    with pytest.raises(TypeError) as info:
+        build()
+    assert str(info.value).startswith(
+        f"{needle} cannot appear inside an Exact, Super or Between form"
+    )
+
+
+def test_an_unbounded_form_inside_a_bound_is_refused_when_written() -> None:
+    with pytest.raises(TypeError, match=r"^Between needs two bounds"):
+        Super[tx.Optional[Between]]
 
 
 def test_empty_interval_message_waits_for_forward_references() -> None:
@@ -222,7 +243,7 @@ def test_a_nested_forward_reference_lower_bound_is_refused(
     # Refused as a quoted lower bound, not reported as an empty interval.
     # How `Optional` is spelled differs between Python versions.
     shown = _render_target(lower)
-    assert "ForwardRef('Later')" in shown
+    assert "Later" in shown
     with pytest.raises(TypeError) as info:
         Between[lower, object]
     assert str(info.value) == (
@@ -276,9 +297,13 @@ def test_markers_cannot_nest_inside_between(
     assert str(info.value) == (
         f"Between[...] cannot take {shown} as a bound: a bound is a plain "
         "hint, and Exact, Super and Between cannot be nested. Write "
-        "Between[L, U] with plain L and U; for exactly C write "
-        "Type[Exact[C]], and for C and everything above it write "
-        "Type[Super[C]]."
+        "Between[L, U] with plain L and U. "
+        "On a value, write Between[L, U] for a value whose class lies "
+        "between L and U, Super[C] for a value whose class is C or a class "
+        "above it, or Exact[C] for a value whose class is exactly C. Inside "
+        "Type[...], write Type[Between[L, U]] for a class between L and U, "
+        "Type[Super[C]] for C or any class above it, or Type[Exact[C]] for "
+        "exactly C; the same holds inside Hint[...]."
     )
 
 
@@ -290,10 +315,13 @@ def test_between_cannot_nest_inside_super_or_exact(outer: str) -> None:
     assert str(info.value) == (
         f"{outer}[...] cannot take Between[bool, int]: Exact, Super and "
         "Between cannot be nested, because each of them already describes "
-        "the whole argument of Type[...] or Hint[...]. Write "
-        "Type[Between[L, U]] for a class between L and U, Type[Super[C]] "
-        "for C or any class above it, or Type[Exact[C]] for exactly C; the "
-        "same holds inside Hint[...]."
+        "the whole hint at its position. "
+        "On a value, write Between[L, U] for a value whose class lies "
+        "between L and U, Super[C] for a value whose class is C or a class "
+        "above it, or Exact[C] for a value whose class is exactly C. Inside "
+        "Type[...], write Type[Between[L, U]] for a class between L and U, "
+        "Type[Super[C]] for C or any class above it, or Type[Exact[C]] for "
+        "exactly C; the same holds inside Hint[...]."
     )
 
 
@@ -306,74 +334,91 @@ def test_bounds_of_reads_between() -> None:
     assert bounds_of(int, object) == (tx.Never, int)
 
 
-# --- a bound outside Type or Hint is refused ---------------------------
+# --- where an interval can stand ---------------------------------------
 
 
-def test_is_bare_bound() -> None:
-    for hint in (Between, Between[bool, int], Super, Super[int]):
-        assert is_bare_bound(hint) is True
-    for hint in (int, _tb(bool, int), _hb(bool, int), Exact[int]):
-        assert is_bare_bound(hint) is False
+def test_is_unbounded_form() -> None:
+    for hint in (Between, Super, SuperType):
+        assert is_unbounded_form(hint) is True
+    for hint in (int, Between[bool, int], Super[int], _tb(bool, int)):
+        assert is_unbounded_form(hint) is False
 
 
-def test_bare_bound_messages() -> None:
-    assert bare_bound_message(Between[bool, int]) == (
-        "Between[bool, int] is only valid inside Type[...] or Hint[...]: a "
-        "value has one concrete class, so an interval of classes cannot be "
-        "checked on a value parameter. Write Type[Between[bool, int]] to "
-        "accept a class between bool and int, or Hint[Between[bool, int]] "
-        "to accept a hint between them."
+def test_unbounded_form_messages() -> None:
+    assert unbounded_form_message(Between) == (
+        "Between needs two bounds: write Between[L, U] to accept a value "
+        "whose class lies between L and U, Type[Between[L, U]] to accept a "
+        "class between them, or Hint[Between[L, U]] to accept a hint "
+        "between them."
     )
-    assert bare_bound_message(Between) == (
-        "Between needs two bounds and must sit inside Type[...] or "
-        "Hint[...]: write Type[Between[L, U]] to accept a class between L "
-        "and U, or Hint[Between[L, U]] to accept a hint between them."
-    )
-    assert bare_bound_message(Super[int]).startswith(
-        "Super[int] is only valid inside"
-    )
+    assert unbounded_form_message(Super).startswith("Super needs a bound")
 
 
-_BARE = [
+_ON_A_VALUE = [
     Between[bool, int],
-    Between,
     tx.Optional[Between[bool, int]],
     tx.TypeVar("_TBETWEEN", bound=Between[bool, int]),
-    tx.Type[tx.Union[Between[bool, int], str]],
-    # `Between` written around the whole form is not rewritten.
-    Between[tx.Type[bool], tx.Type[int]],
 ]
 
 
-@pytest.mark.parametrize("hint", _BARE, ids=repr)
-def test_between_is_refused_by_the_relation(hint: tx.Any) -> None:
-    with pytest.raises(TypeError, match=r"Between"):
-        issubhint(hint, _tb(bool, int))
-    with pytest.raises(TypeError, match=r"Between"):
-        issubhint(_tb(bool, int), hint)
-    with pytest.raises(TypeError, match=r"Between"):
-        ishintstance(int, hint)
+@pytest.mark.parametrize("hint", _ON_A_VALUE, ids=repr)
+def test_an_interval_on_a_value_is_read_by_the_relation(
+    hint: tx.Any,
+) -> None:
+    assert ishintstance(1, hint) is True
+    assert ishintstance(True, hint) is True
+    assert ishintstance(object(), hint) is False
+    assert issubhint(hint, int) is (hint is not _ON_A_VALUE[1])
+    assert issubhint(hint, tx.Optional[int]) is True
+    assert issubhint(int, hint) is False
+
+
+_REFUSED = [
+    (Between, "Between needs two bounds"),
+    (tx.Type[tx.Union[Between[bool, int], str]], "cannot be a member of a"),
+    # `Between` written around the whole form is not rewritten.
+    (
+        Between[tx.Type[bool], tx.Type[int]],
+        "To bound the class passed to a Type[...] parameter write "
+        "Type[Between[bool, int]].",
+    ),
+]
+
+
+@pytest.mark.parametrize("hint, needle", _REFUSED, ids=repr)
+def test_misplaced_between_is_refused_by_the_relation(
+    hint: tx.Any, needle: str
+) -> None:
+    for call in (
+        lambda: issubhint(hint, _tb(bool, int)),
+        lambda: issubhint(_tb(bool, int), hint),
+        lambda: ishintstance(int, hint),
+    ):
+        with pytest.raises(TypeError) as info:
+            call()
+        assert needle in str(info.value)
 
 
 def test_between_in_an_invariant_argument_is_refused_by_the_relation(
 ) -> None:
-    with pytest.raises(TypeError, match=r"Type\[Between\[bool, int\]\]"):
+    needle = r"Between\[bool, int\] is not supported as a type argument"
+    with pytest.raises(TypeError, match=needle):
         issubhint(tx.List[Between[bool, int]], tx.List[int])
-    with pytest.raises(TypeError, match=r"Type\[Between\[bool, int\]\]"):
+    with pytest.raises(TypeError, match=needle):
         issubhint(tx.List[int], tx.List[Between[bool, int]])
 
 
-def test_a_bare_between_passed_to_a_hint_parameter_is_refused() -> None:
+def test_an_interval_is_a_hint_value() -> None:
     f = Function("f")
 
     @f.register((Hint[tx.Any],))
     def _any(h: object) -> str:
         return "any"
 
-    with pytest.raises(TypeError, match=r"Between\[bool, int\] is only"):
-        f(Between[bool, int])
-    with pytest.raises(TypeError, match=r"Between\[bool, int\] is only"):
-        ishintstance(Between[bool, int], _hb(bool, Integral))
+    assert f(Between[bool, int]) == "any"
+    # An interval on a value is below the upper bound it names.
+    assert ishintstance(Between[bool, int], Hint[int]) is True
+    assert ishintstance(Between[bool, int], _hb(bool, Integral)) is False
 
 
 def _fn(annotation: tx.Any, kind: str = "x") -> tx.Any:
@@ -395,22 +440,44 @@ def _fn(annotation: tx.Any, kind: str = "x") -> tx.Any:
 @pytest.mark.parametrize(
     "hint, needle",
     [
-        (Between[bool, int], "Type[Between[bool, int]]"),
-        (tx.Optional[Between[bool, int]], "Type[Between[bool, int]]"),
-        (tx.List[Between[bool, int]], "Type[Between[bool, int]]"),
-        (tx.TypeVar("_TB", bound=Between[bool, int]), "Between[bool, int]"),
+        (
+            tx.List[Between[bool, int]],
+            "Between[bool, int] is not supported as a type argument of list",
+        ),
+        (
+            tx.Dict[str, Between[bool, int]],
+            "Between[bool, int] is not supported as a type argument of dict",
+        ),
         (Between, "Between needs two bounds"),
         (tx.Type[Between], "Between needs two bounds"),
         (Hint[Between], "Between needs two bounds"),
         (
             tx.Type[Between[tx.Never, tx.List[Super[int]]]],
-            "Type[Super[int]]",
+            "Super[int] is not supported as a type argument of list",
         ),
-        (tx.Type[Between[tx.Never, tx.Optional[Super[int]]]], "Super[int]"),
+        (
+            # What `Between[Never, "Later"]` becomes once `Later` resolves to
+            # a hint holding a bound: the resolved hint is never built by
+            # `Between`.
+            tx.Type[tx.Annotated[tx.Optional[Super[int]], _Lower(tx.Never)]],
+            "Super[int] cannot appear inside an Exact, Super or Between form",
+        ),
+        (
+            Between[tx.Never, tx.List[int]],
+            "Between[Never, List[int]] cannot bound a value with List[int]",
+        ),
+        (
+            Between[tx.Type[bool], tx.Type[int]],
+            "write Type[Between[bool, int]]",
+        ),
+        (
+            Between[Hint[bool], tx.Any],
+            "write Hint[Between[bool, Any]]",
+        ),
     ],
     ids=repr,
 )
-def test_between_is_refused_on_a_value_parameter(
+def test_misplaced_between_is_refused_at_registration(
     hint: tx.Any, needle: str
 ) -> None:
     with pytest.raises(TypeError) as info:
@@ -425,19 +492,34 @@ def test_between_is_refused_on_a_value_parameter(
     assert needle in str(info.value)
 
 
-@pytest.mark.parametrize(
-    "kind, name", [("args", "args"), ("kwargs", "kwargs")]
-)
-def test_between_is_refused_on_a_catch_all(kind: str, name: str) -> None:
-    with pytest.raises(TypeError, match=rf"^'{name}' of f: Between\[bool"):
-        dispatch(_fn(Between[bool, int], kind))
+@pytest.mark.parametrize("hint", _ON_A_VALUE, ids=repr)
+def test_between_on_a_value_is_accepted_at_registration(
+    hint: tx.Any,
+) -> None:
+    f = Function("f")
+    f.register((hint,))(lambda x: "between")
+    assert f(1) == "between"
+    assert f(True) == "between"
+    with pytest.raises(NoMethodError):
+        f(object())
 
 
-def test_between_is_refused_by_from_hints() -> None:
-    with pytest.raises(TypeError, match=r"^positional hint 0: Between\["):
-        Signature.from_hints(Between[bool, int])
-    with pytest.raises(TypeError, match=r"^'scale': Between\["):
-        Signature.from_hints(scale=Between[bool, int])
+@pytest.mark.parametrize("kind", ["args", "kwargs"])
+def test_between_is_accepted_on_a_catch_all(kind: str) -> None:
+    f = dispatch(_fn(Between[Dog, Animal], kind))
+    if kind == "args":
+        assert f(Dog(), Animal()) is None
+        with pytest.raises(NoMethodError):
+            f(Dog(), Puppy())
+    else:
+        assert f(a=Dog(), b=Animal()) is None
+        with pytest.raises(NoMethodError):
+            f(a=Puppy())
+
+
+def test_between_is_accepted_by_from_hints() -> None:
+    sig = Signature.from_hints(Between[bool, int], scale=Between[bool, int])
+    assert sig.dispatched_names == ("scale",)
 
 
 def test_between_inside_type_or_hint_is_accepted_at_registration() -> None:
@@ -950,7 +1032,6 @@ def test_resolve_hint_between_key() -> None:
     assert resolve_hint(tx.Type[Animal], registry, default=0) == 0
 
 
-@pytest.mark.parametrize("query", [Between[bool, int], Between])
-def test_resolve_hint_bare_between_query_raises(query: tx.Any) -> None:
-    with pytest.raises(TypeError, match=r"Between"):
-        resolve_hint(query, {int: 1})
+def test_resolve_hint_bare_between_query_raises() -> None:
+    with pytest.raises(TypeError, match=r"Between needs two bounds"):
+        resolve_hint(Between, {int: 1})

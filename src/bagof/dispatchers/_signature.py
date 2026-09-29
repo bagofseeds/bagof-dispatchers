@@ -49,15 +49,24 @@ from .core import (
 )
 from .core._bounds import (
     _Lower,
-    bare_bound_message,
     between_bounds,
+    constraint_bound_message,
     empty_interval_message,
-    is_bare_bound,
+    endpoint_bound_message,
+    find_bound,
     is_between,
+    is_bound,
+    is_unbounded_form,
+    member_bound_message,
+    misplaced_bound_message,
+    slot_bound_message,
+    unbounded_form_message,
+    value_bound_message,
+    written_ends,
 )
 from .core._compat import _UNPACK_FORMS, UNION_TYPES, spellings
 from .core._exact import exact_target, is_exact
-from .core._hint import Hint, is_hint_form
+from .core._hint import is_hint_form
 from .core._introspect import _typing_spelling
 from .core._relation import (
     _is_subscripted_tuple,
@@ -65,7 +74,7 @@ from .core._relation import (
     _malformed_typeddict_reason,
     _TupleShape,
 )
-from .core._super import is_super, super_target
+from .core._super import _render_target as _render_hint
 
 __all__ = ["Parameter", "Signature", "Binding"]
 
@@ -548,8 +557,9 @@ class Signature:
             # is refused here, the same as one written outright.
             _reject_variadic_param(name, hint, self._fn)
             # A forward reference that resolved to a malformed `TypedDict`, to
-            # a bound outside `Type` or `Hint`, or to an empty interval, is
-            # refused here too, now that the name has become readable.
+            # a bound in a position where it cannot stand, or to an empty
+            # interval, is refused here too, now that the name has become
+            # readable.
             _reject_misplaced_bound(name, hint, self._fn)
             _reject_malformed_typeddict(name, hint, self._fn)
             new_params[name] = Parameter(
@@ -1421,66 +1431,111 @@ def _reject_variadic_param(
         )
 
 
-def _misplaced_bound_in(hint: tx.Any) -> tx.Optional[str]:
+# Where `_misplaced_bound_in` meets a hint: the hint of a value parameter, the
+# argument of `Type` or `Hint`, a union member or a `TypeVar` bound inside
+# such an argument, a hint a bound is written with, or (as `("slot", origin)`)
+# a type argument of the generic `origin`.
+_Where = tx.Union[str, tx.Tuple[str, tx.Any]]
+_CONCATENATE_FORMS = spellings("Concatenate")
+
+
+def _misplaced_bound_in(
+    hint: tx.Any, where: _Where = "value"
+) -> tx.Optional[str]:
     """Explain what is wrong with a bound that `hint` carries, if anything.
 
-    A `Super[C]` or a `Between[L, U]` is allowed only as the immediate
-    argument of a `Type` or a `Hint` form. This walks `hint` and reports
-    the first bound, or unsubscripted `Super`, `SuperType`, `SuperHint` or
-    `Between`, that stands anywhere else: on its own, as a union member,
-    inside a container's arguments, or as a `TypeVar`'s bound or
-    constraint. Inside `Type` or `Hint` the walk reads through each bound
-    to the hints it names, so that a bound nested inside one is reported
-    too, and it then re-checks each `Between` for emptiness, which a
-    bound written as a forward reference could only be checked for once
-    it resolved. The result is the message to raise, or `#!python None`
-    when there is nothing to report. A forward-reference string is
-    skipped, since it can only be checked once it resolves.
+    A `Super[C]` or a `Between[L, U]` can stand on a value parameter,
+    either as its whole hint, as a member of its union, or as the bound
+    of a `TypeVar` used there, and each bound it is written with must
+    then be a hint that a class can be compared against. It can also
+    stand as the whole argument of a `Type` or a `Hint` form, where any
+    hint can be a bound. Everywhere else it is refused, which covers a
+    union member or a `TypeVar` bound inside the argument of `Type` or
+    `Hint`, a bound nested inside another bound, a constraint of a
+    `TypeVar`, an element of a `Tuple`, the signature of a `Callable`, and
+    a type argument of any other generic. An unsubscripted `Super`,
+    `SuperType`, `SuperHint` or `Between` is refused wherever it appears.
+
+    `where` says which of those positions `hint` stands in, and the walk
+    carries it down into the hints `hint` is made of. The result is the
+    message to raise for the first misplaced bound, or `#!python None`
+    when there is nothing to report. Each `Between` is also re-checked for
+    emptiness, which a bound written as a forward reference could only be
+    checked for once it resolved. A forward-reference string is skipped,
+    since it can only be checked once it resolves.
     """
     hint = normalise_hint(hint)
-    if is_bare_bound(hint):
-        return bare_bound_message(hint)
-    intervals: tx.Tuple[tx.Any, ...] = ()
+    if is_unbounded_form(hint):
+        return unbounded_form_message(hint)
+    if is_bound(hint):
+        return _misplaced_in_bound(hint, where)
+    member = "member" if where == "argument" else where
+    if is_exact(hint):
+        # `Exact` cannot hold a bound, any more than a bound can hold one.
+        return _first_misplaced((exact_target(hint),), "endpoint")
     if isinstance(hint, tx.TypeVar):
         bound = getattr(hint, "__bound__", None)
-        limits = getattr(hint, "__constraints__", ())
-        args = limits if bound is None else (bound,) + tuple(limits)
-    else:
-        args = get_args_uw(hint)
-        origin = get_origin_uw(hint)
-        if origin is type or is_hint_form(origin):
-            # The one place a bound may stand: read through it to the hints it
-            # names, so that only a bound nested inside those is reported.
-            intervals = tuple(arg for arg in args if is_between(arg))
-            args = tuple(
-                end for arg in args for end in _bound_ends(arg)
-            )
+        found = _first_misplaced(() if bound is None else (bound,), member)
+        if found is not None:
+            return found
+        # A `ParamSpec` passes for a `TypeVar` on Python 3.8, with neither
+        # a bound nor constraints.
+        constraints = getattr(hint, "__constraints__", ())
+        for constraint in constraints:
+            inner = find_bound(constraint)
+            if inner is not None:
+                return misplaced_bound_message(
+                    inner, constraint_bound_message
+                )
+        return _first_misplaced(constraints, member)
+    args = get_args_uw(hint)
+    origin = get_origin_uw(hint)
+    if origin in UNION_TYPES:
+        return _first_misplaced(args, member)
+    if origin is type or is_hint_form(origin):
+        return _first_misplaced(args, "argument")
+    if any(origin is form for form in _CONCATENATE_FORMS):
+        # A `Concatenate` prefix belongs to the `Callable` it is written in.
+        return _first_misplaced(args, where)
+    return _first_misplaced(args, ("slot", origin))
+
+
+def _misplaced_in_bound(bound: tx.Any, where: _Where) -> tx.Optional[str]:
+    """Explain what is wrong with the bound `bound`, met in `where`."""
+    if where == "member":
+        return member_bound_message(bound)
+    if where == "endpoint":
+        return endpoint_bound_message(bound)
+    if isinstance(where, tuple):
+        return slot_bound_message(bound, where[1])
+    if where == "value":
+        found = value_bound_message(bound)
+        if found is not None:
+            return found
+    found = _first_misplaced(written_ends(bound), "endpoint")
+    if found is None and is_between(bound):
+        found = empty_interval_message(*between_bounds(bound))
+    return found
+
+
+def _first_misplaced(
+    args: tx.Sequence[tx.Any], where: _Where
+) -> tx.Optional[str]:
+    """Return the first message [`_misplaced_bound_in`][] gives for `args`.
+
+    A `Callable`'s parameter list arrives as a plain list of hints, and
+    each of its items is walked in the same position. A forward-reference
+    string, and anything else that is not a hint, such as a `Literal`
+    value, is skipped.
+    """
     for arg in args:
-        # A `Callable`'s parameter list arrives as a plain list of hints.
         for item in arg if isinstance(arg, list) else (arg,):
             if isinstance(item, str) or not ishint(item):
                 continue
-            found = _misplaced_bound_in(item)
+            found = _misplaced_bound_in(item, where)
             if found is not None:
                 return found
-    for interval in intervals:
-        found = empty_interval_message(*between_bounds(interval))
-        if found is not None:
-            return found
     return None
-
-
-def _bound_ends(arg: tx.Any) -> tx.Tuple[tx.Any, ...]:
-    """Return the hints a `Type` or `Hint` argument names.
-
-    A `Between[L, U]` argument names its two bounds and a `Super[C]`
-    argument names `C`. Any other argument names only itself.
-    """
-    if is_between(arg):
-        return between_bounds(arg)
-    if is_super(arg):
-        return (super_target(arg),)
-    return (arg,)
 
 
 def _reject_misplaced_bound(
@@ -1491,16 +1546,17 @@ def _reject_misplaced_bound(
 ) -> None:
     """Refuse a parameter whose hint writes a bound where it cannot stand.
 
-    `Super[C]` and `Between[L, U]` describe a range of classes or hints,
-    so they are only valid as the argument of `Type` or `Hint`, where the
-    value passed is itself a class or a hint. Anywhere else a bound would
-    constrain a value from below, which cannot be checked, so
-    registration refuses it with a message naming the parameter and the
-    spelling to write instead. An interval that turns out to be empty
-    once its forward references resolve is refused the same way. The
-    relation refuses the same hints with the same message, which covers
-    callers that never register a method. `subject` overrides how the
-    parameter is named, as for [`_reject_malformed_typeddict`][].
+    `Super[C]` and `Between[L, U]` describe a range of classes, read
+    against the class of a value on a value parameter and against the
+    class or hint passed inside `Type` or `Hint`. [`_misplaced_bound_in`][]
+    lists the positions where a bound cannot be read that way, and
+    registration refuses a bound in any of them with a message naming the
+    parameter and the spelling to write instead. An interval that turns
+    out to be empty once its forward references resolve is refused the
+    same way. The relation refuses the same hints with the same messages,
+    which covers callers that never register a method. `subject`
+    overrides how the parameter is named, as for
+    [`_reject_malformed_typeddict`][].
     """
     message = _misplaced_bound_in(hint)
     if message is not None:
@@ -1704,61 +1760,6 @@ def _hint_for(
 
 
 # --- rendering ---------------------------------------------------------
-
-
-def _render_hint(hint: tx.Any) -> str:
-    """Render a short, readable spelling of a hint for a signature's `repr`."""
-    if isinstance(hint, str):
-        return hint
-    forward = getattr(hint, "__forward_arg__", None)
-    if forward is not None:
-        return forward
-    if hint is tx.Any:
-        return "Any"
-    # An `Exact[C]` reads back as `Exact[C]`, not its `Annotated` spelling.
-    if is_exact(hint):
-        return f"Exact[{_render_hint(exact_target(hint))}]"
-    if is_super(hint):
-        return f"Super[{_render_hint(super_target(hint))}]"
-    if is_between(hint):
-        lower, upper = between_bounds(hint)
-        return f"Between[{_render_hint(lower)}, {_render_hint(upper)}]"
-    # `Type[Exact[C]]` and `Hint[Exact[C]]` render their argument recursively,
-    # so a nested `Exact` reads as `Exact[C]`, not `Annotated[C, EXACT]`.
-    origin = get_origin_uw(hint)
-    args = get_args_uw(hint)
-    if origin is type and args:
-        return f"Type[{_render_hint(args[0])}]"
-    if origin is Hint and args:
-        return f"Hint[{_render_hint(args[0])}]"
-    if origin in UNION_TYPES and args:
-        return _render_union(hint, args)
-    if isinstance(hint, type):
-        return hint.__name__
-    text = str(hint)
-    return text.replace("typing_extensions.", "").replace("typing.", "")
-
-
-def _render_union(hint: tx.Any, args: tx.Tuple[tx.Any, ...]) -> str:
-    """Render a union with each member rendered by `_render_hint`.
-
-    The spelling follows the one the running interpreter gives the union,
-    whether `Optional[X]`, `Union[X, Y]` or `X | Y`, so that only the
-    members change: a `Super[C]`, `Between[L, U]` or `Exact[C]` among
-    them reads back as such rather than as its `Annotated` spelling.
-    """
-    text = str(hint).replace("typing_extensions.", "").replace("typing.", "")
-    members = [_render_hint(arg) for arg in args]
-    # Python 3.14 prints every union as `X | Y`, so the two spellings below
-    # are only produced, and only exercised by the tests, on earlier versions.
-    if text.startswith("Optional["):  # pragma: no cover  -- Python < 3.14
-        (member,) = [
-            m for arg, m in zip(args, members) if arg is not type(None)
-        ]
-        return f"Optional[{member}]"
-    if text.startswith("Union["):  # pragma: no cover  -- Python < 3.14
-        return f"Union[{', '.join(members)}]"
-    return " | ".join(members)
 
 
 def _render_parameters(

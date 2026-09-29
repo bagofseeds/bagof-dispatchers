@@ -92,13 +92,25 @@ else:
                     f"Exact[...] takes a type hint, got {item!r}."
                 )
             # Imported here because `_super` and `_bounds` import this module.
-            from ._bounds import is_between, nesting_message
+            from ._bounds import (
+                endpoint_bound_message,
+                find_bound,
+                is_between,
+                misplaced_bound_message,
+                nesting_message,
+            )
             from ._super import combination_message, is_super
 
             if is_super(item):
                 raise TypeError(combination_message("Exact", item))
             if is_between(item):
                 raise TypeError(nesting_message("Exact", item))
+            found = find_bound(item)
+            if found is not None:
+                # A bound reached through a union or a `TypeVar`.
+                raise TypeError(
+                    misplaced_bound_message(found, endpoint_bound_message)
+                )
             try:
                 return tx.Annotated[item, EXACT]
             except TypeError:
