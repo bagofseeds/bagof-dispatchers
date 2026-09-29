@@ -461,7 +461,7 @@ def test_concurrent_register_and_dispatch_never_tears() -> None:
     types = [type(f"T{index}", (), {}) for index in range(40)]
 
     stop = threading.Event()
-    errors = []  # type: typing.List[BaseException]
+    errors: typing.List[BaseException] = []
 
     def dispatcher() -> None:
         while not stop.is_set():

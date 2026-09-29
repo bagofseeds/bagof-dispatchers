@@ -877,7 +877,7 @@ def test_a_marker_is_looked_up_where_it_is_written() -> None:
 
 def test_a_protocol_written_as_text() -> None:
     """A protocol's own `ClassVar` members are read the same way."""
-    namespace = {}  # type: tx.Dict[str, tx.Any]
+    namespace: tx.Dict[str, tx.Any] = {}
     exec(  # noqa: S102 -- a fixed source, for the future import
         "from __future__ import annotations\n"
         "import typing_extensions as tx\n"
@@ -947,7 +947,7 @@ def test_a_metaclass_annotation_declares_for_its_classes(
 def test_an_annotation_that_cannot_be_evaluated_declares_nothing(
     p: types.SimpleNamespace,
 ) -> None:
-    namespace = {}  # type: tx.Dict[str, tx.Any]
+    namespace: tx.Dict[str, tx.Any] = {}
     exec(  # noqa: S102 -- raises only when the annotation is evaluated
         "class Broken:\n    name: 1 / 0\n", namespace
     )

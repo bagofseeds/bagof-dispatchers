@@ -106,7 +106,7 @@ def test_markdown_examples(path: Path) -> None:
 
 def _docstring_sources() -> tx.List[tx.Tuple[str, str]]:
     """`(name, docstring)` for every public object and method with examples."""
-    sources = []  # type: tx.List[tx.Tuple[str, str]]
+    sources: tx.List[tx.Tuple[str, str]] = []
     for name in pkg.__all__:
         obj = getattr(pkg, name)
         doc = inspect.getdoc(obj)

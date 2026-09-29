@@ -67,8 +67,9 @@ if tx.TYPE_CHECKING:
     # so `Super[C]` is spelled `Union[C, Any]` instead: the type variable is
     # used, which a checker requires of a generic alias, and the `Any` member
     # makes `Type[Super[C]]` accept any class object. The aliases are declared
-    # with a PEP 613 annotation rather than a `# type:` comment, which pyright
-    # does not read; this branch never runs, so the annotation is safe on 3.8.
+    # with a PEP 613 annotation rather than a PEP 484 type comment, which
+    # pyright does not read; this branch never runs, so the annotation is safe
+    # on 3.8.
     _T = tx.TypeVar("_T")
     Super: tx.TypeAlias = tx.Union[_T, tx.Any]
     SuperType: tx.TypeAlias = tx.Type[Super[_T]]

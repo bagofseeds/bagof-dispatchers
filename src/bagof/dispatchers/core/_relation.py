@@ -234,7 +234,7 @@ def _same_hint(a: tx.Any, b: tx.Any) -> bool:
     return ca is cb or ca == cb
 
 
-_WARNED_UNKNOWN = set()  # type: set
+_WARNED_UNKNOWN: set = set()
 
 
 def _warn_key(hint: tx.Any) -> tx.Any:
@@ -659,7 +659,7 @@ def _read_protocol_members(cls: type) -> tx.Optional[_ProtocolMembers]:
     data = [name for name in names if not callable(getattr(cls, name, None))]
     if not data:
         return None
-    kinds = {}  # type: tx.Dict[str, int]
+    kinds: tx.Dict[str, int] = {}
     for base in reversed(cls.__mro__):
         # Nearest last, so a sub-protocol's annotation wins over its base's.
         kinds.update(_own_annotation_kinds(base))
@@ -773,7 +773,7 @@ def _holds_class_variables(cls: type, names: tx.Sequence[str]) -> bool:
 
 
 # The namespace of an instance that has none of its own.
-_NO_ATTRIBUTES = frozenset()  # type: tx.FrozenSet[str]
+_NO_ATTRIBUTES: tx.FrozenSet[str] = frozenset()
 
 
 def _found_statically(obj: tx.Any, name: str) -> bool:
@@ -815,7 +815,7 @@ class _ClassReading(tx.NamedTuple):
 # `_class_reading`'s memo. Its keys are the types of the values dispatched
 # on, so they are held weakly: a class made and dropped at runtime is not
 # kept alive for the life of the process.
-_CLASS_READINGS = weakref.WeakKeyDictionary()  # type: weakref.WeakKeyDictionary
+_CLASS_READINGS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def _class_reading(cls: type) -> _ClassReading:
@@ -874,8 +874,8 @@ def _read_class(cls: type, metaclass_lookup: int) -> _ClassReading:
     checker would reject that kind of override, so a class always sits
     below whatever its bases sit below.
     """
-    instance_variables = set()  # type: tx.Set[str]
-    class_variables = set()  # type: tx.Set[str]
+    instance_variables: tx.Set[str] = set()
+    class_variables: tx.Set[str] = set()
     for base in cls.__mro__:
         kinds = _own_annotation_kinds(base)
         for name, kind in kinds.items():
@@ -1051,7 +1051,7 @@ def _look_up_marker(parts: tx.Sequence[str], cls: tx.Any) -> tx.Any:
     found, or when a name before the last one turns out not to be a
     module.
     """
-    namespaces = []  # type: tx.List[tx.Mapping[str, tx.Any]]
+    namespaces: tx.List[tx.Mapping[str, tx.Any]] = []
     if isinstance(cls, type):
         namespaces.append(cls.__dict__)
         module = sys.modules.get(cls.__dict__.get("__module__"))
@@ -1330,7 +1330,7 @@ def _typeddict_bases(cls: tx.Any) -> tx.Tuple[tx.Any, ...]:
     origin `Base`, the same way [`_typeddict_extra_policy`][] reaches a
     generic base.
     """
-    bases = ()  # type: tx.Tuple[tx.Any, ...]
+    bases: tx.Tuple[tx.Any, ...] = ()
     for base in getattr(cls, "__orig_bases__", ()):
         if is_typeddict_marker(base):
             continue
@@ -1446,7 +1446,7 @@ def _typeddict_chain(td: tx.Any) -> tx.List[tx.Any]:
     and each class is visited only once, so a diamond in the inheritance
     is never walked twice.
     """
-    chain = []  # type: tx.List[tx.Any]
+    chain: tx.List[tx.Any] = []
     stack = [td]
     while stack:
         current = stack.pop(0)
@@ -1622,8 +1622,8 @@ and raising it lets the cache grow again; it is a module attribute so that
 a caller can tune it.
 """
 
-_RELATION_CACHE = {}  # type: tx.Dict[tx.Any, bool]
-_RELATION_TOKEN = None  # type: tx.Any
+_RELATION_CACHE: tx.Dict[tx.Any, bool] = {}
+_RELATION_TOKEN: tx.Any = None
 _RELATION_LOCK = threading.Lock()
 _MISS = object()
 
@@ -2294,7 +2294,7 @@ def _filled_bases(
     ):
         return None
     filled_in = dict(zip(params, args))
-    bases = ()  # type: tx.Tuple[tx.Any, ...]
+    bases: tx.Tuple[tx.Any, ...] = ()
     for base in _own_bases(cls):
         origin = tx.get_origin(base)
         if origin is None:
@@ -2367,8 +2367,8 @@ def _as_base_args(
     caller that needs all of them has to walk them all.
     """
     pending = [hint]
-    walked = {}  # type: tx.Dict[tx.Tuple[int, ...], tx.Any]
-    given = {}  # type: tx.Dict[tx.Tuple[int, ...], tx.Any]
+    walked: tx.Dict[tx.Tuple[int, ...], tx.Any] = {}
+    given: tx.Dict[tx.Tuple[int, ...], tx.Any] = {}
     while pending:
         node = pending.pop()
         cls = safe_get_origin(node)
@@ -2475,8 +2475,8 @@ def _is_fully_declared(args: tx.Optional[tx.Sequence[tx.Any]]) -> bool:
 # collected -- on CPython, before that `id` can be given to another object,
 # since the callback runs as the class is freed. That guarantee is
 # CPython's: PyPy defers weakref callbacks, so there it does not hold.
-_RECORDERS = {}  # type: tx.Dict[int, bool]
-_RECORDER_REFS = {}  # type: tx.Dict[int, weakref.ref]
+_RECORDERS: tx.Dict[int, bool] = {}
+_RECORDER_REFS: tx.Dict[int, weakref.ref] = {}
 
 
 def _may_record_parametrisation(cls: type) -> bool:
@@ -3115,10 +3115,10 @@ def _tuple_shape(args: tx.Tuple[tx.Any, ...]) -> _TupleShape:
         # The 3.8-3.10 `Tuple[()]` phantom: a single empty-tuple element that
         # means "no elements", not a one-element tuple whose element is `()`.
         args = ()
-    prefix = []  # type: tx.List[tx.Any]
-    suffix = []  # type: tx.List[tx.Any]
-    rep = None  # type: tx.Any
-    var = None  # type: tx.Any
+    prefix: tx.List[tx.Any] = []
+    suffix: tx.List[tx.Any] = []
+    rep: tx.Any = None
+    var: tx.Any = None
     open_seen = False
     index = 0
     while index < len(args):

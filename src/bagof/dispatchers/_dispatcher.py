@@ -212,7 +212,7 @@ class Dispatcher:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._functions = {}  # type: tx.Dict[tx.Any, Function]
+        self._functions: tx.Dict[tx.Any, Function] = {}
         self._view = _Functions(self)
 
     @property

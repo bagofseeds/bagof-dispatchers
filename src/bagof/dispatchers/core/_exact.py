@@ -38,7 +38,7 @@ if tx.TYPE_CHECKING:
     # `Annotated` -- `Exact = Annotated` would make `Exact[int]` a one-argument
     # `Annotated[int]`, which a checker rejects.
     _T = tx.TypeVar("_T")
-    Exact = tx.Annotated[_T, EXACT]  # type: tx.TypeAlias
+    Exact: tx.TypeAlias = tx.Annotated[_T, EXACT]
 else:
 
     class Exact:

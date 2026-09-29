@@ -119,8 +119,8 @@ class _Cache:
     def __init__(self, methods: tx.Tuple[Method, ...], token: tx.Any) -> None:
         self.methods = methods
         self.token = token
-        self.shape_plans = {}  # type: tx.Dict[tx.Any, _Plan]
-        self.call_cache = {}  # type: tx.Dict[tx.Any, Method]
+        self.shape_plans: tx.Dict[tx.Any, _Plan] = {}
+        self.call_cache: tx.Dict[tx.Any, Method] = {}
 
 
 class _Plan:
@@ -229,7 +229,7 @@ class Function:
         # and `ishintstance` can reach a user `__instancecheck__` /
         # `__subclasshook__` that dispatches back into this same function.
         self._lock = threading.RLock()
-        self._methods = ()  # type: tx.Tuple[Method, ...]
+        self._methods: tx.Tuple[Method, ...] = ()
         self._cache = _Cache((), _NO_TOKEN)
 
     # -- public data ----------------------------------------------------
@@ -364,7 +364,7 @@ class Function:
         function = cls(name=name)
         for key, impl in mapping.items():
             if isinstance(key, Signature):
-                signature = key  # type: Signature
+                signature: Signature = key
             elif isinstance(key, tuple):
                 signature = Signature.from_hints(*key)
             else:
@@ -613,7 +613,7 @@ class Function:
             ```
         """
         methods = self._methods
-        pairs = []  # type: tx.List[tx.Tuple[Method, Method]]
+        pairs: tx.List[tx.Tuple[Method, Method]] = []
         for i in range(len(methods)):
             for j in range(i + 1, len(methods)):
                 first, second = methods[i], methods[j]
@@ -677,7 +677,7 @@ class Function:
         count, names = shape
         placeholder_args = (_PLACEHOLDER,) * count
         placeholder_kwargs = {name: _PLACEHOLDER for name in names}
-        bindable = []  # type: tx.List[tx.Tuple[Method, tx.Any, tx.Dict]]
+        bindable: tx.List[tx.Tuple[Method, tx.Any, tx.Dict]] = []
         for method in cache.methods:
             method.signature._settle()
             binding = method.signature.bind(
@@ -687,15 +687,15 @@ class Function:
                 continue
             landed = _landed_hints(method.signature, binding)
             bindable.append((method, binding, landed))
-        le_matrix = {}  # type: tx.Dict[tx.Tuple[int, int], bool]
+        le_matrix: tx.Dict[tx.Tuple[int, int], bool] = {}
         for i, (first, _, _) in enumerate(bindable):
             for j, (second, _, _) in enumerate(bindable):
                 le_matrix[(i, j)] = first.signature.le(
                     second.signature, shape
                 )
-        value_dependent = set()  # type: tx.Set[tx.Any]
-        declared = set()  # type: tx.Set[tx.Any]
-        members = {}  # type: tx.Dict[tx.Any, tx.Set[str]]
+        value_dependent: tx.Set[tx.Any] = set()
+        declared: tx.Set[tx.Any] = set()
+        members: tx.Dict[tx.Any, tx.Set[str]] = {}
         for _, _, landed in bindable:
             for key, hint in landed.items():
                 if is_value_dependent(hint):
@@ -927,7 +927,7 @@ class Function:
         methods: tx.Tuple[Method, ...],
     ) -> tx.Optional[str]:
         """Build a did-you-mean line for a keyword no method declares."""
-        names = set()  # type: tx.Set[str]
+        names: tx.Set[str] = set()
         takes_varkw = False
         for method in methods:
             names.update(method.signature.dispatched_names)
@@ -982,7 +982,7 @@ class Function:
         others.
         """
         prototype = plan.bindable[maximal[0]][1]
-        parts = []  # type: tx.List[str]
+        parts: tx.List[str] = []
         for index, value in enumerate(args):
             name = prototype.slots.get(index)
             label = name if isinstance(name, str) else f"a{index}"
@@ -1132,7 +1132,7 @@ def _shapes_for_pair(
     surface, rather than forcing its hints to resolve during
     registration.
     """
-    shapes = set()  # type: tx.Set[tx.Any]
+    shapes: tx.Set[tx.Any] = set()
     for method in (first, second):
         try:
             shapes.add(_full_shape(method.signature))
@@ -1237,7 +1237,7 @@ def _full_shape(signature: Signature) -> tx.Tuple[int, tx.Tuple[str, ...]]:
     """
     signature._settle()
     positional = 0
-    keyword_only = []  # type: tx.List[str]
+    keyword_only: tx.List[str] = []
     for name, parameter in signature.parameters.items():
         if parameter.kind is Parameter.KEYWORD_ONLY:
             keyword_only.append(name)
@@ -1250,7 +1250,7 @@ def _landed_hints(
     signature: Signature, binding: tx.Any
 ) -> tx.Dict[tx.Any, tx.Any]:
     """Map each bound argument's key to the parameter hint it landed in."""
-    result = {}  # type: tx.Dict[tx.Any, tx.Any]
+    result: tx.Dict[tx.Any, tx.Any] = {}
     for key, slot in binding.slots.items():
         # A `*args` / `**kwargs` slot is only ever assigned when the signature
         # has that catch-all, so its hint is set (`Any` when unannotated).
@@ -1291,7 +1291,7 @@ def _typevar_partition(
     `#!python *args: T`, per RFC 0001 §3. Its own joint solving happens
     in applicability, not here.
     """
-    labels = {}  # type: tx.Dict[tx.Any, tx.Any]
+    labels: tx.Dict[tx.Any, tx.Any] = {}
     for key, hint in signature._iter_arguments(binding):
         if _is_plain_typevar(hint):
             # Identity, not the variable itself: two distinct `TypeVar`s that
@@ -1400,7 +1400,7 @@ def _call_key(
     catches it and leaves that call uncached.
     """
     dependent = plan.dependent
-    parts = [len(args)]  # type: tx.List[tx.Any]
+    parts: tx.List[tx.Any] = [len(args)]
     for index, value in enumerate(args):
         if index not in dependent:
             parts.append(type(value))
@@ -1445,7 +1445,7 @@ def _dependent_part(
     [`_call_key`][] itself builds the simpler, single-entry part for an
     argument that reads only one of these things.
     """
-    part = (type(value),)  # type: tx.Tuple[tx.Any, ...]
+    part: tx.Tuple[tx.Any, ...] = (type(value),)
     if key in plan.value_dependent:
         part += (_KeyValue(value),)
     if key in plan.declared:
@@ -1610,7 +1610,7 @@ def _analyse_candidate(
             signature, args, kwargs
         ))
     landed = _landed_hints(signature, binding)
-    highlight = set()  # type: tx.Set[tx.Any]
+    highlight: tx.Set[tx.Any] = set()
     matched = 0
     for key, hint in landed.items():
         argument = args[key] if isinstance(key, int) else kwargs[key]
@@ -1695,8 +1695,8 @@ def _split_hint_args(
     Anything besides a tuple or a dict, or two arguments of the same
     kind, is a mistake on the caller's part and raises.
     """
-    hints = ()  # type: tx.Tuple[tx.Any, ...]
-    named = {}  # type: tx.Dict[str, tx.Any]
+    hints: tx.Tuple[tx.Any, ...] = ()
+    named: tx.Dict[str, tx.Any] = {}
     seen_tuple = False
     seen_dict = False
     for arg in args:
@@ -1756,7 +1756,7 @@ def _overlay(
         )
     varargs_name = base._varargs_name
     varkw_name = base._varkw_name
-    replacements = {}  # type: tx.Dict[str, tx.Any]
+    replacements: tx.Dict[str, tx.Any] = {}
     varargs_hint = base.varargs  # the *args element hint, or None
     varkw_hint = base.varkw  # the **kwargs value hint, or None
     for parameter, hint in zip(overridable, hints):
@@ -1787,7 +1787,7 @@ def _overlay(
                 f"{getattr(fn, '__name__', fn)} has no parameter {name!r} to "
                 f"register a hint for."
             )
-    new_parameters = {}  # type: tx.Dict[str, Parameter]
+    new_parameters: tx.Dict[str, Parameter] = {}
     for parameter in parameters:
         hint = replacements.get(parameter.name, parameter.hint)
         new_parameters[parameter.name] = Parameter(
