@@ -154,7 +154,7 @@ The spellings available at each level are these:
 | On a value parameter       | `C`                   | an instance of `C` or of a subclass                 |
 | On a value parameter       | `Exact[C]`            | an instance whose type is exactly `C`               |
 | On a value parameter       | `Super[C]`            | an instance whose type is `C` or a class above it   |
-| On a value parameter       | `Between[L, U]`       | an instance whose type lies from `L` up to `U`      |
+| On a value parameter       | `Between[L, U]`       | an instance whose type lies between `L` and `U`     |
 | On a `Type[...]` parameter | `Type[C]`             | the class `C` or a subclass of it                   |
 | On a `Type[...]` parameter | `Type[Exact[C]]`      | the class `C` alone                                 |
 | On a `Type[...]` parameter | `Type[Super[C]]`      | the class `C` or a class it derives from            |

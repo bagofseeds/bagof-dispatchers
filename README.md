@@ -40,9 +40,9 @@ walks through registering overloads in more detail.
   inside `Type[...]` or `Hint[...]` it accepts the class or hint `C` and
   everything above it, so `Type[Super[Dog]]` accepts the class `Dog` and
   each class it derives from. `Between[L, U]` bounds from both sides at
-  once, so `Between[Dog, Animal]` accepts a value whose class lies from
-  `Dog` up to `Animal`, and `Type[Between[Dog, Animal]]` accepts those
-  classes themselves. See [Exact types][exact-types].
+  once, so `Between[Dog, Animal]` accepts a value whose class lies
+  between `Dog` and `Animal`, both included, and
+  `Type[Between[Dog, Animal]]` accepts those classes themselves. See [Exact types][exact-types].
 - A call that matches no overload, or that matches two equally specific
   overloads, is always a clear error rather than a silent guess.
   `NoMethodError` is a `TypeError` carrying the closest candidates, and

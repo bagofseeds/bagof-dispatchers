@@ -1,4 +1,5 @@
-"""Intervals of classes or hints: a value's class, or a class or a hint.
+"""Intervals of classes or hints, read against a value's class or against
+a class or hint passed in.
 
 A `Super[C]` or a `Between[L, U]` describes a closed interval between a
 lower and an upper bound. On a value parameter the interval holds the
@@ -93,23 +94,6 @@ def _is_forward(hint: tx.Any) -> bool:
     return any(_is_forward(arg) for arg in get_args_uw(hint))
 
 
-def _render_marked(hint: tx.Any) -> str:
-    """Spell a hint the way an error message names it, markers included.
-
-    An `Exact`, `Super` or `Between` hint is named by the spelling it was
-    written with rather than by its `Annotated` form, and any other hint
-    as [`_render_target`][] spells it.
-    """
-    if is_exact(hint):
-        return f"Exact[{_render_target(exact_target(hint))}]"
-    if is_super(hint):
-        return f"Super[{_render_target(super_target(hint))}]"
-    if is_between(hint):
-        lower, upper = between_bounds(hint)
-        return f"Between[{_render_target(lower)}, {_render_target(upper)}]"
-    return _render_target(hint)
-
-
 def nesting_message(outer: str, inner: tx.Any) -> str:
     """Compose the error for an `Exact` or a `Super` given a `Between`.
 
@@ -119,7 +103,7 @@ def nesting_message(outer: str, inner: tx.Any) -> str:
     and names the spelling to use for each.
     """
     return (
-        f"{outer}[...] cannot take {_render_marked(inner)}: Exact, Super "
+        f"{outer}[...] cannot take {_render_target(inner)}: Exact, Super "
         "and Between cannot be nested, because each of them already "
         "describes the whole hint at its position. " + _SPELLINGS
     )
@@ -300,7 +284,7 @@ else:
                     or end is Exact
                 ):
                     raise TypeError(
-                        f"Between[...] cannot take {_render_marked(end)} as "
+                        f"Between[...] cannot take {_render_target(end)} as "
                         "a bound: a bound is a plain hint, and Exact, Super "
                         "and Between cannot be nested. Write Between[L, U] "
                         "with plain L and U. " + _SPELLINGS
@@ -525,7 +509,7 @@ def member_bound_message(bound: tx.Any) -> str:
     """Compose the error for a bound reached through a union member or a
     `TypeVar` inside the argument of `Type` or `Hint`.
     """
-    shown = _render_marked(bound)
+    shown = _render_target(bound)
     return (
         f"{shown} cannot be a member of a union, or the bound of a TypeVar, "
         "inside the argument of Type[...] or Hint[...]: a bound there has "
@@ -540,7 +524,7 @@ def member_bound_message(bound: tx.Any) -> str:
 def endpoint_bound_message(bound: tx.Any) -> str:
     """Compose the error for a bound found inside the bound of another."""
     return (
-        f"{_render_marked(bound)} cannot appear inside the bound of another "
+        f"{_render_target(bound)} cannot appear inside the bound of another "
         "Super or Between, even through a union or a TypeVar: Exact, Super "
         "and Between cannot be nested. Write the outer bound with plain "
         "hints."
@@ -549,7 +533,7 @@ def endpoint_bound_message(bound: tx.Any) -> str:
 
 def constraint_bound_message(bound: tx.Any) -> str:
     """Compose the error for a bound written as a `TypeVar` constraint."""
-    shown = _render_marked(bound)
+    shown = _render_target(bound)
     return (
         f"{shown} cannot be a constraint of a TypeVar: a constrained "
         "variable is solved to the one constraint an argument's class is "
@@ -565,7 +549,7 @@ def argument_bound_message(bound: tx.Any, origin: tx.Any) -> str:
     """
     name = getattr(origin, "__name__", None) or _render_target(origin)
     return (
-        f"{_render_marked(bound)} is not supported as a type argument of "
+        f"{_render_target(bound)} is not supported as a type argument of "
         f"{name}[...]: a bound can stand on a value parameter, or as the "
         "argument of Type[...] or Hint[...], but not inside a generic's "
         "type arguments. Write a plain type argument instead."
@@ -575,7 +559,7 @@ def argument_bound_message(bound: tx.Any, origin: tx.Any) -> str:
 def tuple_bound_message(bound: tx.Any) -> str:
     """Compose the error for a bound written as an element of `Tuple`."""
     return (
-        f"{_render_marked(bound)} cannot be an element of Tuple[...]: a "
+        f"{_render_target(bound)} cannot be an element of Tuple[...]: a "
         "tuple element is covariant by the form itself, so a bound adds "
         "nothing that a plain element hint cannot say. Write a plain "
         "element hint instead."
@@ -587,7 +571,7 @@ def callable_bound_message(bound: tx.Any) -> str:
     `Callable`.
     """
     return (
-        f"{_render_marked(bound)} cannot be a parameter or the return type "
+        f"{_render_target(bound)} cannot be a parameter or the return type "
         "of Callable[...]: Callable parameters are contravariant and its "
         "return type is covariant by the form itself, so a bound adds "
         "nothing that a plain hint cannot say. Write a plain hint instead."
@@ -656,7 +640,7 @@ def value_bound_message(hint: tx.Any) -> tx.Optional[str]:
     for end in ends:
         if _is_forward(end) or is_class_hint(end):
             continue
-        shown, shown_end = _render_marked(hint), _render_target(end)
+        shown, shown_end = _render_target(hint), _render_target(end)
         advice = (
             "Inside Type[...] or Hint[...], where the value passed is itself "
             "a class or a hint, any hint can be a bound."

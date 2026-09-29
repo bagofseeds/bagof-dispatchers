@@ -243,7 +243,7 @@ def test_a_nested_forward_reference_lower_bound_is_refused(
     # Refused as a quoted lower bound, not reported as an empty interval.
     # How `Optional` is spelled differs between Python versions.
     shown = _render_target(lower)
-    assert "ForwardRef('Later')" in shown
+    assert "Later" in shown
     with pytest.raises(TypeError) as info:
         Between[lower, object]
     assert str(info.value) == (
