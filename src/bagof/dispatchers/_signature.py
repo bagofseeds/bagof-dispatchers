@@ -1712,12 +1712,14 @@ def _render_union(hint: tx.Any, args: tx.Tuple[tx.Any, ...]) -> str:
     """
     text = str(hint).replace("typing_extensions.", "").replace("typing.", "")
     members = [_render_hint(arg) for arg in args]
-    if text.startswith("Optional["):
+    # Python 3.14 prints every union as `X | Y`, so the two spellings below
+    # are only produced, and only exercised by the tests, on earlier versions.
+    if text.startswith("Optional["):  # pragma: no cover  -- Python < 3.14
         (member,) = [
             m for arg, m in zip(args, members) if arg is not type(None)
         ]
         return f"Optional[{member}]"
-    if text.startswith("Union["):
+    if text.startswith("Union["):  # pragma: no cover  -- Python < 3.14
         return f"Union[{', '.join(members)}]"
     return " | ".join(members)
 
