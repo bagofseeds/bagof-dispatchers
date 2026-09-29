@@ -76,8 +76,9 @@ ambiguous
 Registering both overloads is legitimate: a plain list declares no type
 arguments of its own, so `List[int]` and `List[bool]` genuinely both apply
 to it. A value that does declare its type arguments, in contrast, picks
-between them, as the next section shows. Dispatch therefore does not report
-the ambiguity at registration; it surfaces only at the call, where giving
+between them, as the next section shows. Because the tie depends on the
+value, [`ambiguities()`][bagof.dispatchers.Function.ambiguities] does not
+list the pair, and the ambiguity surfaces only at the call, where giving
 one overload a higher `priority` (`@handle.register(priority=1)`) resolves
 it.
 
@@ -295,9 +296,9 @@ wildcards and Julia's type bounds read nested bounds the same way.
 Two ranges that overlap, without either lying inside the other, make their
 overloads ambiguous for a value that declares a type in both.
 `List[Between[Never, numbers.Integral]]` and `List[Super[int]]` both serve a
-list declared to hold `int` or `numbers.Integral`, so registering the second
-of them warns about the ambiguity, and a `priority` on either settles the
-calls they share.
+list declared to hold `int` or `numbers.Integral`, so a call with such a list
+is ambiguous when overloads are registered for both. A `priority` on either
+overload settles the calls they share.
 
 A bound on a value parameter and a bound in a type argument ask different
 questions. `Super[list]` on a value parameter asks about the value's own

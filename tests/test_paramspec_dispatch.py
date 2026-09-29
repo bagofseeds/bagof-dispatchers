@@ -37,11 +37,9 @@ def _g2(x, y):  # noqa: ANN001, ANN202
     return 0
 
 
-def _quiet(function, *fns):  # noqa: ANN001, ANN002, ANN202
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        for fn in fns:
-            function.register(fn)
+def _register_all(function, *fns):  # noqa: ANN001, ANN002, ANN202
+    for fn in fns:
+        function.register(fn)
 
 
 # --- case 1: fixed / concat / open form a chain ------------------------
@@ -70,8 +68,8 @@ def _open(fn: C[P, int]) -> str:
 )
 def test_fixed_concat_open_chain_is_unambiguous(order: tx.Any) -> None:
     f = Function("f")
-    # No RuntimeWarning in any registration order, and no listed ambiguity.
-    _quiet(f, *order)
+    # No listed ambiguity in any registration order.
+    _register_all(f, *order)
     assert f.ambiguities() == []
     # The value level is shallow: every callable matches all three, so the
     # most specific (fixed) always wins, whatever the argument's real arity.
@@ -82,14 +80,14 @@ def test_fixed_concat_open_chain_is_unambiguous(order: tx.Any) -> None:
 
 def test_dropping_fixed_falls_to_concat() -> None:
     f = Function("f")
-    _quiet(f, _concat, _open)
+    _register_all(f, _concat, _open)
     assert f.ambiguities() == []
     assert f(_g) == "concat"
 
 
 def test_dropping_concat_falls_to_open() -> None:
     f = Function("f")
-    _quiet(f, _open)
+    _register_all(f, _open)
     assert f(_g) == "open"
 
 
@@ -105,12 +103,12 @@ def test_int_prefix_beats_bool_prefix() -> None:
     def b(fn: C[Concat[bool, P], int]) -> str:
         return "bool"
 
-    _quiet(f, a, b)
+    _register_all(f, a, b)
     # `Concatenate[int, P]` is the more specific (contravariant prefix).
     assert f(_g) == "int"
 
 
-def test_incomparable_prefixes_are_ambiguous_but_not_warned() -> None:
+def test_incomparable_prefixes_are_ambiguous_but_not_listed() -> None:
     f = Function("f")
 
     def a(fn: C[Concat[int, P], int]) -> str:
@@ -119,8 +117,8 @@ def test_incomparable_prefixes_are_ambiguous_but_not_warned() -> None:
     def b(fn: C[Concat[str, Q], int]) -> str:
         return "str"
 
-    # Incomparable open prefixes: no registration warning ...
-    _quiet(f, a, b)
+    # Incomparable open prefixes are not listed by the audit ...
+    _register_all(f, a, b)
     assert f.ambiguities() == []
     # ... but a value call matching both has no most specific method.
     with pytest.raises(AmbiguousMethodError):
@@ -136,7 +134,7 @@ def test_longer_prefix_beats_shorter() -> None:
     def b(fn: C[Concat[int, Q], int]) -> str:
         return "short"
 
-    _quiet(f, a, b)
+    _register_all(f, a, b)
     assert f(_g) == "long"
 
 
@@ -152,7 +150,7 @@ def test_paramspec_args_kwargs_degrade_and_bind() -> None:
     def fixed_m(fn: C[[int], int], x: int) -> str:
         return "fixed"
 
-    _quiet(f, open_m, fixed_m)
+    _register_all(f, open_m, fixed_m)
     # `*args: P.args` reads as an `Any` tail -- it neither groups nor crashes.
     assert f.methods[0].signature.varargs is tx.Any
     # `f(g, 1)`: both bind; the fixed method is more specific at both slots.
@@ -305,13 +303,14 @@ def test_distinct_paramspecs_do_not_replace() -> None:
     f.register(a)
     # `Callable[P, int]` and `Callable[Q, int]` are spelled differently, so
     # the second is a *new* method, not a replacement. The two are equivalent
-    # (both the top), so they are ambiguous -- but that is an ambiguity
-    # warning, never a replacement warning, and both methods are kept.
+    # (both the top), so they are ambiguous -- the audit lists the pair, no
+    # replacement warning is issued, and both methods are kept.
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         f.register(b)
     assert len(f.methods) == 2
     assert not any("replacing" in str(w.message) for w in caught)
+    assert len(f.ambiguities()) == 1
     assert not f.methods[0].signature.same_as(f.methods[1].signature)
 
 
@@ -331,10 +330,7 @@ def test_paramspec_does_not_group_in_the_specificity_tiebreak() -> None:
     def distinct(a: C[Q, int], b: C[P, str]) -> str:
         return "distinct"
 
-    _quiet_ambiguous = warnings.catch_warnings()
-    with _quiet_ambiguous:
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register(repeated)
-        f.register(distinct)
+    f.register(repeated)
+    f.register(distinct)
     with pytest.raises(AmbiguousMethodError):
         f.resolve(C[[int], int], C[[int], str])

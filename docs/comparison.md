@@ -116,7 +116,10 @@ There is no keyword to break such a tie deliberately, so the only recourse
 is to add a third, strictly more specific signature that covers the
 ambiguous case. `bagof.dispatchers` raises
 [`AmbiguousMethodError`][bagof.dispatchers.AmbiguousMethodError] at the call
-itself, and a `priority` keyword lets an overload win a tie on purpose; see
+itself, and a `priority` keyword lets an overload win a tie on purpose.
+Instead of warning at definition time,
+[`ambiguities()`][bagof.dispatchers.Function.ambiguities] lists the tied
+pairs on request, so that a test suite can check for them; see
 [When two overloads are equally specific](guide/ambiguous-overloads.md).
 
 `multipledispatch` also defaults to a single namespace shared by the whole

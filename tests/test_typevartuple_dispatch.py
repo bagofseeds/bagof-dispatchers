@@ -12,7 +12,6 @@ Every hint is spelled `tx.Unpack[Ts]`, never `*Ts` -- the star syntax is a
 """
 
 # stdlib
-import warnings
 
 # dependencies
 import pytest
@@ -31,11 +30,9 @@ Tv = tx.TypeVar("Tv")
 P = tx.ParamSpec("P")
 
 
-def _quiet(function, *fns):  # noqa: ANN001, ANN002, ANN202
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        for fn in fns:
-            function.register(fn)
+def _register_all(function, *fns):  # noqa: ANN001, ANN002, ANN202
+    for fn in fns:
+        function.register(fn)
 
 
 # --- case 1: fixed / variadic / open tuples form a chain ---------------
@@ -64,7 +61,7 @@ def _open(x: T[U[Ts]]) -> str:
 )
 def test_fixed_variadic_open_chain_is_unambiguous(order: tx.Any) -> None:
     f = Function("f")
-    _quiet(f, *order)
+    _register_all(f, *order)
     assert f.ambiguities() == []
     # The value level is shallow: every tuple matches all three by
     # `isinstance(v, tuple)`, so the most specific (fixed) always wins whatever
@@ -76,21 +73,21 @@ def test_fixed_variadic_open_chain_is_unambiguous(order: tx.Any) -> None:
 
 def test_dropping_fixed_falls_to_variadic() -> None:
     f = Function("f")
-    _quiet(f, _variadic, _open)
+    _register_all(f, _variadic, _open)
     assert f.ambiguities() == []
     assert f((1, 2)) == "variadic"
 
 
 def test_dropping_variadic_falls_to_open() -> None:
     f = Function("f")
-    _quiet(f, _open)
+    _register_all(f, _open)
     assert f((1, 2)) == "open"
 
 
-# --- case 2: incomparable tuple shapes are ambiguous, not warned -------
+# --- case 2: incomparable tuple shapes are ambiguous, not listed -------
 
 
-def test_prefix_vs_suffix_is_ambiguous_but_not_warned() -> None:
+def test_prefix_vs_suffix_is_ambiguous_but_not_listed() -> None:
     f = Function("f")
 
     def a(x: T[int, U[Ts]]) -> str:
@@ -99,13 +96,13 @@ def test_prefix_vs_suffix_is_ambiguous_but_not_warned() -> None:
     def b(x: T[U[Ts], int]) -> str:
         return "suffix"
 
-    _quiet(f, a, b)  # no registration warning
+    _register_all(f, a, b)
     assert f.ambiguities() == []
     with pytest.raises(AmbiguousMethodError):
         f((1, 2))
 
 
-def test_variadic_vs_ellipsis_is_ambiguous_but_not_warned() -> None:
+def test_variadic_vs_ellipsis_is_ambiguous_but_not_listed() -> None:
     f = Function("f")
 
     def a(x: T[int, U[Ts]]) -> str:
@@ -114,7 +111,7 @@ def test_variadic_vs_ellipsis_is_ambiguous_but_not_warned() -> None:
     def b(x: T[int, ...]) -> str:
         return "ellipsis"
 
-    _quiet(f, a, b)
+    _register_all(f, a, b)
     assert f.ambiguities() == []
     with pytest.raises(AmbiguousMethodError):
         f((1, 2))
@@ -238,10 +235,8 @@ def test_star_ts_vs_star_is_ambiguous_for_any_count() -> None:
     def plain(*args) -> str:  # noqa: ANN002
         return "plain"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register(variadic)
-        f.register(plain)
+    f.register(variadic)
+    f.register(plain)
     for count in (0, 1, 3):
         with pytest.raises(AmbiguousMethodError):
             f(*([1] * count))
@@ -258,10 +253,8 @@ def test_star_typevar_vs_star_still_resolves_for_two_or_more() -> None:
     def plain(*args) -> str:  # noqa: ANN002
         return "plain"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register(typed)
-        f.register(plain)
+    f.register(typed)
+    f.register(plain)
     assert f(1, 2) == "t"
     assert f(1, 2, 3) == "t"
     for count in (0, 1):
@@ -425,9 +418,7 @@ def test_typevartuple_does_not_group_in_the_specificity_tiebreak() -> None:
     def distinct(a: T[U[Us]], b: T[U[Ts]]) -> str:
         return "distinct"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register(repeated)
-        f.register(distinct)
+    f.register(repeated)
+    f.register(distinct)
     with pytest.raises(AmbiguousMethodError):
         f.resolve(T[int], T[int])

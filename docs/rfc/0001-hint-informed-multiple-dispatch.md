@@ -203,7 +203,7 @@ entry marks a result worth double-checking against intuition.
 | `Hint[bool] ≤ Hint[int]`, `int ≤ Hint[int]`, `Hint[int] ≤ object`, `Hint[Exact[int]\] ≤ Hint[int]` | True / **False** / **False** / True | *(0.2.0)* `Hint[X]` describes type hints, not values: only another `Hint` form is ordered against it, covariantly by its argument, so no ordinary hint sits below it. Above it sit `Any`, a free `TypeVar`, a union that has a `Hint` member, and a wider `Hint` form (up to `Hint ≡ Hint[Any]`), but no ordinary class such as `object`; `Exact` inside narrows to the exact hint (§4) |
 | `Type[Super[Animal]\] ≤ Type[Super[Dog]\]`, `Type[Super[Dog]\] ≤ Type[Super[Animal]\]` (`class Dog(Animal)`) | True / **False** | *(0.3.0)* `Super[C]` inside `Type` accepts `C` and every class above it; the classes above `Animal` are among those above `Dog`, so lower bounds are ordered contravariantly by their bound (§4.2) |
 | `Type[Exact[Dog]\] ≤ Type[Super[Dog]\]`, `Type[Exact[Dog]\] ≤ Type[Dog]` | True / True | *(0.3.0)* the single class `Dog` belongs to both, so the exact form sits below the plain form and the lower bound alike (§4.2) |
-| `Type[Dog] ≤ Type[Super[Dog]\]`, `Type[Super[Dog]\] ≤ Type[Dog]` | **False** / **False** | *(0.3.0)* incomparable: each accepts a class the other refuses (a subclass of `Dog`, and `object`), although both accept `Dog`; registering both warns (§5) |
+| `Type[Dog] ≤ Type[Super[Dog]\]`, `Type[Super[Dog]\] ≤ Type[Dog]` | **False** / **False** | *(0.3.0)* incomparable: each accepts a class the other refuses (a subclass of `Dog`, and `object`), although both accept `Dog`, so a call with `Dog` matching both is ambiguous and raises, and `ambiguities()` reports the pair (§5) |
 | `Type[Super[Dog]\] ≤ Type[object]`, `Hint[Super[int]\] ≤ Hint` | True / True | *(0.3.0)* every class is below `object` and every hint below `Any`, so a lower bound sits below the top of its form |
 | `Type[Between[Dog, Animal]\] ≤ Type[Animal]`, `Type[Between[Dog, Animal]\] ≤ Type[Dog]` | True / **False** | *(0.3.0)* `Between[L, U]` inside `Type` accepts the classes from `L` up to `U`; the classes from `Dog` up to `Animal` all lie below `Animal`, but `Animal` itself is not below `Dog` (§4.2) |
 | `Type[Exact[Dog]\] ≤ Type[Between[Dog, Animal]\]` | True | *(0.3.0)* the single class `Dog` lies between `Dog` and `Animal` (§4.2) |
@@ -513,11 +513,11 @@ naive reading would expect, while a contravariant one reverses it. Two
 `List[X]` overloads whose arguments are subtype-related become incomparable
 rather than ordered, and are therefore ambiguous at a call unless a
 `priority` separates them. Registering both is legitimate, not a mistake to
-warn about: a plain `list` value declares no type argument at all, so both
+report: a plain `list` value declares no type argument at all, so both
 overloads genuinely apply to it, while a value whose class declares its own
-parametrisation, described below, is still dispatched precisely. No
-registration-time warning fires for this pair; the ambiguity, when it
-exists, only shows up at the call.
+parametrisation, described below, is still dispatched precisely.
+`ambiguities()` does not list this pair, and the ambiguity, when it exists,
+only shows up at the call.
 
 Differing origins are handled by expressing the sub-hint through the
 super-hint's origin. When a sub-hint's origin differs from a super-hint's,
@@ -952,10 +952,10 @@ True
 
 An overload on `Quiet` and an overload on `HasName` are then ambiguous for
 an instance like `Quiet("Bo")`, and `AmbiguousMethodError` is the correct
-answer, since neither overload is more specific than the other. No warning
-fires at registration time, and `ambiguities()` reports nothing, because
-both overloads are genuinely incomparable at the hint level, which is all
-registration-time analysis can see. The remedy is the caller's: annotate
+answer, since neither overload is more specific than the other.
+`ambiguities()` reports nothing, because both overloads are genuinely
+incomparable at the hint level, which is all a check made without a value
+can see. The remedy is the caller's: annotate
 the member on the class, or give one of the two overloads a higher
 `priority`. The guide's page on protocols shows this exact case running,
 together with the more common one where the class wins outright.
@@ -1493,7 +1493,8 @@ option to change it; `priority` settles what the order leaves tied. Two
 ranges that overlap without either lying inside the other, such as
 `List[Between[Never, Integral]\]` and `List[Super[int]\]`, which share the
 parametrisations `List[int]` and `List[Integral]`, make their methods
-ambiguous, and registering both warns (§5).
+ambiguous: a call matching both raises, and `ambiguities()` reports the pair
+(§5).
 
 To a type checker the aliases of §4.2 still apply, so `List[Super[int]\]`
 reads as `List[Union[int, Any]\]`. Checked with mypy 1.19.1 and pyright
@@ -1593,17 +1594,48 @@ errors are
 raised from `Function.dispatch` or `Function.resolve`, never from inside the
 `__call__` frame itself, so a traceback does not point into the dispatch
 machinery. `Function.ambiguities()`, the analogue of `Julia`'s
-`detect_ambiguities`, returns every pair of registered, incomparable
-methods that could both apply to some call, so a test suite can assert that
-a registry has none.
+`Test.detect_ambiguities`, returns the pairs of registered methods that some
+call would match with nothing to choose between them, so a test suite can
+assert that a registry has none.
 
-Registration only ever *warns* about a guaranteed ambiguity, never raises,
-so the order in which modules happen to be imported can never break a
-program that was working before. A pair separated by an explicit, differing
-`priority` is resolved deterministically at every call, since the higher
-priority always wins, so it is neither warned about at registration nor
-listed by `ambiguities()`. A same-origin parametrised pair, such as `List[int]` and `List[str]`
-registered side by side, is likewise not warned about or listed.
+*(0.3.0)* Registration never checks a new method against the others: it
+neither raises nor warns about an ambiguity, so the order in which modules
+happen to be imported can never break a program that was working before.
+Earlier versions issued a `RuntimeWarning` when a newly registered method was
+bound to tie with one already registered. That check weighed the two methods
+alone, so it also fired for a pair that a third method, registered before or
+after them, settles at every call the two share, and it was removed. An
+ambiguity now surfaces only at an actual call, as `AmbiguousMethodError`, or
+on request, from `ambiguities()`.
+
+*(0.3.0)* `ambiguities()` reports a pair when some call matches both methods
+and the whole selection of §2.2 still leaves both of them standing. The two
+methods must bind a common call shape, be incomparable or equivalent, share
+the same priority and the same tightness of fit, and carry hints that share
+a value at every argument, as described below. At an argument where one hint
+lies below the other, the values the two share are those of the narrower
+hint, so the calls the pair has in common are described by a signature made
+of the narrower hint at every argument. That signature is resolved against
+every registered method as `resolve_bestcandidates` would resolve it, and the
+pair is reported when both of its methods survive. A third method, in
+whichever order it was registered, therefore clears the pair exactly when it
+wins those calls at dispatch, and a priority, a tightness, or a repeated
+`TypeVar` settles the pair the way it settles a call. Two precautions keep
+the check from clearing a pair that a call would still find tied. The lookup
+convenience of §4, by which a query of `C` reaches a slot of `Exact[C]`, is
+not applied, because a method written for `Exact[C]` does not win a value
+whose class is a subclass of `C`. When the shared calls cannot be written as
+one signature, because two hints share values only through a bound, or
+because one method of the pair rejects the signature as a query, the pair is
+reported without being resolved at all. What imprecision remains is on the side of reporting: a pair whose
+shared calls form a union, won only jointly by several narrower methods, is
+reported although every one of those calls dispatches.
+
+A pair separated by an explicit, differing `priority` is resolved
+deterministically at every call, since the higher priority always wins, so
+it is not listed by `ambiguities()`. A same-origin parametrised pair, such
+as `List[int]` and `List[str]` registered side by side, is likewise not
+listed.
 Registering both is entirely legitimate, since a plain `list` value applies
 to both, and the incomparability between them only becomes visible at an
 actual call. A value that declares its own parametrisation — an instance of
@@ -1611,7 +1643,7 @@ actual call. A value that declares its own parametrisation — an instance of
 right one outright, and only a value that declares nothing at all is
 genuinely ambiguous between them.
 
-*(0.3.0)* A guaranteed ambiguity is recognised by checking that, at every
+*(0.3.0)* A pair is recognised as sharing a call by checking that, at every
 argument, the two methods' hints share a value, since a call built from one
 shared value per argument then matches both, and neither method is more
 specific. Two hints ordered against each other always share the narrower
@@ -1634,9 +1666,9 @@ test is sufficient, so a reported overlap always has a real call behind it,
 and for nominal class hierarchies, in which no class is made a subclass
 through `register` or `__subclasshook__`, it is also complete when every
 bound is a class. It is only ever consulted for a pair that involves a lower
-bound, which leaves every other warning as it was. Registering
-`Type[Animal]` and `Type[Super[Dog]\]` side by side therefore warns, and so
-does registering `Animal` and `Super[Dog]`. A method for
+bound, which leaves every other pair as it was. `ambiguities()` therefore
+reports `Type[Animal]` and `Type[Super[Dog]\]` registered side by side, and
+likewise `Animal` and `Super[Dog]`. A method for
 `Type[Exact[Dog]\]` settles the call with `Dog`, but not the one with
 `Animal`, while a `priority` on either method settles both; on a value,
 `Exact[Dog]` settles the call with a `Dog()` in the same way.
@@ -1651,7 +1683,7 @@ the other hint gives there, and each candidate is checked against both
 hints by the relation itself. The test is therefore sufficient, so a
 reported overlap always has a real value behind it, and it is only
 consulted when a bound stands among the arguments, which keeps
-`List[int]` and `List[str]` silent as before.
+`List[int]` and `List[str]` unreported as before.
 
 The MRO tie-break (§2.2) does not apply to a bound. A bound names a range
 of classes rather than one position in the value's MRO, just as
@@ -2149,9 +2181,8 @@ Each case below is covered by a dedicated test.
 - `List[int]` is strictly below `list`, which is equivalent to `List`
   itself.
 - Two overloads on `List[int]` and `List[str]` at the same position are
-  ambiguous at the call (resolved by `priority`), but registering both
-  raises no warning, since both are genuinely legitimate registrations
-  (§2.3).
+  ambiguous at the call (resolved by `priority`), but `ambiguities()` does
+  not list them, since both are genuinely legitimate registrations (§2.3).
 - `Optional` and `Union` are ordered by `issubhint`; a `None` argument is
   read as `NoneType`.
 - A bare `Union`, `Literal`, or `Type`, used with no arguments, is never
@@ -2233,9 +2264,9 @@ Each case below is covered by a dedicated test.
   each of its constraints, so `W[Any] ≤ Snk[int]` is False for
   `class W(Snk[T])` with `Snk` contravariant (§2.3).
 - *(0.3.0)* `Type[C]` and `Type[Super[D]\]` with `D ≤ C` are incomparable
-  yet share the classes between `D` and `C`, so registering both warns, and
-  a call with one of those classes is ambiguous unless `priority` or an
-  `Exact` method settles it (§5). The same holds on a value for `C` and
+  yet share the classes between `D` and `C`, so `ambiguities()` reports
+  the pair, and a call with one of those classes is ambiguous unless
+  `priority` or an `Exact` method settles it (§5). The same holds on a value for `C` and
   `Super[D]`, and for the values whose class lies between `D` and `C`.
 - *(0.2.0)* `issubhint` and `ishintstance` reject a non-hint the way
   `issubclass` and `isinstance` do: a non-hint on either side of
@@ -2372,13 +2403,16 @@ Each case below is covered by a dedicated test.
   priority only ever breaks a tie when it differs, and never overrides a
   strict specificity win.
 - A pair separated by differing priority is resolved deterministically and
-  is therefore neither warned about nor listed by `ambiguities()`.
-- `ambiguities()` lists every pair the registry has actually warned about.
+  is therefore not listed by `ambiguities()`.
+- *(0.3.0)* Registering a method never warns about an ambiguity, and
+  `ambiguities()` reports a pair only when the whole selection, every other
+  registered method included, still leaves the pair tied on the calls it
+  shares (§5).
 - A same-origin parametrised pair, whether invariant like `List[int]` and
   `List[bool]`, or otherwise incomparable like `List[int]` and
   `List[str]`, is incomparable and hence ambiguous at a call that
   supplies no declared parametrisation, but registering both is
-  legitimate, so neither warns nor is listed (§2.3).
+  legitimate, so the pair is not listed (§2.3).
 - The re-exported names under `.core` retain their identity, and
   `resolve_hint`'s behaviour matches its predecessor's wherever the two
   were meant to agree (§8.1).

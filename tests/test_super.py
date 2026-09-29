@@ -3,7 +3,6 @@
 # stdlib
 import itertools
 import sys
-import warnings
 
 # dependencies
 import pytest
@@ -658,20 +657,20 @@ def test_super_forms_are_ordered_against_a_bare_type() -> None:
 
 def test_dispatch_type_super() -> None:
     f = Function("f")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
 
-        @f.register((tx.Type[Super[Dog]],))
-        def _above(cls: object) -> str:
-            return "super"
+    @f.register((tx.Type[Super[Dog]],))
+    def _above(cls: object) -> str:
+        return "super"
 
-        @f.register((tx.Type[Exact[Dog]],))
-        def _exact(cls: object) -> str:
-            return "exact"
+    @f.register((tx.Type[Exact[Dog]],))
+    def _exact(cls: object) -> str:
+        return "exact"
 
-        @f.register((tx.Type[Puppy],))
-        def _puppy(cls: object) -> str:
-            return "puppy"
+    @f.register((tx.Type[Puppy],))
+    def _puppy(cls: object) -> str:
+        return "puppy"
+
+    assert f.ambiguities() == []
 
     assert f(Animal) == "super"
     assert f(object) == "super"
@@ -688,11 +687,11 @@ def test_dispatch_plain_vs_super_is_ambiguous_and_exact_resolves_it() -> None:
     def _plain(cls: object) -> str:
         return "plain"
 
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
+    @f.register((tx.Type[Super[Dog]],))
+    def _above(cls: object) -> str:
+        return "super"
 
-        @f.register((tx.Type[Super[Dog]],))
-        def _above(cls: object) -> str:
-            return "super"
+    assert len(f.ambiguities()) == 1
 
     with pytest.raises(AmbiguousMethodError):
         f(Dog)
@@ -713,12 +712,11 @@ def test_dispatch_plain_vs_super_is_ambiguous_and_exact_resolves_it() -> None:
     def _g_plain(cls: object) -> str:
         return "plain"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
+    @g.register((tx.Type[Super[Dog]],), priority=1)
+    def _g_above(cls: object) -> str:
+        return "super"
 
-        @g.register((tx.Type[Super[Dog]],), priority=1)
-        def _g_above(cls: object) -> str:
-            return "super"
+    assert g.ambiguities() == []
 
     assert g(Dog) == "super"
     assert g(Animal) == "super"
@@ -734,28 +732,27 @@ def test_a_second_argument_keeps_the_overlap_meaningful() -> None:
     def _plain(cls: object, n: object) -> str:
         return "plain"
 
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
+    @f.register((tx.Type[Super[Dog]], bool))
+    def _above(cls: object, n: object) -> str:
+        return "super"
 
-        @f.register((tx.Type[Super[Dog]], bool))
-        def _above(cls: object, n: object) -> str:
-            return "super"
+    assert len(f.ambiguities()) == 1
 
     with pytest.raises(AmbiguousMethodError):
         f(Dog, True)
 
-    # Without a shared value at the class argument there is nothing to warn.
+    # Without a shared value at the class argument there is nothing to list.
     g = Function("g")
 
     @g.register((tx.Type[Puppy], int))
     def _g_plain(cls: object, n: object) -> str:
         return "plain"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
+    @g.register((tx.Type[Super[Dog]], bool))
+    def _g_above(cls: object, n: object) -> str:
+        return "super"
 
-        @g.register((tx.Type[Super[Dog]], bool))
-        def _g_above(cls: object, n: object) -> str:
-            return "super"
+    assert g.ambiguities() == []
 
 
 def test_an_optional_lower_bound_is_ambiguous_with_a_plain_type() -> None:
@@ -765,11 +762,11 @@ def test_an_optional_lower_bound_is_ambiguous_with_a_plain_type() -> None:
     def _plain(cls: object) -> str:
         return "plain"
 
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
+    @f.register((tx.Optional[tx.Type[Super[Dog]]],))
+    def _above(cls: object) -> str:
+        return "super"
 
-        @f.register((tx.Optional[tx.Type[Super[Dog]]],))
-        def _above(cls: object) -> str:
-            return "super"
+    assert len(f.ambiguities()) == 1
 
     with pytest.raises(AmbiguousMethodError) as caught:
         f(Dog)

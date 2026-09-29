@@ -384,7 +384,6 @@ class Function:
         with self._lock:
             first = not self._methods
             methods = _replace_or_append(self._methods, method)
-            self._warn_new_ambiguities(methods, method)
             # Publish the methods tuple first, then invalidate the cache: a
             # reader that sees the new methods but the old cache finds the
             # cache stale (its methods are not the published tuple) and
@@ -423,37 +422,6 @@ class Function:
             self.__qualname__ = given
         else:
             self._name = getattr(fn, "__name__", None)
-
-    def _warn_new_ambiguities(
-        self, methods: tx.Tuple[Method, ...], method: Method
-    ) -> None:
-        """Warn when `method` is guaranteed to be ambiguous with another.
-
-        Only a guaranteed ambiguity is warned about here, following RFC
-        0001 §5. Such a pair binds the same call shape, is incomparable
-        once priority is equal, and lands comparable hints at every one
-        of that shape's arguments, so that some call is bound to match
-        both with nothing to choose between them. A pair separated by a
-        differing `priority` is resolved deterministically whenever it
-        is actually called, so no warning is raised for it. A pair that
-        would only clash for a value neither method was written with in
-        mind, such as a diamond subclass that does not exist yet, is
-        left for an actual call to surface instead.
-        """
-        for other in methods:
-            if other is method:
-                continue
-            shapes = _shapes_for_pair(method, other)
-            if any(_pair_ambiguous(method, other, shape) for shape in shapes):
-                warnings.warn(
-                    f"{method.describe()} is ambiguous with "
-                    f"{other.describe()}: a call matching both has no most "
-                    f"specific method. Give one a higher priority, or make "
-                    f"one more specific.",
-                    RuntimeWarning,
-                    stacklevel=4,
-                )
-                return
 
     # -- calling --------------------------------------------------------
 
@@ -669,12 +637,10 @@ class Function:
             >>> class Animal: pass
             >>> class Dog(Animal): pass
             >>> meet = Function("meet")
-            >>> with warnings.catch_warnings():
-            ...     warnings.simplefilter("ignore")  # the pair can clash
-            ...     @meet.register
-            ...     def dog_first(a: Dog, b: Animal) -> str: return "first"
-            ...     @meet.register
-            ...     def dog_second(a: Animal, b: Dog) -> str: return "second"
+            >>> @meet.register
+            ... def dog_first(a: Dog, b: Animal) -> str: return "first"
+            >>> @meet.register
+            ... def dog_second(a: Animal, b: Dog) -> str: return "second"
             >>> [m.name for m in meet.bestcandidates(Dog(), Dog())]
             ['dog_first', 'dog_second']
             >>> [m.name for m in meet.bestcandidates(Dog(), Animal())]
@@ -769,12 +735,10 @@ class Function:
             >>> class Animal: pass
             >>> class Dog(Animal): pass
             >>> meet = Function("meet")
-            >>> with warnings.catch_warnings():
-            ...     warnings.simplefilter("ignore")  # the pair can clash
-            ...     @meet.register
-            ...     def dog_first(a: Dog, b: Animal) -> str: return "first"
-            ...     @meet.register
-            ...     def dog_second(a: Animal, b: Dog) -> str: return "second"
+            >>> @meet.register
+            ... def dog_first(a: Dog, b: Animal) -> str: return "first"
+            >>> @meet.register
+            ... def dog_second(a: Animal, b: Dog) -> str: return "second"
             >>> [m.name for m in meet.resolve_bestcandidates(Dog, Dog)]
             ['dog_first', 'dog_second']
             >>> [m.name for m in meet.resolve_bestcandidates(Dog, Animal)]
@@ -877,19 +841,38 @@ class Function:
     # -- diagnostics ----------------------------------------------------
 
     def ambiguities(self) -> tx.List[tx.Tuple[Method, Method]]:
-        """List the pairs of methods that could dispatch to an ambiguous call.
+        """List the pairs of methods that some call cannot choose between.
 
-        Two methods appear in the returned list when they can bind a
-        common call shape, are incomparable once priority is set aside,
-        and land comparable hints at every argument of that shape, so
-        that some call matches both of them with no most specific one to
-        prefer. A pair separated by a differing `priority` is resolved
-        deterministically whenever it is actually called, so such a pair
-        is left out. This check is a heuristic run over each method's own
-        fully applied shape, following RFC 0001 §5: it surfaces the
-        ambiguities a straightforwardly written call would hit, not every
-        ambiguity reachable only through `#!python *args` spreading or a
-        subclass that does not exist yet.
+        Registering an overload never checks it against the others, so an
+        ambiguity otherwise surfaces only when a call that matches two
+        methods equally well raises [`AmbiguousMethodError`][].
+        `ambiguities` looks for such calls ahead of time. It is the audit
+        to run in a test suite, where `#!python assert not f.ambiguities()`
+        fails as soon as a newly registered overload leaves some call
+        without a most specific method.
+
+        A pair of methods is reported when some call matches both of them
+        and the selection that [`dispatch`][] performs still cannot choose
+        between them. The two methods must accept a common call, be
+        equally specific or incomparable, and share the same `priority`
+        and the same tightness of fit. Every other registered method takes
+        part in the selection as well, so a pair is not reported when a
+        third method wins every call that the two have in common, in
+        whatever order the three were registered.
+
+        The audit has limits in both directions. It checks each pair only
+        at the call shapes that fill one of the two methods' own
+        parameters, so it finds the ambiguities that a straightforwardly
+        written call would hit, but not one that is reachable only by
+        spreading arguments into `#!python *args`, or only through a
+        subclass that does not exist yet. In the other direction, the
+        audit can report a pair that no call actually finds tied. That
+        happens when the calls the pair has in common are won only by
+        several narrower methods together, none of which wins all of them
+        alone, and when the two methods' hints share values only through
+        a [`Super`][bagof.dispatchers.Super] or
+        [`Between`][bagof.dispatchers.Between] bound, since no single hint
+        then describes those calls.
 
         !!! example
             ```pycon
@@ -900,19 +883,94 @@ class Function:
             ... def order(a, b): return 2
             >>> [(a.name, b.name) for a, b in f.ambiguities()]
             [('rank', 'order')]
+            >>> @f.register((float, float))
+            ... def both(a, b): return 3
+            >>> f.ambiguities()
+            []
             ```
+
+        Returns
+        -------
+        list of tuple of Method
+            Each ambiguous pair once, both methods in registration order.
         """
         methods = self._methods
         pairs: tx.List[tx.Tuple[Method, Method]] = []
         for i in range(len(methods)):
             for j in range(i + 1, len(methods)):
                 first, second = methods[i], methods[j]
-                shapes = _shapes_for_pair(first, second)
-                if any(
-                    _pair_ambiguous(first, second, shape) for shape in shapes
-                ):
-                    pairs.append((first, second))
+                for shape in _shapes_for_pair(first, second):
+                    overlap = _pair_overlap(first, second, shape)
+                    if overlap is not None and self._still_tied(
+                        first, second, shape, overlap
+                    ):
+                        pairs.append((first, second))
+                        break
         return pairs
+
+    def _still_tied(
+        self,
+        first: Method,
+        second: Method,
+        shape: tx.Any,
+        overlap: tx.Dict[tx.Any, tx.Any],
+    ) -> bool:
+        """Report whether the selection leaves a pair tied on its overlap.
+
+        `overlap` describes, argument by argument, the calls of `shape`
+        that both methods accept, as found by [`_pair_overlap`][]. The
+        overlap is run through the same selection as
+        [`resolve_bestcandidates`][], over every registered method, and
+        the pair is still tied when both of its methods survive. Since a
+        survivor set holding both has more than one method, that is also
+        exactly the condition under which the query is ambiguous because
+        of this particular pair; a query on which one of the two ties with
+        some third method instead is that other pair's concern.
+
+        Whenever the overlap cannot be trusted to stand for the calls
+        that the two methods share, the pair is reported, because nothing
+        is known to settle it. That happens when some argument has no
+        single hint for the shared values, when another method's hints
+        are still unresolved forward references, and when one method of
+        the pair does not accept the overlap as a query, as can happen
+        when the overlap puts two different classes where that method
+        repeats a `TypeVar`. The known cost is a pair whose overlap is a
+        union covered only jointly by several narrower methods. No single
+        method wins the whole overlap, so the pair is reported even
+        though every actual call dispatches.
+        """
+        if any(hint is _UNORDERED for hint in overlap.values()):
+            return True
+        count, names = shape
+        hints = tuple(overlap[index] for index in range(count))
+        named_hints = {name: overlap[name] for name in names}
+        try:
+            plan = self._hint_plan(hints, named_hints)
+        except NameError:
+            return True
+        # Applicability is the plain sub-hint relation, without the lookup
+        # convenience by which a query of `C` reaches a slot of `Exact[C]`.
+        # That convenience serves a caller asking about a hint; a method it
+        # admits here would not accept a value of a subclass of `C`, so it
+        # could not be said to win the calls the pair shares.
+        applicable = [
+            index
+            for index in _applicable_to_hints(plan, hints, named_hints)
+            if all(
+                issubhint(overlap[key], hint)
+                for key, hint in plan.bindable[index][2].items()
+            )
+        ]
+        reached = [plan.bindable[index][0] for index in applicable]
+        if not any(method is first for method in reached) or not any(
+            method is second for method in reached
+        ):
+            return True
+        best = self._best(applicable, plan, hints, named_hints, values=False)
+        tied = [plan.bindable[index][0] for index in best]
+        return any(method is first for method in tied) and any(
+            method is second for method in tied
+        )
 
     # -- cache management -----------------------------------------------
 
@@ -1574,8 +1632,7 @@ def _shapes_for_pair(
     A method whose hints are still unresolved forward references cannot
     be shaped yet and simply contributes no shape here, leaving any
     ambiguity it might turn out to have for the first real dispatch to
-    surface, rather than forcing its hints to resolve during
-    registration.
+    surface, rather than forcing its hints to resolve during the audit.
     """
     shapes: tx.Set[tx.Any] = set()
     for method in (first, second):
@@ -1586,36 +1643,48 @@ def _shapes_for_pair(
     return frozenset(shapes)
 
 
-def _pair_ambiguous(first: Method, second: Method, shape: tx.Any) -> bool:
-    """Report whether two methods are guaranteed to be ambiguous for `shape`.
+# Stands in, within an overlap found by `_pair_overlap`, for an argument where
+# the two hints share values without either containing the other, so that no
+# single hint describes what they share.
+_UNORDERED = object()
+
+
+def _pair_overlap(
+    first: Method, second: Method, shape: tx.Any
+) -> tx.Optional[tx.Dict[tx.Any, tx.Any]]:
+    """Describe the calls of `shape` that could leave two methods tied.
 
     Both methods have to bind the shape, be incomparable once priority is
     equal, land their arguments on the same keys, and carry comparable
     hints at every one of those arguments. That way, no combination of
     argument types can make one of them strictly more specific than the
-    other at every position. A method whose hint is still unresolved
-    cannot be compared at all, so such a pair is simply treated as not,
-    or not yet, ambiguous.
+    other at every position. The result maps each argument key to the
+    hint describing the values both methods accept there, which is the
+    narrower of the two hints, or to `_UNORDERED` where the two hints
+    share values without either containing the other. [`None`][] means
+    that no call of this shape leaves the pair tied. A method whose hint
+    is still unresolved cannot be compared at all, so such a pair is
+    treated as not, or not yet, ambiguous.
     """
     try:
-        return _pair_ambiguous_resolved(first, second, shape)
+        return _pair_overlap_resolved(first, second, shape)
     except NameError:
-        return False
+        return None
 
 
-def _pair_ambiguous_resolved(
+def _pair_overlap_resolved(
     first: Method, second: Method, shape: tx.Any
-) -> bool:
-    """Do the work of [`_pair_ambiguous`][], assuming every hint resolves."""
+) -> tx.Optional[tx.Dict[tx.Any, tx.Any]]:
+    """Do the work of [`_pair_overlap`][], assuming every hint resolves."""
     first_binding = _bind_shape(first.signature, shape)
     second_binding = _bind_shape(second.signature, shape)
     if first_binding is None or second_binding is None:
-        return False
+        return None
     # A differing `priority` breaks the tie deterministically at dispatch (the
     # higher one wins, RFC 0001 §2.2/§5), so the pair is never ambiguous at a
-    # call -- do not warn or list it.
+    # call and is not listed.
     if first.priority != second.priority:
-        return False
+        return None
     a_le = first.signature.le(second.signature, shape)
     b_le = second.signature.le(first.signature, shape)
     # A strict one-way order means one method is unambiguously more specific,
@@ -1624,38 +1693,40 @@ def _pair_ambiguous_resolved(
     # at registration), a call can match both with no most specific method --
     # carry on to confirm their hints are comparable at every argument.
     if a_le != b_le:
-        return False
+        return None
     # Neither is strictly more specific. If the signatures differ in tightness
     # -- one absorbs fewer arguments into a `*args` / `**kwargs`, or leans on
     # fewer defaults -- the tighter one always wins that tie-break, so the pair
-    # is never actually ambiguous. Only an equal-tightness pair is guaranteed
-    # ambiguous (a fixed-arity method beating a `*args` tail is not).
+    # is never actually ambiguous. Only an equal-tightness pair can tie (a
+    # fixed-arity method beating a `*args` tail does not).
     if _tightness(first_binding, first.signature) != _tightness(
         second_binding, second.signature
     ):
-        return False
+        return None
     first_landed = _landed_hints(first.signature, first_binding)
     second_landed = _landed_hints(second.signature, second_binding)
     if set(first_landed) != set(second_landed):  # pragma: no cover
         # Both methods bind the same shape, so they land the same argument
         # keys; this guards an invariant rather than a reachable case.
-        return False
+        return None
+    overlap: tx.Dict[tx.Any, tx.Any] = {}
     for key in first_landed:
         here, there = first_landed[key], second_landed[key]
         # Some value must fit both hints at every argument. Two ordered hints
         # share the narrower one's values; two hints a lower bound leaves
         # unordered may still share one, which `overlaps` finds.
-        if not (
-            issubhint(here, there)
-            or issubhint(there, here)
-            or overlaps(here, there)
-        ):
-            return False
+        if issubhint(here, there):
+            overlap[key] = here
+        elif issubhint(there, here):
+            overlap[key] = there
+        elif overlaps(here, there):
+            overlap[key] = _UNORDERED
+        else:
+            return None
     # The repeated-TypeVar tie-break (RFC 0001 §3) settles some otherwise-tied
     # pairs: when one method's repeated TypeVars constrain strictly more
     # arguments to a consistent type than the other's, that one is the more
-    # specific and the pair is not ambiguous -- so it is neither warned at
-    # registration nor listed by `ambiguities`.
+    # specific and the pair is not ambiguous.
     first_partition = _typevar_partition(first.signature, first_binding)
     second_partition = _typevar_partition(second.signature, second_binding)
     if _group_more_specific(
@@ -1663,8 +1734,8 @@ def _pair_ambiguous_resolved(
     ) or _group_more_specific(
         second_landed, second_partition, first_landed, first_partition
     ):
-        return False
-    return True
+        return None
+    return overlap
 
 
 def _bind_shape(signature: Signature, shape: tx.Any) -> tx.Any:
@@ -2324,9 +2395,8 @@ def _replace_or_append(
     only equivalent under the sub-hint relation but written differently,
     such as `#!python (x: T, y: T)` against `#!python (x: T, y: U)`, or
     `#!python Exact[int]` against plain `#!python int`, counts as a
-    distinct method and is appended instead; selection then has to order
-    the two at dispatch time, and
-    [`_warn_new_ambiguities`][Function._warn_new_ambiguities] flags them
+    distinct method and is appended instead. Selection then has to order
+    the two at dispatch time, and [`Function.ambiguities`][] reports them
     if they turn out to clash.
     """
     for index, existing in enumerate(methods):

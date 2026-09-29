@@ -246,9 +246,9 @@ else:
         it, so `#!python Between[Dog, Animal]` is more specific than
         `#!python Super[Dog]` and than `Animal`. On the other hand, `Dog`
         and `#!python Between[Dog, Animal]` are not ordered against each
-        other, although both accept a value of class `Dog`, so registering
-        methods for both warns that such a call is ambiguous, and a
-        `priority` on either method settles it. The same holds inside
+        other, although both accept a value of class `Dog`, so a call with
+        such a value is ambiguous when methods are registered for both, and
+        a `priority` on either method settles it. The same holds inside
         `Type` and `Hint`.
 
         The lower bound must be a sub-hint of the upper bound. An empty

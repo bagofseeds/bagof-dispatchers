@@ -15,12 +15,10 @@ from bagof.dispatchers._method import Method
 from bagof.dispatchers._signature import Signature
 
 
-def _quiet_register(function: Function, *fns: typing.Any) -> None:
-    """Register several functions, ignoring ambiguity warnings."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        for fn in fns:
-            function.register(fn)
+def _register_all(function: Function, *fns: typing.Any) -> None:
+    """Register several functions in order."""
+    for fn in fns:
+        function.register(fn)
 
 
 # --- basic dispatch ----------------------------------------------------
@@ -61,9 +59,9 @@ def test_most_specific_wins() -> None:
 def test_definition_order_does_not_matter() -> None:
     """Selection is independent of the order methods were registered."""
     first = Function("f")
-    _quiet_register(first, lambda x: "obj", _int_method())
+    _register_all(first, lambda x: "obj", _int_method())
     second = Function("f")
-    _quiet_register(second, _int_method(), lambda x: "obj")
+    _register_all(second, _int_method(), lambda x: "obj")
     # Both resolve a bool the same way: bool <= int <= object.
     assert first.dispatch(True).name == second.dispatch(True).name
 
@@ -167,7 +165,7 @@ def test_ambiguous_raises() -> None:
     def by_second(x: object, y: float) -> int:
         return 2
 
-    _quiet_register(f, by_first, by_second)
+    _register_all(f, by_first, by_second)
     with pytest.raises(AmbiguousMethodError):
         f(2.0, 3.0)
 
@@ -185,10 +183,8 @@ def test_priority_breaks_a_tie() -> None:
     def high(x: object, y: float) -> str:
         return "high"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register(low)
-        f.register(high, priority=1)
+    f.register(low)
+    f.register(high, priority=1)
     assert f(2.0, 3.0) == "high"
 
 
@@ -230,7 +226,7 @@ def test_diamond_resolves_by_mro() -> None:
     def for_c(x: C) -> str:
         return "C"
 
-    _quiet_register(f, for_b, for_c)
+    _register_all(f, for_b, for_c)
     assert f(D()) == "B"
 
 
@@ -784,9 +780,8 @@ def test_resolve_applies_repeated_typevar_tiebreak() -> None:
         return "same"
 
     f.register(free)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")  # the tie-break -> no ambiguity warning
-        f.register(same)
+    f.register(same)
+    assert f.ambiguities() == []  # the tie-break separates the pair
     assert f.resolve(int, int).name == "same"
     assert f.resolve(int, str).name == "free"
 
@@ -820,7 +815,7 @@ def test_resolve_ambiguity_raise() -> None:
     def by_second(x: object, y: float) -> int:
         return 2
 
-    _quiet_register(f, by_first, by_second)
+    _register_all(f, by_first, by_second)
     with pytest.raises(AmbiguousMethodError):
         f.resolve(float, float)
 
@@ -835,7 +830,7 @@ def test_resolve_ambiguity_warn_takes_first() -> None:
     def by_second(x: object, y: float) -> int:
         return 2
 
-    _quiet_register(f, by_first, by_second)
+    _register_all(f, by_first, by_second)
     with pytest.warns(RuntimeWarning):
         assert f.resolve(float, float, ambiguity="warn").name == "by_first"
 
@@ -850,7 +845,7 @@ def test_resolve_ambiguity_ignore_is_silent() -> None:
     def by_second(x: object, y: float) -> int:
         return 2
 
-    _quiet_register(f, by_first, by_second)
+    _register_all(f, by_first, by_second)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert f.resolve(float, float, ambiguity="ignore").name == "by_first"
@@ -860,7 +855,7 @@ def test_resolve_ambiguity_ignore_is_silent() -> None:
 
 
 def test_ambiguities_lists_incomparable_pairs() -> None:
-    """`ambiguities` reports the guaranteed-ambiguous method pairs."""
+    """`ambiguities` reports the ambiguous method pairs."""
     f = Function("g")
 
     def by_first(x: float, y: object) -> int:
@@ -869,7 +864,7 @@ def test_ambiguities_lists_incomparable_pairs() -> None:
     def by_second(x: object, y: float) -> int:
         return 2
 
-    _quiet_register(f, by_first, by_second)
+    _register_all(f, by_first, by_second)
     pairs = f.ambiguities()
     assert len(pairs) == 1
     names = {pairs[0][0].name, pairs[0][1].name}
@@ -891,8 +886,12 @@ def test_no_ambiguity_between_disjoint_types() -> None:
     assert f.ambiguities() == []
 
 
-def test_registration_warns_on_guaranteed_ambiguity() -> None:
-    """Registering a method guaranteed ambiguous with another warns."""
+def test_registration_does_not_warn_about_ambiguity() -> None:
+    """Registering an ambiguous pair is silent; the audit and a call report it.
+
+    Registration never checks overloads against each other. The pair is
+    reported by `ambiguities()`, and a call matching both raises.
+    """
     f = Function("g")
 
     def by_first(x: float, y: object) -> int:
@@ -901,18 +900,22 @@ def test_registration_warns_on_guaranteed_ambiguity() -> None:
     def by_second(x: object, y: float) -> int:
         return 2
 
-    f.register(by_first)
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        f.register(by_first)
         f.register(by_second)
+    pairs = [(a.name, b.name) for a, b in f.ambiguities()]
+    assert pairs == [("by_first", "by_second")]
+    with pytest.raises(AmbiguousMethodError):
+        f(1.0, 2.0)
 
 
-def test_union_spelling_pair_warns_and_is_listed() -> None:
-    """Two differently-spelled but equivalent unions are guaranteed ambiguous.
+def test_union_spelling_pair_is_listed() -> None:
+    """Two differently-spelled but equivalent unions are ambiguous.
 
     `Union[int, str]` and `Union[str, int]` are equal but not written the same
     way, so both are kept; a call matching one matches the other with no most
-    specific method, so registering the second warns and `ambiguities()` lists
-    the pair (M2).
+    specific method, so `ambiguities()` lists the pair (M2).
     """
     f = Function("f")
 
@@ -923,18 +926,17 @@ def test_union_spelling_pair_warns_and_is_listed() -> None:
         return 2
 
     f.register(first)
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
-        f.register(second)
+    f.register(second)
     assert len(f.ambiguities()) == 1
     with pytest.raises(AmbiguousMethodError):
         f(1)
 
 
-def test_optional_spelling_pair_warns_and_is_listed() -> None:
+def test_optional_spelling_pair_is_listed() -> None:
     """`Optional[int]` and `Union[None, int]` are equivalent, distinct forms.
 
-    Same as the union case: equal yet spelled differently, so guaranteed
-    ambiguous -- a warning at registration and a listed pair (M2).
+    Same as the union case: equal yet spelled differently, so the pair is
+    ambiguous and listed (M2).
     """
     f = Function("f")
 
@@ -945,8 +947,7 @@ def test_optional_spelling_pair_warns_and_is_listed() -> None:
         return 2
 
     f.register(first)
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
-        f.register(second)
+    f.register(second)
     assert len(f.ambiguities()) == 1
     with pytest.raises(AmbiguousMethodError):
         f(1)
@@ -955,9 +956,8 @@ def test_optional_spelling_pair_warns_and_is_listed() -> None:
 def test_strictly_ordered_pair_is_not_ambiguous() -> None:
     """A strictly-ordered pair (`int` below `object`) is not ambiguous.
 
-    One method is unambiguously more specific, so registering the second does
-    not warn and `ambiguities()` stays empty (M2: only a pair with no strict
-    order is reported).
+    One method is unambiguously more specific, so `ambiguities()` stays empty
+    (M2: only a pair with no strict order is reported).
     """
     f = Function("f")
 
@@ -968,9 +968,7 @@ def test_strictly_ordered_pair_is_not_ambiguous() -> None:
         return 2
 
     f.register(narrow)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        f.register(wide)  # strictly ordered -> no ambiguity warning
+    f.register(wide)
     assert f.ambiguities() == []
 
 
@@ -1049,7 +1047,7 @@ def test_mro_refinement_with_any_position() -> None:
     def for_c(x: C, y: typing.Any) -> str:
         return "C"
 
-    _quiet_register(f, for_b, for_c)
+    _register_all(f, for_b, for_c)
     assert f(D(), 1) == "B"
 
 
@@ -1063,7 +1061,7 @@ def test_mro_none_position_blocks_domination() -> None:
     def by_y(x: typing.Any, y: float) -> int:
         return 2
 
-    _quiet_register(f, by_x, by_y)
+    _register_all(f, by_x, by_y)
     with pytest.raises(AmbiguousMethodError):
         f(2.0, 3.0)
 
@@ -1081,7 +1079,7 @@ def test_keyword_ambiguity_possible_fix() -> None:
     def by_b(a: object, b: float) -> int:
         return 2
 
-    _quiet_register(f, by_a, by_b)
+    _register_all(f, by_a, by_b)
     with pytest.raises(AmbiguousMethodError) as info:
         f(a=1.0, b=2.0)
     message = str(info.value)
@@ -1099,7 +1097,7 @@ def test_ambiguities_with_keyword_only() -> None:
     def by_mode(x: object, *, mode: float) -> int:
         return 2
 
-    _quiet_register(f, by_x, by_mode)
+    _register_all(f, by_x, by_mode)
     assert len(f.ambiguities()) == 1
 
 
@@ -1110,7 +1108,7 @@ def _forward_ref_method(x: "DefinitelyNotDefinedYet") -> str:  # noqa: F821
 def test_registration_tolerates_unresolved_forward_ref() -> None:
     """A method with a still-unresolved hint registers without forcing it.
 
-    The registration-time ambiguity heuristic must not resolve a forward
+    Neither registration nor the ambiguity audit may resolve a forward
     reference early, so deferred resolution keeps working.
     """
     f = Function("f")
@@ -1160,7 +1158,7 @@ def test_distinct_typevars_are_both_kept() -> None:
     replacing the other. They are *not* ambiguous: the repeated-`TypeVar`
     tie-break (RFC 0001 §3) makes `(T, T)` -- which ties both arguments to one
     type -- strictly more specific than the independent `(T, U)`, so
-    registering the second warns about nothing.
+    `ambiguities()` lists nothing.
     """
     T, U = _typevar_pair()
     f = Function("f")
@@ -1173,7 +1171,7 @@ def test_distinct_typevars_are_both_kept() -> None:
 
     f.register(same)
     with warnings.catch_warnings():
-        warnings.simplefilter("error")  # neither ambiguity nor replacement
+        warnings.simplefilter("error")  # no replacement warning
         f.register(free)
     assert len(f.methods) == 2  # both kept -- neither replaced the other
     assert f.ambiguities() == []
@@ -1189,8 +1187,8 @@ def test_bound_typevar_and_plain_are_both_kept() -> None:
     A bound TypeVar is *equivalent* to its bound, so `Signature.__eq__` reports
     the two signatures equal; registration must compare them structurally so
     the TypeVar method does not silently replace the plain one (or vice versa).
-    Equivalent-yet-distinct, they are guaranteed ambiguous, so registering the
-    second warns about the ambiguity, not a replacement.
+    Equivalent-yet-distinct, they are ambiguous: registering the second does
+    not warn about a replacement, and `ambiguities()` lists the pair.
     """
     TB = typing.TypeVar("TB", bound=int)
     f = Function("f")
@@ -1202,10 +1200,11 @@ def test_bound_typevar_and_plain_are_both_kept() -> None:
         return "plain"
 
     f.register(tv)
-    with pytest.warns(RuntimeWarning, match="ambiguous") as caught:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no replacement warning
         f.register(plain)
     assert len(f.methods) == 2
-    assert not any("replacing" in str(w.message) for w in caught)
+    assert len(f.ambiguities()) == 1
 
 
 def test_typevar_and_unannotated_are_both_kept() -> None:
@@ -1215,8 +1214,7 @@ def test_typevar_and_unannotated_are_both_kept() -> None:
     differently: both kept, neither replacing the other. They are not
     ambiguous either -- the repeated-`TypeVar` tie-break (RFC 0001 §3) makes
     `(T, T)`, which ties both arguments to one type, strictly more specific
-    than the unconstrained pair, so registering the second warns about
-    nothing.
+    than the unconstrained pair, so `ambiguities()` lists nothing.
     """
     T, _ = _typevar_pair()
     f = Function("f")
@@ -1229,7 +1227,7 @@ def test_typevar_and_unannotated_are_both_kept() -> None:
 
     f.register(repeated)
     with warnings.catch_warnings():
-        warnings.simplefilter("error")  # neither ambiguity nor replacement
+        warnings.simplefilter("error")  # no replacement warning
         f.register(bare)
     assert len(f.methods) == 2
     assert f.ambiguities() == []
@@ -1268,15 +1266,10 @@ def test_distinct_typevar_spellings_are_order_independent() -> None:
 
     forwards = Function("f")
     backwards = Function("f")
-    with warnings.catch_warnings():
-        # The point here is only that both are kept regardless of order; any
-        # warning (there is none now the tie-break separates them) is not what
-        # is under test.
-        warnings.simplefilter("ignore", RuntimeWarning)
-        forwards.register(same)
-        forwards.register(free)
-        backwards.register(free)
-        backwards.register(same)
+    forwards.register(same)
+    forwards.register(free)
+    backwards.register(free)
+    backwards.register(same)
     assert len(forwards.methods) == len(backwards.methods) == 2
 
 
@@ -1299,7 +1292,7 @@ def test_exact_object_vs_int_int_is_ambiguous() -> None:
     def int_int(x: int, y: int) -> str:
         return "int_int"
 
-    _quiet_register(f, exact_first, int_int)
+    _register_all(f, exact_first, int_int)
     with pytest.raises(AmbiguousMethodError):
         f(3, 3)
 
@@ -1314,7 +1307,7 @@ def test_literal_object_vs_int_int_is_ambiguous() -> None:
     def int_int(x: int, y: int) -> str:
         return "int_int"
 
-    _quiet_register(f, lit_first, int_int)
+    _register_all(f, lit_first, int_int)
     with pytest.raises(AmbiguousMethodError):
         f(1, 1)
 
@@ -1343,7 +1336,7 @@ def test_single_dispatch_diamond_still_refines() -> None:
     def for_c(x: C) -> str:
         return "C"
 
-    _quiet_register(f, for_b, for_c)
+    _register_all(f, for_b, for_c)
     assert f(D()) == "B"
 
 
@@ -1442,7 +1435,7 @@ def test_resolve_exact_still_prefers_exact_over_plain() -> None:
     def plain(x: int) -> str:
         return "plain"
 
-    _quiet_register(f, exact, plain)
+    _register_all(f, exact, plain)
     # Both applicable to an `int` query; Exact[int] is the leaf, so it wins.
     assert f.resolve(int).name == "exact"
 
@@ -1474,11 +1467,11 @@ def test_repeated_typevar_beats_independent() -> None:
     assert f(1, "a") == "indep"  # mixed -> only (T, U) applies at all
 
 
-def test_repeated_typevar_registration_is_silent() -> None:
-    """Registering `(T, T)` then `(T, U)` warns about nothing.
+def test_repeated_typevar_pair_is_not_listed() -> None:
+    """`(T, T)` registered before `(T, U)` is not an ambiguous pair.
 
-    The pair is separated by the tie-break, so it is neither guaranteed
-    ambiguous (no `RuntimeWarning`) nor listed by `ambiguities()`.
+    The pair is separated by the tie-break, so `ambiguities()` does not list
+    it.
     """
     T = typing.TypeVar("T")
     U = typing.TypeVar("U")
@@ -1488,12 +1481,9 @@ def test_repeated_typevar_registration_is_silent() -> None:
     def same(x, y):  # noqa: ANN001, ANN202
         return "same"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-
-        @f.register((T, U))
-        def indep(x, y):  # noqa: ANN001, ANN202
-            return "indep"
+    @f.register((T, U))
+    def indep(x, y):  # noqa: ANN001, ANN202
+        return "indep"
 
     assert f.ambiguities() == []
 
@@ -1561,9 +1551,7 @@ def test_repeated_typevar_beats_unannotated() -> None:
     def bare(x, y):  # noqa: ANN001, ANN202 -- unannotated -> (Any, Any)
         return "bare"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        f.register(bare)
+    f.register(bare)
 
     assert f(1, 2) == "same"
     assert f.ambiguities() == []
@@ -1596,8 +1584,8 @@ def test_swapped_independent_typevars_stay_ambiguous() -> None:
     """`(T, U)` vs `(U, T)` is a genuine tie the tie-break must not resolve.
 
     Both partitions are two singletons -- identical grouping -- so neither
-    refines the other. The pair stays ambiguous, warns at registration, and is
-    listed by `ambiguities()`.
+    refines the other. The pair stays ambiguous and is listed by
+    `ambiguities()`.
     """
     T = typing.TypeVar("T")
     U = typing.TypeVar("U")
@@ -1607,11 +1595,9 @@ def test_swapped_independent_typevars_stay_ambiguous() -> None:
     def tu(x, y):  # noqa: ANN001, ANN202
         return "tu"
 
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
-
-        @f.register((U, T))
-        def ut(x, y):  # noqa: ANN001, ANN202
-            return "ut"
+    @f.register((U, T))
+    def ut(x, y):  # noqa: ANN001, ANN202
+        return "ut"
 
     assert len(f.ambiguities()) == 1
     with pytest.raises(AmbiguousMethodError):
@@ -1632,11 +1618,9 @@ def test_partial_refinement_stays_ambiguous() -> None:
     def left(x, y, z):  # noqa: ANN001, ANN202
         return "left"
 
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
-
-        @f.register((T, U, U))
-        def right(x, y, z):  # noqa: ANN001, ANN202
-            return "right"
+    @f.register((T, U, U))
+    def right(x, y, z):  # noqa: ANN001, ANN202
+        return "right"
 
     assert len(f.ambiguities()) == 1
     with pytest.raises(AmbiguousMethodError):
@@ -1707,13 +1691,8 @@ def test_kwargs_typevar_groups_beat_untyped() -> None:
     def plain(**rest):  # noqa: ANN003, ANN202
         return "plain"
 
-    with warnings.catch_warnings():
-        # The two are genuinely ambiguous for a no-keyword call (nothing is
-        # captured to group), so registration warns; that is not what is under
-        # test here.
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register({"rest": T})(typed)
-        f.register(plain)
+    f.register({"rest": T})(typed)
+    f.register(plain)
 
     assert f(a=1, b=2) == "typed"
 
@@ -1734,10 +1713,8 @@ def test_kwargs_typevar_single_keyword_stays_ambiguous() -> None:
     def plain(**rest):  # noqa: ANN003, ANN202
         return "plain"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register({"rest": T})(typed)
-        f.register(plain)
+    f.register({"rest": T})(typed)
+    f.register(plain)
 
     with pytest.raises(AmbiguousMethodError):
         f(a=1)
@@ -1761,10 +1738,8 @@ def test_kwargs_unbound_typevar_rejects_mixed_values() -> None:
     def plain(**rest):  # noqa: ANN003, ANN202
         return "plain"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register({"rest": T})(typed)
-        f.register(plain)
+    f.register({"rest": T})(typed)
+    f.register(plain)
 
     assert f(a=1, b="x") == "plain"
 
@@ -1815,10 +1790,8 @@ def test_kwargs_typevar_grouping_not_flagged_ambiguous() -> None:
     def plain(x, **rest):  # noqa: ANN001, ANN003, ANN202
         return "plain"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register({"rest": T})(typed)
-        f.register(plain)
+    f.register({"rest": T})(typed)
+    f.register(plain)
 
     assert f.dispatch(1, a=2, b=3).name == "typed"
 
@@ -1839,10 +1812,8 @@ def test_kwargs_typevar_groups_in_resolve() -> None:
     def plain(**rest):  # noqa: ANN003, ANN202
         return "plain"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register({"rest": T})(typed)
-        f.register(plain)
+    f.register({"rest": T})(typed)
+    f.register(plain)
 
     assert f.resolve(a=int, b=int).name == "typed"
     assert f.resolve(a=int, b=str).name == "plain"
@@ -1865,10 +1836,8 @@ def test_kwargs_typevar_does_not_override_strict_specificity() -> None:
     def concrete(**rest):  # noqa: ANN003, ANN202
         return "concrete"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register({"rest": T})(grouped)
-        f.register({"rest": int})(concrete)
+    f.register({"rest": T})(grouped)
+    f.register({"rest": int})(concrete)
 
     assert f(a=1, b=2) == "concrete"
 
@@ -1891,10 +1860,8 @@ def test_kwargs_typevar_greatest_element_matches() -> None:
     def plain(**rest):  # noqa: ANN003, ANN202
         return "plain"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register({"rest": T})(typed)
-        f.register(plain)
+    f.register({"rest": T})(typed)
+    f.register(plain)
 
     assert f(a=1, b=True) == "typed"
     assert f(a=1, b="x") == "plain"
@@ -1917,10 +1884,8 @@ def test_typevar_solved_jointly_across_positional_and_kwargs() -> None:
     def plain(x, **kw):  # noqa: ANN001, ANN003, ANN202
         return "plain"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register({"x": T, "kw": T})(typed)
-        f.register({"x": T})(plain)
+    f.register({"x": T, "kw": T})(typed)
+    f.register({"x": T})(plain)
 
     assert f(1, a="x") == "plain"
     # Agreeing values keep the joint solve satisfied, so the typed one wins.
@@ -1941,16 +1906,13 @@ def test_kwargs_distinct_typevars_stay_ambiguous() -> None:
     def with_t(**rest):  # noqa: ANN003, ANN202
         return "t"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register({"rest": T})(with_t)
+    f.register({"rest": T})(with_t)
 
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
+    @f.register({"rest": U})
+    def with_u(**rest):  # noqa: ANN003, ANN202
+        return "u"
 
-        @f.register({"rest": U})
-        def with_u(**rest):  # noqa: ANN003, ANN202
-            return "u"
-
+    assert len(f.ambiguities()) == 1
     with pytest.raises(AmbiguousMethodError):
         f(a=1, b=2)
 
@@ -1973,12 +1935,11 @@ def test_typevar_mixed_positional_kwargs_grouping_stays_ambiguous() -> None:
     def b(x, y, **kw):  # noqa: ANN001, ANN003, ANN202
         return "b"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        f.register({"x": T, "y": T})(a)
-        f.register({"x": T, "y": U, "kw": T})(b)
+    f.register({"x": T, "y": T})(a)
+    f.register({"x": T, "y": U, "kw": T})(b)
 
     # A call that reaches the captured keywords witnesses the incomparable
-    # groupings, so it is ambiguous even though registration cannot see it.
+    # groupings, so it is ambiguous even though the audit, which checks only
+    # each method's own shape, cannot see it.
     with pytest.raises(AmbiguousMethodError):
         f(1, 2, p=3, q=4)

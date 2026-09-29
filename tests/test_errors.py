@@ -2,7 +2,6 @@
 
 # stdlib
 import typing
-import warnings
 
 # dependencies
 import pytest
@@ -22,11 +21,9 @@ from bagof.dispatchers._method import Method
 from bagof.dispatchers._signature import Signature
 
 
-def _quiet(function: Function, *fns: typing.Any) -> None:
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        for fn in fns:
-            function.register(fn)
+def _register_all(function: Function, *fns: typing.Any) -> None:
+    for fn in fns:
+        function.register(fn)
 
 
 # --- the highlight hook (Phase-3 renderer) -----------------------------
@@ -176,7 +173,7 @@ def test_ambiguous_lists_candidates_and_fix() -> None:
     def by_y(x: object, y: float) -> int:
         return 2
 
-    _quiet(f, by_x, by_y)
+    _register_all(f, by_x, by_y)
     with pytest.raises(AmbiguousMethodError) as info:
         f(2.0, 3.0)
     message = str(info.value)
@@ -196,7 +193,7 @@ def test_possible_fix_uses_exact_where_a_candidate_did() -> None:
     def by_second(x: object, y: float) -> int:
         return 2
 
-    _quiet(f, exact_first, by_second)
+    _register_all(f, exact_first, by_second)
     with pytest.raises(AmbiguousMethodError) as info:
         f(3, 2.0)
     assert "Exact[int]" in str(info.value)
@@ -212,7 +209,7 @@ def test_possible_fix_omitted_when_it_would_not_settle_the_tie() -> None:
     def of_strs(xs: typing.List[str]) -> int:
         return 2
 
-    _quiet(f, of_ints, of_strs)
+    _register_all(f, of_ints, of_strs)
     with pytest.raises(AmbiguousMethodError) as info:
         f([1])
     message = str(info.value)
@@ -233,7 +230,7 @@ def test_possible_fix_kept_when_it_settles_the_tie() -> None:
     def by_second(x: object, y: float) -> int:
         return 2
 
-    _quiet(f, exact_first, by_second)
+    _register_all(f, exact_first, by_second)
     with pytest.raises(AmbiguousMethodError) as info:
         f(3, 2.0)
     message = str(info.value)
@@ -258,7 +255,7 @@ def test_ambiguous_never_shows_values() -> None:
     def by_y(x: object, y: float) -> int:
         return 2
 
-    _quiet(f, by_x, by_y)
+    _register_all(f, by_x, by_y)
     with pytest.raises(AmbiguousMethodError) as info:
         f(1.5, 2.5)
     assert "1.5" not in str(info.value)
@@ -277,7 +274,7 @@ def test_resolve_ambiguous_renders_hints() -> None:
     def by_y(x: object, y: float) -> int:
         return 2
 
-    _quiet(f, by_x, by_y)
+    _register_all(f, by_x, by_y)
     with pytest.raises(AmbiguousMethodError) as info:
         f.resolve(float, float)
     assert "f(float, float) is ambiguous" in str(info.value)

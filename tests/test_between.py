@@ -3,7 +3,6 @@
 # stdlib
 import itertools
 import numbers
-import warnings
 
 # dependencies
 import pytest
@@ -806,20 +805,20 @@ def test_a_typevar_or_union_below_an_interval_is_read_by_its_bound() -> None:
 
 def test_dispatch_type_between() -> None:
     f = Function("f")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
 
-        @f.register((_tb(Dog, Animal),))
-        def _between(cls: object) -> str:
-            return "between"
+    @f.register((_tb(Dog, Animal),))
+    def _between(cls: object) -> str:
+        return "between"
 
-        @f.register((_te(Dog),))
-        def _exact(cls: object) -> str:
-            return "exact"
+    @f.register((_te(Dog),))
+    def _exact(cls: object) -> str:
+        return "exact"
 
-        @f.register((tx.Type[Puppy],))
-        def _puppy(cls: object) -> str:
-            return "puppy"
+    @f.register((tx.Type[Puppy],))
+    def _puppy(cls: object) -> str:
+        return "puppy"
+
+    assert f.ambiguities() == []
 
     assert f(Animal) == "between"
     assert f(Dog) == "exact"
@@ -828,18 +827,18 @@ def test_dispatch_type_between() -> None:
         f(object)
 
 
-def test_dispatch_between_vs_plain_warns_and_priority_settles() -> None:
+def test_dispatch_between_vs_plain_is_ambiguous_and_priority_settles() -> None:
     f = Function("f")
 
     @f.register((tx.Type[Dog],))
     def _plain(cls: object) -> str:
         return "plain"
 
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
+    @f.register((_tb(Dog, Animal),))
+    def _between(cls: object) -> str:
+        return "between"
 
-        @f.register((_tb(Dog, Animal),))
-        def _between(cls: object) -> str:
-            return "between"
+    assert len(f.ambiguities()) == 1
 
     with pytest.raises(AmbiguousMethodError):
         f(Dog)
@@ -852,12 +851,11 @@ def test_dispatch_between_vs_plain_warns_and_priority_settles() -> None:
     def _g_plain(cls: object) -> str:
         return "plain"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
+    @g.register((_tb(Dog, Animal),), priority=1)
+    def _g_between(cls: object) -> str:
+        return "between"
 
-        @g.register((_tb(Dog, Animal),), priority=1)
-        def _g_between(cls: object) -> str:
-            return "between"
+    assert g.ambiguities() == []
 
     assert g(Dog) == "between"
     assert g(Puppy) == "plain"
@@ -883,7 +881,7 @@ class _DiaB(_DiaX):
     pass
 
 
-def test_dispatch_between_pair_sharing_a_class_off_both_ends_warns() -> None:
+def test_dispatch_between_pair_sharing_a_class_off_both_ends_clashes() -> None:
     # `_DiaX` lies in both intervals, although no end of either one does.
     f = Function("f")
 
@@ -891,11 +889,11 @@ def test_dispatch_between_pair_sharing_a_class_off_both_ends_warns() -> None:
     def _left(cls: object) -> str:
         return "left"
 
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
+    @f.register((_tb(_DiaB, _DiaD),))
+    def _right(cls: object) -> str:
+        return "right"
 
-        @f.register((_tb(_DiaB, _DiaD),))
-        def _right(cls: object) -> str:
-            return "right"
+    assert len(f.ambiguities()) == 1
 
     with pytest.raises(AmbiguousMethodError):
         f(_DiaX)
@@ -910,11 +908,11 @@ def test_dispatch_between_in_one_of_two_positions() -> None:
     def _first(a: object, b: object) -> str:
         return "first"
 
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
+    @f.register((_tb(Dog, Animal), tx.Type[Dog]))
+    def _second(a: object, b: object) -> str:
+        return "second"
 
-        @f.register((_tb(Dog, Animal), tx.Type[Dog]))
-        def _second(a: object, b: object) -> str:
-            return "second"
+    assert len(f.ambiguities()) == 1
 
     with pytest.raises(AmbiguousMethodError):
         f(Dog, Dog)
@@ -923,16 +921,16 @@ def test_dispatch_between_in_one_of_two_positions() -> None:
 
     # A second position the two methods cannot share settles it.
     g = Function("g")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
 
-        @g.register((tx.Type[Dog], _tb(Dog, Animal)))
-        def _g_first(a: object, b: object) -> str:
-            return "first"
+    @g.register((tx.Type[Dog], _tb(Dog, Animal)))
+    def _g_first(a: object, b: object) -> str:
+        return "first"
 
-        @g.register((_tb(Dog, Animal), tx.Type[Puppy]))
-        def _g_second(a: object, b: object) -> str:
-            return "second"
+    @g.register((_tb(Dog, Animal), tx.Type[Puppy]))
+    def _g_second(a: object, b: object) -> str:
+        return "second"
+
+    assert g.ambiguities() == []
 
     assert g(Dog, Dog) == "first"
     assert g(Dog, Puppy) == "second"
@@ -946,18 +944,18 @@ def test_dispatch_between_in_one_of_two_positions() -> None:
     ],
     ids=["optional", "typevar"],
 )
-def test_dispatch_wrapped_between_warns(wrapped: tx.Any) -> None:
+def test_dispatch_wrapped_between_is_ambiguous(wrapped: tx.Any) -> None:
     f = Function("f")
 
     @f.register((tx.Type[Dog],))
     def _plain(cls: object) -> str:
         return "plain"
 
-    with pytest.warns(RuntimeWarning, match="ambiguous"):
+    @f.register((wrapped,))
+    def _wrapped(cls: object) -> str:
+        return "wrapped"
 
-        @f.register((wrapped,))
-        def _wrapped(cls: object) -> str:
-            return "wrapped"
+    assert len(f.ambiguities()) == 1
 
     with pytest.raises(AmbiguousMethodError):
         f(Dog)
@@ -965,16 +963,16 @@ def test_dispatch_wrapped_between_warns(wrapped: tx.Any) -> None:
 
 def test_a_narrower_interval_wins() -> None:
     f = Function("f")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
 
-        @f.register((_ts(Dog),))
-        def _above(cls: object) -> str:
-            return "super"
+    @f.register((_ts(Dog),))
+    def _above(cls: object) -> str:
+        return "super"
 
-        @f.register((_tb(Dog, Animal),))
-        def _between(cls: object) -> str:
-            return "between"
+    @f.register((_tb(Dog, Animal),))
+    def _between(cls: object) -> str:
+        return "between"
+
+    assert f.ambiguities() == []
 
     assert f(Dog) == "between"
     assert f(Animal) == "between"

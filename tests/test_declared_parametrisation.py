@@ -29,7 +29,6 @@ import gc
 import sys
 import types
 import typing
-import warnings
 import weakref
 
 # dependencies
@@ -478,10 +477,8 @@ def test_child_list_dispatches_on_its_declared_argument(
     f: types.SimpleNamespace,
 ) -> None:
     handle = Function("handle")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        handle.register((tx.List[int],))(lambda xs: "ints")
-        handle.register((tx.List[float],))(lambda xs: "floats")
+    handle.register((tx.List[int],))(lambda xs: "ints")
+    handle.register((tx.List[float],))(lambda xs: "floats")
     assert handle.ambiguities() == []
     assert handle(f.Child()) == "ints"
     with pytest.raises(AmbiguousMethodError):
@@ -493,10 +490,8 @@ def test_box_instances_dispatch_on_their_recorded_argument(
     f: types.SimpleNamespace,
 ) -> None:
     unbox = Function("unbox")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        unbox.register((f.Box[int],))(lambda b: "int")
-        unbox.register((f.Box[str],))(lambda b: "str")
+    unbox.register((f.Box[int],))(lambda b: "int")
+    unbox.register((f.Box[str],))(lambda b: "str")
     assert unbox.ambiguities() == []
     assert unbox(f.Box[int]()) == "int"
     assert unbox(f.Box[str]()) == "str"
@@ -885,10 +880,9 @@ def test_a_row_dispatches_on_its_recorded_argument() -> None:
             return 0
 
     h = Function("h")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        h.register((tx.Sequence[int],))(lambda s: "ints")
-        h.register((tx.Sequence[str],))(lambda s: "strs")
+    h.register((tx.Sequence[int],))(lambda s: "ints")
+    h.register((tx.Sequence[str],))(lambda s: "strs")
+    assert h.ambiguities() == []
     assert h(Row[int]()) == "ints"
     for _ in range(2):
         assert h(Row[str]()) == "strs"
@@ -1114,10 +1108,9 @@ def test_pep585_instances_dispatch_on_their_record(
     pep: types.SimpleNamespace,
 ) -> None:
     m = Function("m")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        m.register((list[int],))(lambda xs: "ints")
-        m.register((list[str],))(lambda xs: "strs")
+    m.register((list[int],))(lambda xs: "ints")
+    m.register((list[str],))(lambda xs: "strs")
+    assert m.ambiguities() == []
     # Ambiguous before #60: `GL[int]()` was matched as a bare list.
     assert m(pep.GL[int]()) == "ints"
     assert m(pep.GL[str]()) == "strs"
