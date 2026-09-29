@@ -47,9 +47,11 @@ class Hint(tx.Generic[_T_co]):
     It matches neither `#!python bool`, which sits below `#!python int`,
     nor the unrelated `#!python str`. An argument written as
     [`Between`][bagof.dispatchers.Between]`[L, U]` bounds the match from
-    both sides, so `#!python Hint[Between[bool, numbers.Integral]]`
-    matches `#!python bool`, `#!python int` and
-    `#!python numbers.Integral`, but not `#!python object`.
+    both sides, so `#!python Hint[Between[int, numbers.Real]]` matches
+    `#!python int`, `#!python numbers.Integral` and
+    `#!python numbers.Real`, but neither `#!python bool`, which sits
+    below `#!python int`, nor `#!python object`, which sits above
+    `#!python numbers.Real`.
 
     `Hint` is a marker used only in annotations and is never
     instantiated. A bare `#!python Hint`, written with no argument, is

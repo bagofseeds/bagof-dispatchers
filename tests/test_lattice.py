@@ -343,8 +343,12 @@ CORPUS = [
     Exact[int],
     Exact[bool],
     Exact[str],
+    # No value is exactly of a type that has none, so `Exact[Never]` is a
+    # bottom, below every `Exact[C]` as `Never` is.
+    Exact[tx.Never],
     # Type with an Exact argument, an identity leaf within the Type position.
     tx.Type[Exact[int]],
+    tx.Type[Exact[tx.Never]],
     # Hint forms, whose values are hints: ordered only among themselves, and a
     # `Hint[Exact[C]]` is a leaf under `Hint[C]` just as `Exact[C]` is under
     # `C`. Below only `Any`, above nothing ordinary.
@@ -405,6 +409,29 @@ def _ltb(lower: tx.Any, upper: tx.Any) -> tx.Any:
     return tx.Type[Between[lower, upper]]
 
 
+# A diamond in which `_DiaX` lies in both `Between[_DiaA, _DiaC]` and
+# `Between[_DiaB, _DiaD]`, although no end of either interval lies in the
+# other.
+class _DiaC:
+    pass
+
+
+class _DiaD:
+    pass
+
+
+class _DiaX(_DiaC, _DiaD):
+    pass
+
+
+class _DiaA(_DiaX):
+    pass
+
+
+class _DiaB(_DiaX):
+    pass
+
+
 @pytest.mark.parametrize(
     "a, b, expected",
     [
@@ -431,6 +458,13 @@ def _ltb(lower: tx.Any, upper: tx.Any) -> tx.Any:
         (_ltb(_Dog, _Animal), tx.Type[_Puppy], False),
         (_ltb(_Dog, _Animal), _lts(_Animal), True),
         (Hint[Between[bool, int]], _lhs(numbers.Integral), False),
+        # Two intervals, overlapping and disjoint.
+        (_ltb(_Puppy, _Dog), _ltb(_Dog, _Animal), True),
+        (_ltb(_Puppy, _Animal), _ltb(_Dog, _Dog), True),
+        (_ltb(_Puppy, _Dog), _ltb(_DiaA, _DiaC), False),
+        (_ltb(_DiaA, _DiaA), _ltb(_DiaB, _DiaD), False),
+        # The shared class is found on the MRO of a lower end.
+        (_ltb(_DiaA, _DiaC), _ltb(_DiaB, _DiaD), True),
     ],
     ids=repr,
 )
@@ -482,7 +516,7 @@ def test_order_is_transitive() -> None:
 
 
 def test_the_bottom_is_below_every_hint_and_only_a_bottom_below_it() -> None:
-    bottoms = (tx.Never, tx.NoReturn)
+    bottoms = (tx.Never, tx.NoReturn, Exact[tx.Never])
     for hint in CORPUS:
         assert issubhint(tx.Never, hint) is True, hint
         assert issubhint(hint, tx.Never) is (hint in bottoms), hint

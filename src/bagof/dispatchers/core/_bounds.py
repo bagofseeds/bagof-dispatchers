@@ -14,8 +14,9 @@ wrong position.
 import typing_extensions as tx
 
 # local
-from ._compat import ishint, spellings
+from ._compat import _LITERAL_FORMS, ishint, spellings
 from ._exact import _ANNOTATED_ALIAS, Exact, exact_target, is_exact
+from ._introspect import get_args_uw, get_origin_uw
 from ._super import (
     _render_target,
     bare_super_message,
@@ -61,15 +62,26 @@ def _is_any(hint: tx.Any) -> bool:
 
 
 def _is_forward(hint: tx.Any) -> bool:
-    """Report whether `hint` is a forward reference that is not resolved yet.
+    """Report whether `hint` holds a forward reference that is not resolved.
 
-    A forward reference is written as a string, which `Annotated` turns
-    into a [`ForwardRef`][typing.ForwardRef] when it is the annotated
-    type.
+    A forward reference is written as a string, which `typing` turns into
+    a [`ForwardRef`][typing.ForwardRef] when it is the argument of a
+    generic form. It counts wherever it appears in `hint`, so
+    `#!python Optional["Later"]` and `#!python List["Later"]` hold one
+    as much as `#!python "Later"` does. The arguments of a `Literal` are
+    values rather than hints, so a string among them is not a forward
+    reference.
     """
-    return isinstance(hint, str) or isinstance(
+    if isinstance(hint, str) or isinstance(
         getattr(hint, "__forward_arg__", None), str
-    )
+    ):
+        return True
+    if isinstance(hint, (list, tuple)):
+        # The parameter list of a `Callable`.
+        return any(_is_forward(arg) for arg in hint)
+    if get_origin_uw(hint) in _LITERAL_FORMS:
+        return False
+    return any(_is_forward(arg) for arg in get_args_uw(hint))
 
 
 def _render_marked(hint: tx.Any) -> str:
@@ -174,17 +186,18 @@ else:
         refuses `Puppy`, a subclass of `Dog`, because `Puppy` lies below
         the lower bound, and it refuses `object`, because `object` lies
         above the upper bound. In the same way,
-        `#!python Hint[Between[bool, numbers.Integral]]` accepts the
-        hints `#!python bool`, `#!python int` and
-        `#!python numbers.Integral`, but neither `#!python object` nor
-        `#!python Any`.
+        `#!python Hint[Between[int, numbers.Real]]` accepts the hints
+        `#!python int`, `#!python numbers.Integral` and
+        `#!python numbers.Real`. It refuses `#!python bool`, which lies
+        below `#!python int`, and it refuses `#!python object` and
+        `#!python Any`, which lie above `#!python numbers.Real`.
 
         Every spelling that can stand inside `Type[...]` or `Hint[...]`
         describes such an interval. A plain `C` is the interval
         `#!python Between[Never, C]`, since it accepts `C` and
         everything below it. `#!python Super[C]` is the interval from
         `C` to the top, which is `object` inside `Type` and `Any` inside
-        `Hint`. [`Exact`][bagof.dispatchers.Exact]`[C]` stays apart from
+        `Hint`. [`Exact`][]`[C]` stays apart from
         this family: it names the one hint `C` as it is written, which
         is narrower than `#!python Between[C, C]`, the interval of every
         hint equivalent to `C`.
@@ -200,11 +213,11 @@ else:
         settles it.
 
         The lower bound must be a sub-hint of the upper bound. An empty
-        interval such as `#!python Between[int, bool]` is refused when it
-        is written, with a message that suggests the reversed spelling
+        interval such as `#!python Between[Animal, Dog]` is refused when
+        it is written, with a message that suggests the reversed spelling
         when that one is not empty. `#!python Between[Any, U]` is refused
-        as well unless `U` is itself a top, because only a top lies above
-        `Any`. The interval with no lower bound is spelled
+        as well unless `U` is `Any` itself, because nothing else lies
+        above `Any`. The interval with no lower bound is spelled
         `#!python Between[Never, U]`, which inside `Type` or `Hint` means
         the same as plain `U`. A lower bound cannot be a quoted forward
         reference, because nothing would ever resolve it, but quoting the
@@ -264,12 +277,18 @@ else:
             if _is_forward(lower):
                 shown = _render_target(lower)
                 spelled = f"Between[{shown}, {_render_target(upper)}]"
+                if isinstance(lower, str) or hasattr(lower, "__forward_arg__"):
+                    what = f"the forward reference {shown!r}"
+                    define = shown
+                else:
+                    what = f"{shown}, which holds a forward reference,"
+                    define = f"every name that {shown} refers to"
                 raise TypeError(
-                    f"Between[...] cannot take the forward reference "
-                    f"{shown!r} as its lower bound, because a lower bound "
-                    "is kept as written and never resolved. Define "
-                    f"{shown} before the annotation is read, or quote the "
-                    f"whole annotation instead, as 'Type[{spelled}]'."
+                    f"Between[...] cannot take {what} as its lower bound, "
+                    "because a lower bound is kept as written and never "
+                    f"resolved. Define {define} before the annotation is "
+                    "read, or quote the whole annotation instead, as "
+                    f"'Type[{spelled}]'."
                 )
             message = empty_interval_message(lower, upper)
             if message is not None:

@@ -100,20 +100,26 @@ above `int`, so `Hint[Super[int]]` leaves it to the catch-all.
 
 `Hint[Between[L, U]]` bounds the hint from both sides, accepting the
 hints from `L` up to `U` with both ends included.
-`Hint[Between[bool, Integral]]` therefore matches `bool`, `int` and
-`numbers.Integral`, while `object` and `Any`, which lie above
-`numbers.Integral`, are left out, and so is the unrelated `str`:
+`Hint[Between[int, Real]]` therefore matches `int`, `numbers.Integral` and
+`numbers.Real`, while `bool`, which lies below `int`, and `object` and
+`Any`, which lie above `numbers.Real`, are left out, and so is the
+unrelated `str`:
 
 ```pycon
+>>> from numbers import Real
 >>> from bagof.dispatchers import Between
 >>> @dispatch
-... def narrow(h: Hint[Between[bool, Integral]]) -> str:
-...     return "from bool up to Integral"
+... def narrow(h: Hint[Between[int, Real]]) -> str:
+...     return "from int up to Real"
 >>> @dispatch
 ... def narrow(h: Hint[Any]) -> str:
 ...     return "some other hint"
 >>> narrow(int)
-'from bool up to Integral'
+'from int up to Real'
+>>> narrow(Integral)
+'from int up to Real'
+>>> narrow(bool)
+'some other hint'
 >>> narrow(object)
 'some other hint'
 ```

@@ -1749,8 +1749,9 @@ def issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
     against each other in either direction.
     [`Between`][bagof.dispatchers.Between]`[L, U]` names both ends of
     such a range, and one range is below another when it lies inside
-    it, so `#!python Type[Between[bool, int]]` is a sub-hint of
-    `#!python Type[int]` and of `#!python Type[Super[bool]]`. A `Super` or
+    it, so `#!python Type[Between[D, C]]`, for a class `D` derived from
+    `C`, is a sub-hint of both `#!python Type[C]` and
+    `#!python Type[Super[D]]`. A `Super` or
     a `Between` anywhere other than the immediate argument of
     `#!python Type` or `#!python Hint` raises a [`TypeError`][], since a
     bound on a value cannot be checked.
@@ -1827,7 +1828,11 @@ def _issubhint(hint: tx.Any, superhint: tx.Any) -> bool:
 
     # A bottom (`Never`/`NoReturn`) holds no values, so it is a sub-hint of
     # every hint -- `Exact[C]` included, which is why this comes first.
-    if _is_never(hint):
+    # `Exact[Never]` holds no values either, since no value is exactly of a
+    # type that has none, so it is a bottom as well.
+    if _is_never(hint) or (
+        is_exact(hint) and _is_never(normalise_hint(exact_target(hint)))
+    ):
         return True
 
     # A bound means something only as the argument of `Type` or `Hint`,
@@ -2869,7 +2874,9 @@ def _issubbounds(sub: tx.Any, sup: tx.Any, top: tx.Any) -> bool:
     can always be defined that is not above `C`.
 
     A few shapes are settled before any interval is read. Inside `Type`,
-    a bottom `sub` holds no class and so is below everything. Inside
+    a bottom `sub` holds no class and so is below everything, and the same
+    is true of an interval whose upper end is a bottom, such as
+    `Between[Never, Never]` or `Exact[Never]`. Inside
     `Hint` the same shortcut would be unsound, because the hint `Never`
     is itself a value of `Hint[Never]`. The intervals decide there
     instead, so `Hint[Never]` is below `Hint[Super[C]]` only when `C` is
@@ -2880,8 +2887,13 @@ def _issubbounds(sub: tx.Any, sup: tx.Any, top: tx.Any) -> bool:
     reads it everywhere else. A `Super[C]`, `Between[L, U]` or `Exact[C]`
     `sub` is a single interval even when a bound is a union.
     """
-    if top is object and _is_never(sub):
-        return True
+    if top is object:
+        if _is_never(sub):
+            return True
+        if (is_bound(sub) or is_exact(sub)) and _is_never(
+            bounds_of(sub, top)[1]
+        ):
+            return True
     if is_exact(sup):
         return False
     if not (is_bound(sub) or is_exact(sub)):

@@ -207,8 +207,8 @@ entry marks a result worth double-checking against intuition.
 | `Type[Super[Dog]\] ≤ Type[object]`, `Hint[Super[int]\] ≤ Hint` | True / True | *(0.3.0)* every class is below `object` and every hint below `Any`, so a lower bound sits below the top of its form |
 | `Type[Between[Dog, Animal]\] ≤ Type[Animal]`, `Type[Between[Dog, Animal]\] ≤ Type[Dog]` | True / **False** | *(0.3.0)* `Between[L, U]` inside `Type` accepts the classes from `L` up to `U`; the classes from `Dog` up to `Animal` all lie below `Animal`, but `Animal` itself is not below `Dog` (§4.2) |
 | `Type[Exact[Dog]\] ≤ Type[Between[Dog, Animal]\]` | True | *(0.3.0)* the single class `Dog` lies between `Dog` and `Animal` (§4.2) |
-| `Between[int, bool]` | `TypeError` | *(0.3.0)* an empty interval is refused when it is written, and the message suggests `Between[bool, int]` (§4.2) |
-| `issubhint(Super[int], int)`, `ishintstance(1, Between[bool, int])` | `TypeError` | *(0.3.0)* a lower bound or an interval is valid only as the immediate argument of `Type` or `Hint`; anywhere else it would bound a value from below, which cannot be checked (§4.2) |
+| `Between[Animal, Dog]` | `TypeError` | *(0.3.0)* an empty interval is refused when it is written, and the message suggests `Between[Dog, Animal]` (§4.2) |
+| `issubhint(Super[int], int)`, `ishintstance(Dog(), Between[Dog, Animal])` | `TypeError` | *(0.3.0)* a lower bound or an interval is valid only as the immediate argument of `Type` or `Hint`; anywhere else it would bound a value from below, which cannot be checked (§4.2) |
 | `issubhint(1, int)`, `issubhint(1, 1)`, `issubhint(int, 1)` | `TypeError` | *(0.2.0)* a non-hint on either side is a caller error, reported for the left argument first, the way `issubclass` rejects a non-class; a non-hint no longer reads as `Any` |
 
 The value-level check, `ishintstance`, does not look at the values held
@@ -250,9 +250,9 @@ A hint `v` is `in Hint[Super[X]\]` when `X ≤ v`, so `numbers.Integral`,
 are not. An interval asks for both bounds at once. A class `v` is `in
 Type[Between[L, U]\]` when `L ≤ v` and `v ≤ U`, so `Dog` and `Animal` are
 `in Type[Between[Dog, Animal]\]` while `Puppy` and `object` are not, and a
-hint is `in Hint[Between[L, U]\]` under the same condition, so `bool`,
-`int`, and `numbers.Integral` are `in Hint[Between[bool, Integral]\]` while
-`object` and `Any` are not.
+hint is `in Hint[Between[L, U]\]` under the same condition, so `int`,
+`numbers.Integral`, and `numbers.Real` are `in Hint[Between[int, Real]\]`
+while `bool`, `object`, and `Any` are not.
 
 ### 2.2 Binding and selection (name-aware, normative)
 
@@ -1192,8 +1192,8 @@ hint `int` and every hint that `int` is a sub-hint of. It is spelled
 
 `Between[L, U]` supplies both bounds at once. `Type[Between[Dog, Animal]\]`
 accepts the classes from `Dog` up to `Animal`, both included, and
-`Hint[Between[bool, Integral]\]` accepts the hints from `bool` up to
-`numbers.Integral`. It is spelled `bagof.dispatchers.Between[L, U]` and
+`Hint[Between[int, Real]\]` accepts the hints from `int` up to
+`numbers.Real`. It is spelled `bagof.dispatchers.Between[L, U]` and
 implemented as `tx.Annotated[U, LOWER(L)]`, the upper bound annotated with
 a private marker that carries the lower one. There are no `BetweenType` or
 `BetweenHint` aliases, since `Type[Between[Dog, Animal]\]` already reads
@@ -1364,14 +1364,21 @@ specific. Two hints ordered against each other always share the narrower
 one's values. A lower bound adds pairs that share values without being
 ordered: `Type[Animal]` and `Type[Super[Dog]\]` are incomparable, yet both
 accept `Dog` and `Animal`, and `Type[Dog]` and
-`Type[Between[Dog, Animal]\]` both accept `Dog`. Such a pair is recognised by reading each
-argument as an interval (§4.2) and asking whether an end of one interval
-lies in both, where inside `Type` that end must also be a class, since only
-a class can be passed there. The test is sufficient rather than complete,
-so a reported overlap always has a real call behind it, and it is only ever
-consulted for a pair that involves a lower bound, which leaves every other
-warning as it was. Registering `Type[Animal]` and `Type[Super[Dog]\]` side
-by side therefore warns. A method for `Type[Exact[Dog]\]` settles the call
+`Type[Between[Dog, Animal]\]` both accept `Dog`. Such a pair is recognised
+by reading each argument as an interval (§4.2) and asking whether some
+candidate lies in both intervals. The candidates are the ends of the two
+intervals and, inside `Type`, every class on the MRO of a lower end that is
+a class, because a class shared by both intervals lies above both lower
+ends. That is how `Type[Between[A, C]\]` and `Type[Between[B, D]\]` are
+found to share `X`, for a class `X(C, D)` with subclasses `A` and `B`,
+although no end of either interval lies in the other. Inside `Type`, a
+candidate must also be a class, since only a class can be passed there. The
+test is sufficient, so a reported overlap always has a real call behind it,
+and for nominal class hierarchies, in which no class is made a subclass
+through `register` or `__subclasshook__`, it is also complete when every
+bound is a class. It is only ever consulted for a pair that involves a lower
+bound, which leaves every other warning as it was. Registering
+`Type[Animal]` and `Type[Super[Dog]\]` side by side therefore warns. A method for `Type[Exact[Dog]\]` settles the call
 with `Dog`, but not the one with `Animal`, while a `priority` on either
 method settles both.
 

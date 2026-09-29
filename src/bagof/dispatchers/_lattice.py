@@ -116,12 +116,17 @@ def overlaps(a: tx.Any, b: tx.Any) -> bool:
     [`Between`][bagof.dispatchers.Between] bound, and neither may be
     [`Exact`][bagof.dispatchers.Exact], whose pairs the order already
     decides. Each argument is then read as an interval by
-    [`bounds_of`][], and the two hints share a value when an end of one
-    interval lies in both. Inside `Type`, that end must also be a class,
-    since only a class can be passed there. The test is therefore a
+    [`bounds_of`][], and the two hints share a value when some candidate
+    lies in both intervals. The candidates are the ends of the two
+    intervals and, inside `Type`, every class on the MRO of a lower end
+    that is a class, since a class shared by both intervals lies above
+    both lower ends. Inside `Type`, a candidate must also be a class,
+    because only a class can be passed there. The test is therefore a
     sufficient condition: when it reports an overlap, a value in both
     really exists, which is the direction a warning needs. When the
-    bounds involved are classes, it also finds every overlap there is.
+    bounds involved are classes of a nominal hierarchy, in which no class
+    is made a subclass through `register` or `__subclasshook__`, it also
+    finds every overlap there is.
 
     A parametrised union on either side overlaps the other hint when one
     of its members does, which covers a parameter written as
@@ -163,7 +168,15 @@ def overlaps(a: tx.Any, b: tx.Any) -> bool:
     if is_exact(arg_a) or is_exact(arg_b):
         return False
     first, second = bounds_of(arg_a, top), bounds_of(arg_b, top)
-    for end in first + second:
+    candidates = list(first + second)
+    if top is object:
+        # A class shared by both intervals lies above both lower ends, so
+        # in a nominal hierarchy it is on the MRO of each lower end that is
+        # a class. Each candidate is still checked against both intervals.
+        for lower in (first[0], second[0]):
+            if isinstance(lower, type):
+                candidates.extend(lower.__mro__)
+    for end in candidates:
         if top is object and not isinstance(end, type):
             continue
         if _within(end, first) and _within(end, second):

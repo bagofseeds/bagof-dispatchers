@@ -35,7 +35,7 @@ from bagof.dispatchers.core._bounds import (
     is_bound,
 )
 from bagof.dispatchers.core._exact import is_exact
-from bagof.dispatchers.core._super import is_super
+from bagof.dispatchers.core._super import _render_target, is_super
 
 Integral = numbers.Integral
 
@@ -209,6 +209,44 @@ def test_a_forward_reference_lower_bound_is_refused() -> None:
             "quote the whole annotation instead, as "
             "'Type[Between[Later, Animal]]'."
         )
+
+
+@pytest.mark.parametrize(
+    "lower",
+    [tx.Optional["Later"], tx.List["Later"]],
+    ids=["optional", "list"],
+)
+def test_a_nested_forward_reference_lower_bound_is_refused(
+    lower: tx.Any,
+) -> None:
+    # Refused as a quoted lower bound, not reported as an empty interval.
+    # How `Optional` is spelled differs between Python versions.
+    shown = _render_target(lower)
+    assert "ForwardRef('Later')" in shown
+    with pytest.raises(TypeError) as info:
+        Between[lower, object]
+    assert str(info.value) == (
+        f"Between[...] cannot take {shown}, which holds a forward "
+        "reference, as its lower bound, because a lower bound is kept as "
+        f"written and never resolved. Define every name that {shown} "
+        "refers to before the annotation is read, or quote the whole "
+        f"annotation instead, as 'Type[Between[{shown}, object]]'."
+    )
+
+
+def test_a_literal_string_is_not_a_forward_reference() -> None:
+    assert between_bounds(Between[tx.Literal["a"], str]) == (
+        tx.Literal["a"],
+        str,
+    )
+
+
+def test_a_nested_forward_reference_upper_bound_defers_the_check() -> None:
+    assert empty_interval_message(int, tx.List["Later"]) is None
+    lower, upper = between_bounds(Between[int, tx.List["Later"]])
+    assert lower is int
+    assert upper == tx.List["Later"]
+    assert between_bounds(Between[tx.Never, tx.Callable[["Later"], int]])
 
 
 def test_a_forward_reference_upper_bound_is_kept() -> None:
@@ -624,7 +662,13 @@ def test_the_other_spellings_are_intervals() -> None:
     assert issubhint(Hint[tx.Never], _hb(tx.Never, int)) is True
 
 
-_TYPE_CORPUS = _TYPE_COLUMNS[:10]
+# The empty-ended intervals hold no class, so they sit below every
+# interval, as `Type[Never]` does.
+_TYPE_CORPUS = _TYPE_COLUMNS[:10] + [
+    tx.Type[tx.Never],
+    _tb(tx.Never, tx.Never),
+    _te(tx.Never),
+]
 _HINT_CORPUS = _HINT_ROWS + [tx.Any]
 
 
@@ -727,6 +771,106 @@ def test_dispatch_between_vs_plain_warns_and_priority_settles() -> None:
 
     assert g(Dog) == "between"
     assert g(Puppy) == "plain"
+
+
+class _DiaC:
+    pass
+
+
+class _DiaD:
+    pass
+
+
+class _DiaX(_DiaC, _DiaD):
+    pass
+
+
+class _DiaA(_DiaX):
+    pass
+
+
+class _DiaB(_DiaX):
+    pass
+
+
+def test_dispatch_between_pair_sharing_a_class_off_both_ends_warns() -> None:
+    # `_DiaX` lies in both intervals, although no end of either one does.
+    f = Function("f")
+
+    @f.register((_tb(_DiaA, _DiaC),))
+    def _left(cls: object) -> str:
+        return "left"
+
+    with pytest.warns(RuntimeWarning, match="ambiguous"):
+
+        @f.register((_tb(_DiaB, _DiaD),))
+        def _right(cls: object) -> str:
+            return "right"
+
+    with pytest.raises(AmbiguousMethodError):
+        f(_DiaX)
+    assert f(_DiaA) == "left"
+    assert f(_DiaB) == "right"
+
+
+def test_dispatch_between_in_one_of_two_positions() -> None:
+    f = Function("f")
+
+    @f.register((tx.Type[Dog], _tb(Dog, Animal)))
+    def _first(a: object, b: object) -> str:
+        return "first"
+
+    with pytest.warns(RuntimeWarning, match="ambiguous"):
+
+        @f.register((_tb(Dog, Animal), tx.Type[Dog]))
+        def _second(a: object, b: object) -> str:
+            return "second"
+
+    with pytest.raises(AmbiguousMethodError):
+        f(Dog, Dog)
+    assert f(Puppy, Animal) == "first"
+    assert f(Animal, Puppy) == "second"
+
+    # A second position the two methods cannot share settles it.
+    g = Function("g")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+
+        @g.register((tx.Type[Dog], _tb(Dog, Animal)))
+        def _g_first(a: object, b: object) -> str:
+            return "first"
+
+        @g.register((_tb(Dog, Animal), tx.Type[Puppy]))
+        def _g_second(a: object, b: object) -> str:
+            return "second"
+
+    assert g(Dog, Dog) == "first"
+    assert g(Dog, Puppy) == "second"
+
+
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        tx.Optional[_tb(Dog, Animal)],
+        tx.TypeVar("_TVB", bound=_tb(Dog, Animal)),
+    ],
+    ids=["optional", "typevar"],
+)
+def test_dispatch_wrapped_between_warns(wrapped: tx.Any) -> None:
+    f = Function("f")
+
+    @f.register((tx.Type[Dog],))
+    def _plain(cls: object) -> str:
+        return "plain"
+
+    with pytest.warns(RuntimeWarning, match="ambiguous"):
+
+        @f.register((wrapped,))
+        def _wrapped(cls: object) -> str:
+            return "wrapped"
+
+    with pytest.raises(AmbiguousMethodError):
+        f(Dog)
 
 
 def test_a_narrower_interval_wins() -> None:
