@@ -67,7 +67,7 @@ walks through registering overloads in more detail.
 ## Install
 
 ```sh
-pip install git+https://github.com/bagofseeds/bagof-dispatchers.git
+pip install bagof-dispatchers
 ```
 
 ## Status
@@ -75,23 +75,3 @@ pip install git+https://github.com/bagofseeds/bagof-dispatchers.git
 The project is at an early stage: the API is still settling, and some of it
 may still move. Issues and ideas are welcome at
 [bagofseeds/bagof-dispatchers][issues].
-
-`bagof.dispatchers` is the low-level root of the `bagof` family. It owns the
-hint subtype relation and the introspection helpers the other bags build on;
-see [Part of bagof][part-of-bagof] and the [project overview][bagof]. For how
-it compares with `plum`, `multipledispatch`, `functools.singledispatch`, and
-Julia's own multiple dispatch, see the [comparison page][comparison].
-
-[getting-started]: https://bagofseeds.github.io/bagof-dispatchers/guide/getting-started/
-[registering]: https://bagofseeds.github.io/bagof-dispatchers/guide/registering-overloads/
-[ambiguous]: https://bagofseeds.github.io/bagof-dispatchers/guide/ambiguous-overloads/
-[no-match]: https://bagofseeds.github.io/bagof-dispatchers/guide/no-match/
-[exact-types]: https://bagofseeds.github.io/bagof-dispatchers/guide/exact-types/
-[hints-as-values]: https://bagofseeds.github.io/bagof-dispatchers/guide/hints-as-values/
-[variance]: https://bagofseeds.github.io/bagof-dispatchers/guide/variance/
-[registries]: https://bagofseeds.github.io/bagof-dispatchers/guide/registries/
-[part-of-bagof]: https://bagofseeds.github.io/bagof-dispatchers/guide/part-of-bagof/
-[comparison]: https://bagofseeds.github.io/bagof-dispatchers/comparison/
-[typing_extensions]: https://typing-extensions.readthedocs.io/
-[bagof]: https://bagofseeds.github.io/bagof/
-[issues]: https://github.com/bagofseeds/bagof-dispatchers/issues
