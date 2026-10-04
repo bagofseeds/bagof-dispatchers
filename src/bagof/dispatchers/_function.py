@@ -231,6 +231,7 @@ class Function:
         # `__subclasshook__` that dispatches back into this same function.
         self._lock = threading.RLock()
         self._methods: tx.Tuple[Method, ...] = ()
+        self._index = _MethodIndex()
         self._cache = _Cache((), _NO_TOKEN)
 
     # -- public data ----------------------------------------------------
@@ -383,7 +384,12 @@ class Function:
         """
         with self._lock:
             first = not self._methods
-            methods = _replace_or_append(self._methods, method)
+            index = self._index
+            # A shallow copy shares the index; rebuild it when it is stale.
+            if index.methods is not self._methods:
+                index = self._index = _MethodIndex(self._methods)
+            _replace_or_append(index, method)
+            methods = index.methods
             # Publish the methods tuple first, then invalidate the cache: a
             # reader that sees the new methods but the old cache finds the
             # cache stale (its methods are not the published tuple) and
@@ -2382,10 +2388,146 @@ def _overlay_hint(
     return normalised
 
 
-def _replace_or_append(
-    methods: tx.Tuple[Method, ...], method: Method
-) -> tx.Tuple[Method, ...]:
-    """Add `method` to `methods`, replacing one written the same way, if any.
+class _MethodIndex:
+    """An index of a function's methods by signature, for fast replacement.
+
+    A newly registered method replaces an existing one only when the two
+    signatures are [`same_as`][Signature.same_as] each other. Comparing
+    a new method against every registered method would make registering
+    `n` methods quadratic, so the index narrows the comparison down to the
+    few methods that could possibly match. It relies on the keys from
+    `Signature._same_as_keys`, which signatures equal under `same_as`
+    always share, and it still confirms every candidate with `same_as`
+    itself, so the index never changes which method gets replaced.
+
+    Methods are grouped first by the shape of their signature. Within a
+    shape, a method whose hints could all be keyed is filed under its full
+    key, while a loose method, one that is still deferred, has a hint
+    that cannot be keyed, or has a key whose comparison raises, is
+    compared against every new method of the same shape. A deferred
+    method is filed under its full key once its hints have settled.
+
+    The index describes one particular methods tuple, recorded in
+    `methods`, and is updated in place as that tuple is replaced.
+    """
+
+    __slots__ = ("methods", "entries", "buckets", "settled_loose")
+
+    def __init__(self, methods: tx.Tuple[Method, ...] = ()) -> None:
+        self.methods: tx.Tuple[Method, ...] = ()
+        # Per position: (shape key, full key or None).
+        self.entries: tx.List[tx.Tuple[tx.Any, tx.Any]] = []
+        # Shape key -> ({full key: [positions]}, [loose positions]).
+        self.buckets: tx.Dict[
+            tx.Any, tx.Tuple[tx.Dict[tx.Any, tx.List[int]], tx.List[int]]
+        ] = {}
+        # Loose positions that are settled and still have no full key.
+        self.settled_loose: tx.Set[int] = set()
+        for position, method in enumerate(methods):
+            keys = method.signature._same_as_keys()
+            self.entries.append(self._file(position, keys))
+        self.methods = methods
+
+    def _file(
+        self, position: int, keys: tx.Tuple[tx.Any, tx.Any]
+    ) -> tx.Tuple[tx.Any, tx.Any]:
+        """File `position` under `keys` and return the keys it was filed
+        under. A full key whose comparison with a filed key raises is filed
+        as loose instead.
+        """
+        shape, full = keys
+        full_map, loose = self.buckets.setdefault(shape, ({}, []))
+        if full is not None:
+            try:
+                full_map.setdefault(full, []).append(position)
+            except Exception:  # noqa: BLE001
+                pass
+            else:
+                return keys
+        loose.append(position)
+        return shape, None
+
+    def _unfile(self, position: int) -> None:
+        shape, full = self.entries[position]
+        full_map, loose = self.buckets[shape]
+        if full is None:
+            loose.remove(position)
+        else:
+            full_map[full].remove(position)
+            if not full_map[full]:
+                del full_map[full]
+
+    def find_same(self, method: Method) -> tx.Optional[int]:
+        """Find the first registered method whose signature is the same as
+        that of `method`, returning its position.
+        """
+        if not self.methods:
+            return None
+        signature = method.signature
+        # `same_as` settles both signatures; settle the new one up front so
+        # that its keys describe the hints it will be compared with.
+        signature._settle_quietly()
+        shape, full = signature._same_as_keys()
+        bucket = self.buckets.get(shape)
+        if bucket is None:
+            return None
+        full_map, loose = bucket
+        if full is None:
+            candidates = sorted(
+                itertools.chain(loose, *full_map.values())
+            )
+        else:
+            try:
+                matches = full_map.get(full, [])
+            except Exception:  # noqa: BLE001
+                matches = list(itertools.chain(*full_map.values()))
+            candidates = sorted(matches + loose)
+        found = None
+        for position in candidates:
+            if self.methods[position].signature.same_as(signature):
+                found = position
+                break
+        self._refile_settled(loose)
+        return found
+
+    def _refile_settled(self, loose: tx.List[int]) -> None:
+        """Move loose methods whose deferred hints have since settled."""
+        for position in list(loose):
+            if position in self.settled_loose:
+                continue
+            method = self.methods[position]
+            if method.signature._deferred:
+                continue
+            keys = method.signature._same_as_keys()
+            if keys[1] is not None:
+                self._unfile(position)
+                keys = self.entries[position] = self._file(position, keys)
+            if keys[1] is None:
+                self.settled_loose.add(position)
+
+    def put(
+        self, position: tx.Optional[int], method: Method
+    ) -> tx.Tuple[Method, ...]:
+        """Store `method` at `position`, or append it when that is `None`,
+        returning the new methods tuple.
+        """
+        methods = self.methods
+        keys = method.signature._same_as_keys()
+        if position is None:
+            self.entries.append(self._file(len(methods), keys))
+            self.methods = methods + (method,)
+        else:
+            self._unfile(position)
+            self.settled_loose.discard(position)
+            self.entries[position] = self._file(position, keys)
+            self.methods = (
+                methods[:position] + (method,) + methods[position + 1 :]
+            )
+        return self.methods
+
+
+def _replace_or_append(index: _MethodIndex, method: Method) -> None:
+    """Add `method` to `index`, replacing one written the same way, if any.
 
     A method whose signature is written exactly like one already
     registered, with the same parameter names, kinds, required-ness, and
@@ -2399,13 +2541,13 @@ def _replace_or_append(
     the two at dispatch time, and [`Function.ambiguities`][] reports them
     if they turn out to clash.
     """
-    for index, existing in enumerate(methods):
-        if existing.signature.same_as(method.signature):
-            warnings.warn(
-                f"replacing an existing method {existing.describe()} with a "
-                f"new one of the same signature.",
-                RuntimeWarning,
-                stacklevel=4,
-            )
-            return methods[:index] + (method,) + methods[index + 1 :]
-    return methods + (method,)
+    position = index.find_same(method)
+    if position is not None:
+        warnings.warn(
+            f"replacing an existing method "
+            f"{index.methods[position].describe()} with a new one of the "
+            f"same signature.",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+    index.put(position, method)
