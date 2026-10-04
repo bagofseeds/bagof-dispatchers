@@ -3,9 +3,11 @@
 # stdlib
 import typing
 import warnings
+from unittest import mock
 
 # dependencies
 import pytest
+import typing_extensions as tx
 
 # locals
 from bagof.dispatchers import Exact
@@ -674,6 +676,91 @@ def test_register_replacement_warns() -> None:
         f.register(second)
     assert len(f.methods) == 1
     assert f(3) == "second"
+
+
+def test_register_many_distinct_methods_compares_linearly() -> None:
+    """Registering distinct methods does not compare every pair (#86)."""
+    classes = [type(f"C{i}", (), {}) for i in range(300)]
+    f = Function("f")
+    same_as = Signature.same_as
+    with mock.patch.object(
+        Signature, "same_as", autospec=True, side_effect=same_as
+    ) as spy:
+        for cls in classes:
+
+            def impl(x: object, y: object) -> None:
+                pass
+
+            impl.__annotations__ = {"x": cls, "y": typing.List[cls]}
+            f.register(impl)
+    assert len(f.methods) == len(classes)
+    assert spy.call_count <= len(classes)
+
+
+def test_register_replaces_a_spelling_that_normalises_the_same() -> None:
+    """Hints written differently but normalising alike still replace."""
+    UserId = typing.NewType("UserId", int)
+    f = Function("f")
+
+    def first(x: int, y: str) -> str:
+        return "first"
+
+    def other(x: str, y: str) -> str:
+        return "other"
+
+    def second(x: UserId, y: str) -> str:
+        return "second"
+
+    f.register(first)
+    f.register(other)
+    with pytest.warns(RuntimeWarning, match="replacing"):
+        f.register(second)
+    assert [m.function for m in f.methods] == [second, other]
+
+
+def test_register_replaces_with_unhashable_metadata() -> None:
+    """A hint with unhashable but equal metadata still replaces."""
+
+    class Tag:
+        __hash__ = None  # type: ignore[assignment]
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, Tag) and other.name == self.name
+
+    f = Function("f")
+    first = f.register((tx.Annotated[int, Tag("a")],))(lambda x: "first")
+    keyed = f.register((str,))(lambda x: "keyed")
+    other = f.register((tx.Annotated[int, Tag("b")],))(lambda x: "other")
+    with pytest.warns(RuntimeWarning, match="replacing"):
+        second = f.register((tx.Annotated[int, Tag("a")],))(
+            lambda x: "second"
+        )
+    assert [m.function for m in f.methods] == [second, keyed, other]
+    assert first not in [m.function for m in f.methods]
+
+
+def test_register_replaces_a_forward_reference_once_resolved() -> None:
+    """A deferred method still matches its spelling after it settles."""
+    namespace: typing.Dict[str, typing.Any] = {}
+    exec("def first(x: 'Later') -> str:\n    return 'first'", namespace)
+    exec("def other(x: int) -> str:\n    return 'other'", namespace)
+    f = Function("f")
+    f.register(namespace["first"])
+    f.register(namespace["other"])
+    exec("class Later:\n    pass", namespace)
+    exec("def second(x: Later) -> str:\n    return 'second'", namespace)
+    with pytest.warns(RuntimeWarning, match="replacing"):
+        f.register(namespace["second"])
+    assert [m.function for m in f.methods] == [
+        namespace["second"],
+        namespace["other"],
+    ]
+    with pytest.warns(RuntimeWarning, match="replacing"):
+        f.register(namespace["second"])
+    assert len(f.methods) == 2
 
 
 # --- from_mapping ------------------------------------------------------

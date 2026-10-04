@@ -63,7 +63,7 @@ from .core._bounds import (
     value_bound_message,
     written_ends,
 )
-from .core._compat import _UNPACK_FORMS, UNION_TYPES, spellings
+from .core._compat import _UNPACK_FORMS, UNION_TYPES, SameObject, spellings
 from .core._exact import exact_target, is_exact
 from .core._hint import is_hint_form
 from .core._introspect import _typing_spelling
@@ -1047,6 +1047,45 @@ class Signature:
             self._varargs, other._varargs
         ) and self._catch_all_same(self._varkw, other._varkw)
 
+    def _same_as_keys(self) -> tx.Tuple[tx.Hashable, tx.Optional[tx.Hashable]]:
+        """Build the hashable keys a registry indexes this signature under.
+
+        Two keys come back, each one a necessary condition for
+        [`same_as`][Signature.same_as], so two signatures that `same_as`
+        finds equal always have equal keys. The first key, the shape, is
+        built from the parameter names, kinds, and required-ness, and from
+        whether the catch-all parameters are present. None of these change
+        when deferred hints settle, so the shape is always available.
+
+        The second key extends the shape with a structural key for every
+        hint. It is [`None`][] while the signature is still deferred,
+        since its hints may yet resolve to something else, and also when
+        some hint cannot be keyed, for instance because it carries
+        unhashable metadata. A registry then has to fall back to comparing
+        the signature against every other signature of the same shape.
+        """
+        params = tuple(self._parameters.values())
+        shape = (
+            tuple((p.name, p.kind, p.required) for p in params),
+            self._varargs is not None,
+            self._varkw is not None,
+        )
+        if self._deferred:
+            return shape, None
+        try:
+            hints = tuple(_structural_hint_key(p.hint) for p in params)
+            tails = tuple(
+                None if tail is None else _structural_hint_key(tail)
+                for tail in (self._varargs, self._varkw)
+            )
+            full = (shape, hints, tails)
+            hash(full)
+        except Exception:  # noqa: BLE001
+            # An unhashable hint, or one whose normalisation raises, such as
+            # an alias whose value cannot be evaluated yet.
+            return shape, None
+        return shape, full
+
     @staticmethod
     def _catch_all_same(a: tx.Any, b: tx.Any) -> bool:
         """Report whether two `*args`/`**kwargs` hints were written the same
@@ -1323,6 +1362,35 @@ def _structural_hint_eq(a: tx.Any, b: tx.Any) -> bool:
     return all(
         _structural_hint_eq(x, y) for x, y in zip(args_a, args_b)
     )
+
+
+def _structural_hint_key(hint: tx.Any) -> tx.Any:
+    """Build a hashable key that two structurally equal hints share.
+
+    The key mirrors [`_structural_hint_eq`][] branch by branch, so two
+    hints that function finds equal always produce equal keys. The
+    converse does not hold: a key may be shared by hints that are not
+    equal, since the key is only used to narrow down the hints worth
+    comparing in full. A forward reference is keyed by its name, a
+    [`TypeVar`][typing.TypeVar] and a generic origin by identity, and any
+    other plain value by its type and its own hash. Hashing the key raises
+    [`TypeError`][] when one of those plain values is unhashable.
+    """
+    hint = normalise_hint(hint)
+    name = _forward_name(hint)
+    if name is not None:
+        return ("ref", name)
+    if isinstance(hint, tx.TypeVar):
+        return ("var", SameObject(hint))
+    if isinstance(hint, list):
+        return ("list",) + tuple(_structural_hint_key(x) for x in hint)
+    if tx.get_origin(hint) is not None:
+        return ("generic", SameObject(safe_get_origin(hint))) + tuple(
+            _structural_hint_key(x) for x in tx.get_args(hint)
+        )
+    if isinstance(hint, _Lower):
+        return ("lower", _structural_hint_key(hint.lower))
+    return ("leaf", type(hint), hint)
 
 
 def _is_plain_typevar(hint: tx.Any) -> bool:
