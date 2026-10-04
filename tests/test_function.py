@@ -1,6 +1,7 @@
 """Tests for the dispatch engine (`_function.py`)."""
 
 # stdlib
+import copy
 import typing
 import warnings
 from unittest import mock
@@ -694,7 +695,54 @@ def test_register_many_distinct_methods_compares_linearly() -> None:
             impl.__annotations__ = {"x": cls, "y": typing.List[cls]}
             f.register(impl)
     assert len(f.methods) == len(classes)
-    assert spy.call_count <= len(classes)
+    # Distinct signatures never share a key, so no pair is compared.
+    assert spy.call_count == 0
+
+
+def test_register_on_a_shallow_copy_rebuilds_the_index() -> None:
+    """A shallow copy and its original register independently (#86)."""
+    f = Function("f")
+    f.register((int,))(lambda x: "int")
+    f.register((str,))(lambda x: "str")
+    g = copy.copy(f)
+
+    with pytest.warns(RuntimeWarning, match="replacing"):
+        g.register((int,))(lambda x: "g int")
+    g.register((float,))(lambda x: "g float")
+    with pytest.warns(RuntimeWarning, match="replacing"):
+        f.register((str,))(lambda x: "f str")
+    f.register((bytes,))(lambda x: "f bytes")
+
+    assert [g(1), g("a"), g(1.0)] == ["g int", "str", "g float"]
+    assert [f(1), f("a"), f(b"a")] == ["int", "f str", "f bytes"]
+    assert len(f.methods) == len(g.methods) == 3
+
+
+def test_register_tolerates_metadata_whose_comparison_raises() -> None:
+    """Colliding keys whose `__eq__` raises fall back to a linear scan."""
+
+    class Meta:
+        # `typing` caches `Annotated` forms, so comparisons only start to
+        # raise once the hints below have been built.
+        strict = False
+
+        def __hash__(self) -> int:
+            return 0
+
+        def __eq__(self, other: object) -> bool:
+            if self is other or not Meta.strict:
+                return self is other
+            raise RuntimeError("no comparison")
+
+    hints = [tx.Annotated[int, Meta()] for _ in range(4)]
+    Meta.strict = True
+    f = Function("f")
+    for hint in hints:
+        f.register((hint,))(lambda x: "first")
+    assert len(f.methods) == len(hints)
+    with pytest.warns(RuntimeWarning, match="replacing"):
+        f.register((hints[1],))(lambda x: "again")
+    assert len(f.methods) == len(hints)
 
 
 def test_register_replaces_a_spelling_that_normalises_the_same() -> None:

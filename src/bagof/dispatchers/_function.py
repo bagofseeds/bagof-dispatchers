@@ -385,6 +385,7 @@ class Function:
         with self._lock:
             first = not self._methods
             index = self._index
+            # A shallow copy shares the index; rebuild it when it is stale.
             if index.methods is not self._methods:
                 index = self._index = _MethodIndex(self._methods)
             _replace_or_append(index, method)
@@ -2401,16 +2402,16 @@ class _MethodIndex:
 
     Methods are grouped first by the shape of their signature. Within a
     shape, a method whose hints could all be keyed is filed under its full
-    key, while a loose method, one that is still deferred or has a hint
-    that cannot be keyed, is compared against every new method of the
-    same shape. A deferred method is filed under its full key once its
-    hints have settled.
+    key, while a loose method, one that is still deferred, has a hint
+    that cannot be keyed, or has a key whose comparison raises, is
+    compared against every new method of the same shape. A deferred
+    method is filed under its full key once its hints have settled.
 
     The index describes one particular methods tuple, recorded in
     `methods`, and is updated in place as that tuple is replaced.
     """
 
-    __slots__ = ("methods", "entries", "buckets")
+    __slots__ = ("methods", "entries", "buckets", "settled_loose")
 
     def __init__(self, methods: tx.Tuple[Method, ...] = ()) -> None:
         self.methods: tx.Tuple[Method, ...] = ()
@@ -2420,19 +2421,31 @@ class _MethodIndex:
         self.buckets: tx.Dict[
             tx.Any, tx.Tuple[tx.Dict[tx.Any, tx.List[int]], tx.List[int]]
         ] = {}
+        # Loose positions that are settled and still have no full key.
+        self.settled_loose: tx.Set[int] = set()
         for position, method in enumerate(methods):
             keys = method.signature._same_as_keys()
-            self.entries.append(keys)
-            self._file(position, keys)
+            self.entries.append(self._file(position, keys))
         self.methods = methods
 
-    def _file(self, position: int, keys: tx.Tuple[tx.Any, tx.Any]) -> None:
+    def _file(
+        self, position: int, keys: tx.Tuple[tx.Any, tx.Any]
+    ) -> tx.Tuple[tx.Any, tx.Any]:
+        """File `position` under `keys` and return the keys it was filed
+        under. A full key whose comparison with a filed key raises is filed
+        as loose instead.
+        """
         shape, full = keys
         full_map, loose = self.buckets.setdefault(shape, ({}, []))
-        if full is None:
-            loose.append(position)
-        else:
-            full_map.setdefault(full, []).append(position)
+        if full is not None:
+            try:
+                full_map.setdefault(full, []).append(position)
+            except Exception:  # noqa: BLE001
+                pass
+            else:
+                return keys
+        loose.append(position)
+        return shape, None
 
     def _unfile(self, position: int) -> None:
         shape, full = self.entries[position]
@@ -2464,7 +2477,11 @@ class _MethodIndex:
                 itertools.chain(loose, *full_map.values())
             )
         else:
-            candidates = sorted(full_map.get(full, []) + loose)
+            try:
+                matches = full_map.get(full, [])
+            except Exception:  # noqa: BLE001
+                matches = list(itertools.chain(*full_map.values()))
+            candidates = sorted(matches + loose)
         found = None
         for position in candidates:
             if self.methods[position].signature.same_as(signature):
@@ -2476,14 +2493,17 @@ class _MethodIndex:
     def _refile_settled(self, loose: tx.List[int]) -> None:
         """Move loose methods whose deferred hints have since settled."""
         for position in list(loose):
+            if position in self.settled_loose:
+                continue
             method = self.methods[position]
             if method.signature._deferred:
                 continue
             keys = method.signature._same_as_keys()
             if keys[1] is not None:
                 self._unfile(position)
-                self.entries[position] = keys
-                self._file(position, keys)
+                keys = self.entries[position] = self._file(position, keys)
+            if keys[1] is None:
+                self.settled_loose.add(position)
 
     def put(
         self, position: tx.Optional[int], method: Method
@@ -2494,13 +2514,12 @@ class _MethodIndex:
         methods = self.methods
         keys = method.signature._same_as_keys()
         if position is None:
-            self.entries.append(keys)
-            self._file(len(methods), keys)
+            self.entries.append(self._file(len(methods), keys))
             self.methods = methods + (method,)
         else:
             self._unfile(position)
-            self.entries[position] = keys
-            self._file(position, keys)
+            self.settled_loose.discard(position)
+            self.entries[position] = self._file(position, keys)
             self.methods = (
                 methods[:position] + (method,) + methods[position + 1 :]
             )
